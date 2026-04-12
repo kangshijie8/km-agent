@@ -3992,6 +3992,59 @@ class KunmingCLI:
             print("  Usage: /personality <name>")
             print()
     
+    def _handle_distill_command(self, cmd: str) -> None:
+        """Handle /distill command — run memory distillation or show status."""
+        parts = cmd.strip().split()
+        subcmd = parts[1] if len(parts) > 1 else "status"
+
+        if subcmd == "status":
+            try:
+                from agent.memory_distillation import get_distillation_status
+                status = get_distillation_status()
+                self.console.print("\n[bold]Memory Distillation Status[/]")
+                self.console.print(f"  Active signals:   {status.get('active_signals', 0)}")
+                self.console.print(f"  Promoted entries:  {status.get('promoted_signals', 0)}")
+                self.console.print(f"  Total signals:    {status.get('total_signals', 0)}")
+                self.console.print(f"  Last run:         {status.get('last_run', 'never')}")
+                self.console.print(f"  Last promoted:    {status.get('last_promoted_count', 0)} entries")
+            except Exception as e:
+                self.console.print(f"[red]Error reading distillation status: {e}[/]")
+        elif subcmd == "run":
+            self.console.print("[dim]Running memory distillation...[/]")
+            try:
+                from agent.memory_distillation import run_distillation, DEFAULT_CONFIG
+                cfg = DEFAULT_CONFIG.copy()
+                cfg["enabled"] = True
+                result = run_distillation(config=cfg, verbose=True)
+                if result.get("status") == "disabled":
+                    self.console.print("[yellow]Distillation is disabled.[/]")
+                elif result.get("status") == "no_signals":
+                    self.console.print("[dim]No signals to distill.[/]")
+                else:
+                    deep = result.get("deep", {})
+                    light = result.get("light", {})
+                    rem = result.get("rem", {})
+                    self.console.print(f"\n[bold green]Distillation complete[/]")
+                    self.console.print(f"  Signals ingested:  {light.get('signals_ingested', 0)}")
+                    self.console.print(f"  Candidates scored: {deep.get('candidates_scored', 0)}")
+                    self.console.print(f"  Promoted:          {deep.get('promoted', 0)}")
+                    themes = rem.get("themes", [])
+                    if themes:
+                        self.console.print("\n[bold]Themes discovered:[/]")
+                        for t in themes:
+                            self.console.print(f"  • {t['theme']} (strength: {t['strength']:.0%}, {t['occurrences']}x)")
+                    promotions = deep.get("promotions", [])
+                    if promotions:
+                        self.console.print("\n[bold]Promoted to MEMORY.md:[/]")
+                        for p in promotions:
+                            self.console.print(f"  • [{p['score']:.2f}] {p['snippet']}")
+            except Exception as e:
+                self.console.print(f"[red]Distillation error: {e}[/]")
+        else:
+            self.console.print("[dim]Usage: /distill [status|run][/]")
+            self.console.print("[dim]  status — show distillation statistics[/]")
+            self.console.print("[dim]  run    — run distillation now[/]")
+
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         import shlex
@@ -4453,6 +4506,8 @@ class KunmingCLI:
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "distill":
+            self._handle_distill_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
@@ -8367,11 +8422,21 @@ class KunmingCLI:
         if not _gateway_running:
             def _cli_cron_ticker(stop_event, interval=60):
                 from cron.scheduler import tick as cron_tick
+                _tick_count = 0
                 while not stop_event.is_set():
                     try:
                         cron_tick(verbose=False)
                     except Exception:
                         pass
+                    _tick_count += 1
+                    if _tick_count % 60 == 0:
+                        try:
+                            from agent.memory_distillation import run_distillation, DEFAULT_CONFIG
+                            _dcfg = DEFAULT_CONFIG.copy()
+                            _dcfg["enabled"] = True
+                            run_distillation(config=_dcfg, verbose=False)
+                        except Exception:
+                            pass
                     stop_event.wait(timeout=interval)
             _cron_thread = threading.Thread(
                 target=_cli_cron_ticker,

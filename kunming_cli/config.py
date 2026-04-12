@@ -474,6 +474,18 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Memory distillation: automatically consolidate short-term signals
+        # into long-term memory. Runs hourly in gateway/CLI cron ticker.
+        "distillation": {
+            "enabled": True,
+            "min_score": 0.75,
+            "min_signal_count": 3,
+            "min_unique_days": 2,
+            "max_age_days": 30,
+            "recency_half_life_days": 14,
+            "max_promotions_per_run": 5,
+            "lookback_days": 7,
+        },
     },
 
     # Subagent delegation —override the provider:model used by delegate_task

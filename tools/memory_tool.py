@@ -250,6 +250,12 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
+        try:
+            from agent.memory_distillation import record_signal
+            record_signal(content, source="write", score=0.7, query=f"add:{target}")
+        except Exception:
+            pass
+
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:

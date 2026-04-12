@@ -7439,6 +7439,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
     IMAGE_CACHE_EVERY = 60   # ticks -once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks -every 5 minutes
+    DISTILL_EVERY = 60       # ticks -once per hour
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -7470,6 +7471,18 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     logger.info("Document cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Document cache cleanup error: %s", e)
+
+        if tick_count % DISTILL_EVERY == 0:
+            try:
+                from agent.memory_distillation import run_distillation, DEFAULT_CONFIG
+                distill_cfg = DEFAULT_CONFIG.copy()
+                distill_cfg["enabled"] = True
+                result = run_distillation(config=distill_cfg, verbose=False)
+                if result.get("deep", {}).get("promoted", 0) > 0:
+                    logger.info("Memory distillation: promoted %d entries",
+                                result["deep"]["promoted"])
+            except Exception as e:
+                logger.debug("Memory distillation error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")
