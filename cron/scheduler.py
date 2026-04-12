@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "sms", "email", "webhook", "bluebubbles",
+    "wecom", "sms", "email", "webhook", "bluebubbles", "cli",
 })
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
@@ -218,6 +218,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     platform_name = target["platform"]
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
+
+    if platform_name.lower() == "cli":
+        inbox_dir = _kunming_home / "cron_inbox"
+        inbox_dir.mkdir(parents=True, exist_ok=True)
+        inbox_file = inbox_dir / f"{chat_id}.txt"
+        from datetime import datetime, timezone
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        entry = f"\n{'='*50}\n[Cron] {job.get('name', job['id'])} @ {timestamp}\n{content.strip()}\n"
+        try:
+            with open(inbox_file, "a", encoding="utf-8") as f:
+                f.write(entry)
+            logger.info("Job '%s': delivered to CLI inbox %s", job["id"], inbox_file)
+            return None
+        except Exception as e:
+            msg = f"CLI inbox delivery failed: {e}"
+            logger.error("Job '%s': %s", job["id"], msg)
+            return msg
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform

@@ -5395,6 +5395,40 @@ class KunmingCLI:
         except Exception as e:
             print(f"  Error generating insights: {e}")
 
+    def _check_cron_inbox(self) -> None:
+        """Poll the cron inbox file for CLI and display any new messages."""
+        import time
+        CRON_INBOX_INTERVAL = 5.0
+        now = time.monotonic()
+        if now - self._cron_inbox_last_check < CRON_INBOX_INTERVAL:
+            return
+        self._cron_inbox_last_check = now
+        chat_id = os.environ.get("KUNMING_SESSION_CHAT_ID", "")
+        if not chat_id or not chat_id.startswith("cli-"):
+            return
+        from kunming_constants import get_kunming_home
+        inbox_dir = get_kunming_home() / "cron_inbox"
+        inbox_file = inbox_dir / f"{chat_id}.txt"
+        if not inbox_file.exists():
+            return
+        try:
+            content = inbox_file.read_text(encoding="utf-8").strip()
+            if not content:
+                return
+            inbox_file.write_text("", encoding="utf-8")
+            try:
+                from kunming_cli.skin_engine import get_active_skin
+                skin = get_active_skin()
+                accent = skin.get_color("banner_accent", "#FFD700")
+            except Exception:
+                accent = "#FFD700"
+            self.console.print(f"\n[{accent}]{'─' * 50}[/]")
+            self.console.print(f"[bold {accent}]📬 Cron Notification[/]")
+            self.console.print(content)
+            self.console.print(f"[{accent}]{'─' * 50}[/]\n")
+        except Exception:
+            pass
+
     def _check_config_mcp_changes(self) -> None:
         """Detect mcp_servers changes in config.yaml and auto-reload MCP connections.
 
@@ -6985,6 +7019,16 @@ class KunmingCLI:
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
 
+        # Set CLI session environment variables for cron delivery routing.
+        # These allow cron jobs with deliver=origin to route results back to
+        # this CLI session via the cron_inbox mechanism.
+        _cli_session_id = os.environ.get("KUNMING_CLI_SESSION_ID", str(os.getpid()))
+        os.environ.setdefault("KUNMING_SESSION_PLATFORM", "cli")
+        os.environ.setdefault("KUNMING_SESSION_CHAT_ID", f"cli-{_cli_session_id}")
+
+        # Cron inbox polling state
+        self._cron_inbox_last_check: float = 0.0
+
         # Give plugin manager a CLI reference so plugins can inject messages
         from kunming_cli.plugins import get_plugin_manager
         get_plugin_manager()._cli_ref = self
@@ -8148,6 +8192,7 @@ class KunmingCLI:
                         # Periodic config watcher █auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
+                            self._check_cron_inbox()
                             # Check for background process completion notifications
                             # while the agent is idle (user hasn't typed anything yet).
                             try:
@@ -8308,6 +8353,33 @@ class KunmingCLI:
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)
         process_thread.start()
+
+        # Start cron ticker thread so scheduled jobs fire automatically
+        # in CLI mode (same pattern as gateway's _start_cron_ticker).
+        # Only start if no gateway is already running (avoid double-tick).
+        self._cron_stop = threading.Event()
+        _gateway_running = False
+        try:
+            from kunming_cli.gateway import find_gateway_pids
+            _gateway_running = bool(find_gateway_pids())
+        except Exception:
+            pass
+        if not _gateway_running:
+            def _cli_cron_ticker(stop_event, interval=60):
+                from cron.scheduler import tick as cron_tick
+                while not stop_event.is_set():
+                    try:
+                        cron_tick(verbose=False)
+                    except Exception:
+                        pass
+                    stop_event.wait(timeout=interval)
+            _cron_thread = threading.Thread(
+                target=_cli_cron_ticker,
+                args=(self._cron_stop,),
+                daemon=True,
+                name="cli-cron-ticker",
+            )
+            _cron_thread.start()
         
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
@@ -8353,6 +8425,9 @@ class KunmingCLI:
             pass
         finally:
             self._should_exit = True
+            # Stop cron ticker thread
+            if hasattr(self, '_cron_stop'):
+                self._cron_stop.set()
             # Flush memories before exit (only for substantial conversations)
             if self.agent and self.conversation_history:
                 try:
