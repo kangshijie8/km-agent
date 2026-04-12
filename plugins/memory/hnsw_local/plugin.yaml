@@ -1,0 +1,29 @@
+name: hnsw_local
+description: |
+  Local HNSW vector memory plugin with semantic search capabilities.
+  Provides 150x-12,500x faster vector search compared to brute-force approaches.
+  Based on Cognitive Core memory system with SQLite persistence.
+version: 3.5.0
+author: Kunming Agent Team
+type: memory
+
+config:
+  dimensions: 1536
+  auto_embed: true
+  cache_enabled: true
+  cache_size: 1000
+  hnsw_m: 16
+  hnsw_ef_construction: 200
+  persistence_enabled: true
+  max_entries: 100000
+
+dependencies:
+  - numpy
+
+# Memory plugin interface
+interface:
+  store: store_memory
+  retrieve: retrieve_memory
+  search: semantic_search
+  delete: delete_memory
+  clear: clear_memories

@@ -1,0 +1,5 @@
+[console_scripts]
+km = kunming_cli.main:main
+kunming = kunming_cli.main:main
+kunming-acp = acp_adapter.entry:main
+kunming-agent = run_agent:main
