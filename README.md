@@ -1,4 +1,4 @@
-
+中国人自己的agent，一个越用越灵活的agent！
 
 ## 为什么选择 km agent?
 
@@ -191,16 +191,7 @@ python -m pytest tests/ -q
 
 ***
 
-## License
 
-MIT
 
-***
 
-**作者**: km team (一个昆明人 + Kimi K2.5)\
-**理念**: 好用就是硬道理，不整虚的。
-
-**友情链接**:
-
-- [Kimi](https://kimi.moonshot.cn/) - 月之暗面大模型
 
