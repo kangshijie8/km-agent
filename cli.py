@@ -8419,6 +8419,12 @@ class KunmingCLI:
             _gateway_running = bool(find_gateway_pids())
         except Exception:
             pass
+        try:
+            from cron.scheduler import ensure_heartbeat_job
+            if ensure_heartbeat_job():
+                self.console.print("[dim]Created default heartbeat cron job[/]")
+        except Exception:
+            pass
         if not _gateway_running:
             def _cli_cron_ticker(stop_event, interval=60):
                 from cron.scheduler import tick as cron_tick

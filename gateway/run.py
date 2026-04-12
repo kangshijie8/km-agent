@@ -1067,6 +1067,11 @@ class GatewayRunner:
         except Exception:
             pass
         
+        # Count enabled messaging platforms early for context-aware warnings
+        _enabled_platform_count = sum(
+            1 for _p, _pc in self.config.platforms.items() if _pc.enabled
+        )
+
         # Warn if no user allowlists are configured and open access is not opted in
         _any_allowlist = any(
             os.getenv(v)
@@ -1093,11 +1098,17 @@ class GatewayRunner:
                        "BLUEBUBBLES_ALLOW_ALL_USERS")
         )
         if not _any_allowlist and not _allow_all:
-            logger.warning(
-                "No user allowlists configured. All unauthorized users will be denied. "
-                "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.kunming/.env to allow open access, "
-                "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
-            )
+            if _enabled_platform_count > 0:
+                logger.warning(
+                    "No user allowlists configured. All unauthorized users will be denied. "
+                    "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.kunming/.env to allow open access, "
+                    "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
+                )
+            else:
+                logger.info(
+                    "No messaging platforms or allowlists configured. "
+                    "Gateway is running in cron-only mode."
+                )
         
         # Discover and load event hooks
         self.hooks.discover_and_load()
@@ -1199,7 +1210,7 @@ class GatewayRunner:
                 except Exception:
                     pass
                 return False
-            logger.warning("No messaging platforms enabled.")
+            logger.info("No messaging platforms enabled — running in cron-only mode.")
             logger.info("Gateway will continue running for cron job execution.")
         
         # Update delivery router with adapters
@@ -7648,6 +7659,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
+    try:
+        from cron.scheduler import ensure_heartbeat_job
+        if ensure_heartbeat_job():
+            logger.info("Created default heartbeat cron job")
+    except Exception:
+        pass
     cron_stop = threading.Event()
     cron_thread = threading.Thread(
         target=_start_cron_ticker,

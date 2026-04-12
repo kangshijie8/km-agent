@@ -918,5 +918,49 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         lock_fd.close()
 
 
+_HEARTBEAT_JOB_NAME = "km-heartbeat"
+
+
+def ensure_heartbeat_job() -> bool:
+    """Create a default heartbeat cron job if none exists.
+
+    The heartbeat job runs every 5 minutes. It serves two purposes:
+    1. Keeps the cron delivery pipeline active so the inbox mechanism
+       stays functional even without user-defined jobs.
+    2. Provides periodic system health awareness for long-running sessions.
+
+    Delivery routing: uses deliver=origin when a session context exists
+    (CLI or gateway with an active chat), otherwise deliver=local so the
+    job still runs and output is saved for audit.
+
+    Returns True if a heartbeat job was created, False if one already exists.
+    """
+    from cron.jobs import list_jobs, create_job
+    try:
+        existing = list_jobs(include_disabled=True)
+        for job in existing:
+            if job.get("name") == _HEARTBEAT_JOB_NAME:
+                return False
+        origin = None
+        deliver = "local"
+        platform = os.environ.get("KUNMING_SESSION_PLATFORM", "")
+        chat_id = os.environ.get("KUNMING_SESSION_CHAT_ID", "")
+        if platform and chat_id:
+            origin = {"platform": platform, "chat_id": chat_id}
+            deliver = "origin"
+        create_job(
+            prompt="Report current system status: uptime, memory usage, and active sessions. Keep it brief.",
+            schedule="every 5m",
+            name=_HEARTBEAT_JOB_NAME,
+            deliver=deliver,
+            origin=origin,
+        )
+        logger.info("Created default heartbeat job '%s' (deliver=%s)", _HEARTBEAT_JOB_NAME, deliver)
+        return True
+    except Exception as e:
+        logger.debug("Heartbeat job creation skipped: %s", e)
+        return False
+
+
 if __name__ == "__main__":
     tick(verbose=True)

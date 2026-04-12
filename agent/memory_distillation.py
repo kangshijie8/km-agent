@@ -1,7 +1,7 @@
 """
 Memory Distillation — offline consolidation of short-term signals into long-term memory.
 
-Inspired by sleep-stage memory consolidation in cognitive science:
+Three-phase model mirroring sleep-stage memory consolidation:
   - Light phase: collect recent signals (session transcripts, daily notes)
   - Deep phase: score candidates by multi-dimensional weighted formula, promote
     high-confidence entries into MEMORY.md
@@ -12,14 +12,14 @@ the /distill slash command. It operates on the MEMORY.md / USER.md files that
 the MemoryStore manages, and writes results atomically so concurrent sessions
 are not disrupted.
 
-Scoring formula (6 dimensions, inspired by Ebbinghaus forgetting curve + spaced repetition):
+Scoring formula (6 dimensions, based on forgetting curve + spaced repetition):
   score = W_freq * frequency + W_rel * relevance + W_div * diversity
         + W_rec * recency     + W_con * consolidation + W_cpt * conceptual
 
   - frequency:    how often the signal appeared (log-scaled)
   - relevance:    average retrieval quality score
   - diversity:    number of distinct contexts / days the signal appeared in
-  - recency:      exponential decay with configurable half-life (Ebbinghaus)
+  - recency:      exponential decay with configurable half-life (forgetting curve)
   - consolidation: spacing effect — repeated across multiple days is stronger
   - conceptual:   number of distinct concept tags extracted from the snippet
 
