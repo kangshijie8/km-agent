@@ -373,6 +373,13 @@ def load_cli_config() -> Dict[str, Any]:
         if redact is not None:
             os.environ["KUNMING_REDACT_SECRETS"] = str(redact).lower()
 
+    # Initialize i18n language from config
+    try:
+        from kunming_cli.i18n import set_language
+        set_language(config.get("language", "zh"))
+    except Exception:
+        pass
+
     return config
 
 # Load configuration at module startup
@@ -384,14 +391,14 @@ try:
     from kunming_logging import setup_logging
     setup_logging(mode="cli")
 except Exception:
-    pass  # Logging setup is best-effort █don't crash the CLI
+    pass  # Logging setup is best-effort — can't log about logging failure
 
 # Validate config structure early █print warnings before user hits cryptic errors
 try:
     from kunming_cli.config import print_config_warnings
     print_config_warnings()
 except Exception:
-    pass
+    logger.debug("Config warnings print failed", exc_info=True)
 
 try:
     from kunming_cli.config import validate_critical_config
@@ -402,14 +409,14 @@ try:
             _sys.stderr.write(f"\033[33m⚠ {_w}\033[0m\n")
         _sys.stderr.write("\n")
 except Exception:
-    pass
+    logger.debug("Critical config validation failed", exc_info=True)
 
 # Initialize the skin engine from config
 try:
     from kunming_cli.skin_engine import init_skin_from_config
     init_skin_from_config(CLI_CONFIG)
 except Exception:
-    pass  # Skin engine is optional █default skin used if unavailable
+    logger.debug("Skin engine init failed; using default skin", exc_info=True)
 
 # Initialize tool preview length from config
 try:
@@ -417,18 +424,18 @@ try:
     _tpl = CLI_CONFIG.get("display", {}).get("tool_preview_length", 0)
     set_tool_preview_max_len(int(_tpl) if _tpl else 0)
 except Exception:
-    pass
+    logger.debug("Tool preview length init failed", exc_info=True)
 
 # Neuter AsyncHttpxClientWrapper.__del__ before any AsyncOpenAI clients are
 # created.  The SDK's __del__ schedules aclose() on asyncio.get_running_loop()
 # which, during CLI idle time, finds prompt_toolkit's event loop and tries to
-# close TCP transports bound to dead worker loops █producing
+# close TCP transports bound to dead worker loops — producing
 # "Event loop is closed" / "Press ENTER to continue..." errors.
 try:
     from agent.auxiliary_client import neuter_async_httpx_del
     neuter_async_httpx_del()
 except Exception:
-    pass
+    logger.debug("AsyncHttpxClientWrapper neuter failed", exc_info=True)
 
 from rich import box as rich_box
 from rich.console import Console
@@ -471,16 +478,16 @@ def _run_cleanup():
     try:
         _cleanup_all_terminals()
     except Exception:
-        pass
+        logger.debug("Terminal cleanup failed", exc_info=True)
     try:
         _cleanup_all_browsers()
     except Exception:
-        pass
+        logger.debug("Browser cleanup failed", exc_info=True)
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
     except Exception:
-        pass
+        logger.debug("MCP server shutdown failed", exc_info=True)
     # Close cached auxiliary LLM clients (sync + async) so that
     # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
     # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
@@ -488,21 +495,21 @@ def _run_cleanup():
         from agent.auxiliary_client import shutdown_cached_clients
         shutdown_cached_clients()
     except Exception:
-        pass
+        logger.debug("Auxiliary client shutdown failed", exc_info=True)
     # Shut down memory provider (on_session_end + shutdown_all) at actual
-    # session boundary █NOT per-turn inside run_conversation().
+    # session boundary — NOT per-turn inside run_conversation().
     try:
         from kunming_cli.plugins import invoke_hook as _invoke_hook
         _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
     except Exception:
-        pass
+        logger.debug("Session finalize hook failed", exc_info=True)
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
             _active_agent_ref.shutdown_memory_provider(
                 getattr(_active_agent_ref, 'conversation_history', None) or []
             )
     except Exception:
-        pass
+        logger.debug("Memory provider shutdown failed", exc_info=True)
 
 
 # =============================================================================
@@ -2000,13 +2007,11 @@ class KunmingCLI:
             try:
                 from kunming_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
-                label = _skin.get_branding("response_label", "█Kunming")
+                label = _skin.get_branding("response_label", "◆ Kunming")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
-                label = "█Kunming"
+                label = "◆ Kunming"
                 _text_hex = "#FFF8DC"
-            # Build a true-color ANSI escape for the response text color
-            # so streamed content matches the Rich Panel appearance.
             try:
                 _r = int(_text_hex[1:3], 16)
                 _g = int(_text_hex[3:5], 16)
@@ -2015,8 +2020,8 @@ class KunmingCLI:
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
             w = shutil.get_terminal_size().columns
-            fill = w - 2 - len(label)
-            _cprint(f"\n{_GOLD}╭-{label}{'-' * max(fill - 1, 0)}╮{_RST}")
+            fill = max(w - len(label) - 4, 2)
+            _cprint(f"\n{_GOLD}╭─{label}{'─' * fill}╮{_RST}")
 
         self._stream_buf += text
 
@@ -2039,7 +2044,7 @@ class KunmingCLI:
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_GOLD}╰{'-' * (w - 2)}╯{_RST}")
+            _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -2905,13 +2910,14 @@ class KunmingCLI:
     def show_help(self):
         """Display help information with categorized commands."""
         from kunming_cli.commands import COMMANDS_BY_CATEGORY
+        from kunming_cli.i18n import _T
 
         try:
             from kunming_cli.skin_engine import get_active_help_header
-            header = get_active_help_header("(^_^) Available Commands")
+            header = get_active_help_header(_T("cli.available_commands"))
         except Exception:
-            header = "(^_^) Available Commands"
-        header = (header or "").strip() or "(^_^) Available Commands"
+            header = _T("cli.available_commands")
+        header = (header or "").strip() or _T("cli.available_commands")
         inner_width = 55
         if len(header) > inner_width:
             header = header[:inner_width]
@@ -2920,7 +2926,9 @@ class KunmingCLI:
         _cprint(f"{_BOLD}+{'-' * inner_width}+{_RST}")
 
         for category, commands in COMMANDS_BY_CATEGORY.items():
-            _cprint(f"\n  {_BOLD}-- {category} --{_RST}")
+            translated_cat = _T(f"cat.{category}")
+            display_cat = translated_cat if translated_cat != f"cat.{category}" else category
+            _cprint(f"\n  {_BOLD}-- {display_cat} --{_RST}")
             for cmd, desc in commands.items():
                 ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
 
@@ -2937,15 +2945,16 @@ class KunmingCLI:
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
+        from kunming_cli.i18n import _T
         tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
         
         if not tools:
-            print("(;_;) No tools available")
+            print(_T("cli.no_tools"))
             return
         
         # Header
         print()
-        title = "(^_^)/ Available Tools"
+        title = _T("cli.available_tools")
         width = 78
         pad = width - len(title)
         print("+" + "-" * width + "+")
@@ -3031,11 +3040,12 @@ class KunmingCLI:
 
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
+        from kunming_cli.i18n import _T
         all_toolsets = get_all_toolsets()
         
         # Header
         print()
-        title = "(^_^)b Available Toolsets"
+        title = _T("cli.available_toolsets")
         width = 58
         pad = width - len(title)
         print("+" + "-" * width + "+")
@@ -6501,9 +6511,9 @@ class KunmingCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
-                        label = " █Kunming "
-                        fill = w - 2 - len(label)
-                        _cprint(f"\n{_GOLD}╭-{label}{'-' * max(fill - 1, 0)}╮{_RST}")
+                        label = " ◆Kunming "
+                        fill = max(w - len(label) - 4, 2)
+                        _cprint(f"\n{_GOLD}╭─{label}{'─' * fill}╮{_RST}")
                     _cprint(sentence.rstrip())
 
                 tts_thread = threading.Thread(
@@ -6705,11 +6715,11 @@ class KunmingCLI:
                 try:
                     from kunming_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
-                    label = _skin.get_branding("response_label", "█Kunming")
+                    label = _skin.get_branding("response_label", "◆ Kunming")
                     _resp_color = _skin.get_color("response_border", "#CD7F32")
                     _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                 except Exception:
-                    label = "█Kunming"
+                    label = "◆ Kunming"
                     _resp_color = "#CD7F32"
                     _resp_text = "#FFF8DC"
 
@@ -7006,6 +7016,7 @@ class KunmingCLI:
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
+        from kunming_cli.i18n import _T
         # Push the entire TUI to the bottom of the terminal so the banner,
         # responses, and prompt all appear pinned to the bottom █empty
         # space stays above, not below.  This prints enough blank lines to
@@ -7036,8 +7047,8 @@ class KunmingCLI:
         except Exception:
             _welcome_text = "km agent ready"
             _welcome_color = "#FFF8DC"
-        self.console.print(f"[{_welcome_color}]✨ {_welcome_text}[/]")
-        self.console.print(f"[dim]💡 /help 查看命令，或直接开始对话[/]")
+        self.console.print(f"[{_welcome_color}]  ✨  {_welcome_text}[/]")
+        self.console.print(f"[dim]  💡 {_T('banner.help_command')} · 或直接开始对话[/]")
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)
             self.console.print(
