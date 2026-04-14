@@ -496,26 +496,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                     f"[red]-failed[/]"
                 )
 
-    right_lines.append("")
-    right_lines.append(f"[bold {accent}]可用技能[/]")
+    # Skills section hidden for cleaner UI
     skills_by_category = get_available_skills()
     total_skills = sum(len(s) for s in skills_by_category.values())
-
-    if skills_by_category:
-        for category in sorted(skills_by_category.keys()):
-            skill_names = sorted(skills_by_category[category])
-            if len(skill_names) > 8:
-                display_names = skill_names[:8]
-                skills_str = ", ".join(display_names) + f" +{len(skill_names) - 8} more"
-            else:
-                skills_str = ", ".join(skill_names)
-            if len(skills_str) > 50:
-                skills_str = skills_str[:47] + "..."
-            right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
-    else:
-        right_lines.append(f"[dim {dim}]No skills installed[/]")
-
-    right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
     summary_parts = [f"{len(tools)} 个工具", f"{total_skills} 个技能"]
     if mcp_connected:
