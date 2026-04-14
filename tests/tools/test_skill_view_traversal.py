@@ -5,6 +5,7 @@ reading arbitrary files (e.g., ~/.kunming/.env) via path traversal.
 """
 
 import json
+import sys
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -58,6 +59,7 @@ class TestPathTraversalBlocked:
         result = json.loads(skill_view("test-skill"))
         assert result["success"] is True
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin privileges on Windows")
     def test_symlink_escape_blocked(self, fake_skills):
         """Symlinks pointing outside the skill directory should be blocked."""
         skill_dir = fake_skills["skill_dir"]

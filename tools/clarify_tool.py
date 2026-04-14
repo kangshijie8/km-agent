@@ -56,7 +56,7 @@ def clarify_tool(
 
     if callback is None:
         return json.dumps(
-            {"error": "Clarify tool is not available in this execution context."},
+            {"error": "Cannot ask the user a question in this context (no interactive UI). Make a reasonable default decision and proceed without clarification."},
             ensure_ascii=False,
         )
 

@@ -1069,6 +1069,7 @@ class MCPServerTask:
             return False
 
         self._degraded = False
+        await self._refresh_tools()
         logger.info(
             "MCP server '%s': lazy reconnection succeeded", self.name,
         )
@@ -1111,6 +1112,12 @@ _lock = threading.Lock()
 # fails or times out.  PIDs are added after connection and removed on
 # normal server shutdown.
 _stdio_pids: set = set()
+
+# Tasks whose coroutines were cancelled via timeout but may still be executing
+# on the MCP loop.  Python asyncio cannot truly abort a running coroutine —
+# future.cancel() only prevents awaiting the result.  We track these for
+# diagnostic purposes; they are cleaned up when the loop shuts down.
+_cancelled_tasks: set = set()
 
 
 def _snapshot_child_pids() -> set:
@@ -1187,6 +1194,7 @@ def _run_on_mcp_loop(coro, timeout: float = 120):
         return future.result(timeout=timeout)
     except TimeoutError:
         future.cancel()
+        _cancelled_tasks.add(future)
         raise TimeoutError(f"MCP tool call timed out after {timeout}s")
 
 
@@ -2216,6 +2224,11 @@ def shutdown_mcp_servers():
             future.result(timeout=15)
         except Exception as exc:
             logger.debug("Error during MCP shutdown: %s", exc)
+    elif loop is not None:
+        # Daemon thread already killed by interpreter shutdown — skip
+        # coroutine scheduling (would raise RuntimeError on dead loop).
+        with _lock:
+            _servers.clear()
 
     _stop_mcp_loop()
 
@@ -2257,6 +2270,7 @@ def _stop_mcp_loop():
         thread = _mcp_thread
         _mcp_loop = None
         _mcp_thread = None
+        _cancelled_tasks.clear()
     if loop is not None:
         loop.call_soon_threadsafe(loop.stop)
         if thread is not None:

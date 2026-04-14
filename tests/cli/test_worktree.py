@@ -419,6 +419,7 @@ class TestMultipleWorktrees:
             assert not Path(info["path"]).exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin privileges on Windows")
 class TestWorktreeDirectorySymlink:
     """Test .worktreeinclude with directories (symlinked)."""
 
@@ -614,8 +615,8 @@ class TestEdgeCases:
         info = _setup_worktree(str(repo))
         assert info is None  # Should fail gracefully
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="git traverses up to user profile on Windows")
     def test_not_a_git_repo(self, tmp_path):
-        """Repo detection should return None for non-git directories."""
         bare = tmp_path / "not-git"
         bare.mkdir()
         root = _git_repo_root(cwd=str(bare))

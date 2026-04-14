@@ -633,6 +633,19 @@ def delegate_task(
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._set_resolved_tool_names(_parent_tool_names)
+        # If building failed partway, remove already-built children from
+        # _active_children so they don't leak (they were never run).
+        if len(children) < n_tasks and hasattr(parent_agent, '_active_children'):
+            for _i, _t, child in children:
+                try:
+                    lock = getattr(parent_agent, '_active_children_lock', None)
+                    if lock:
+                        with lock:
+                            parent_agent._active_children.remove(child)
+                    else:
+                        parent_agent._active_children.remove(child)
+                except (ValueError, UnboundLocalError):
+                    pass
 
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)

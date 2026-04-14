@@ -105,6 +105,16 @@ DANGEROUS_PATTERNS = [
     (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
 ]
 
+if sys.platform == "win32":
+    DANGEROUS_PATTERNS.extend([
+        (r'\bformat\s+[a-z]:', "format drive"),
+        (r'\bdiskpart\b', "disk partition management"),
+        (r'\breg\s+(add|delete)', "registry modification"),
+        (r'\bbcdedit\b', "boot configuration edit"),
+        (r'>\s*[a-z]:\\autoexec\.bat', "overwrite autoexec.bat"),
+        (r'>\s*[a-z]:\\config\.sys', "overwrite config.sys"),
+    ])
+
 
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""

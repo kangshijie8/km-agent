@@ -51,6 +51,18 @@ try:
 except ImportError:
     fcntl = None
 
+_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
+
+
+def _extract_tokens(text: str) -> set:
+    tokens = set(re.findall(r'[a-zA-Z][\w.-]+[\w]|\d+', text.lower()))
+    cjk_chars = _CJK_RE.findall(text)
+    tokens.update(cjk_chars)
+    for i in range(len(cjk_chars) - 1):
+        tokens.add(cjk_chars[i] + cjk_chars[i + 1])
+    return tokens
+
+
 logger = logging.getLogger(__name__)
 
 # Where memory files live — resolved dynamically so profile overrides
@@ -190,6 +202,14 @@ class MemoryStore:
             meta["last_accessed"] = time.time()
             meta["access_count"] = meta.get("access_count", 0) + 1
             self._set_meta(target, content, meta)
+
+    def _save_meta(self) -> None:
+        try:
+            get_memory_dir().mkdir(parents=True, exist_ok=True)
+            with open(self._meta_path, "w", encoding="utf-8") as f:
+                json.dump(self._meta, f)
+        except Exception:
+            pass
 
     def _init_meta(self, target: str, content: str) -> None:
         """Initialize metadata for a new entry."""
@@ -353,10 +373,24 @@ class MemoryStore:
         """Persist entries to the appropriate file. Called after every mutation."""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
-        # Persist Ebbinghaus metadata
+        # Persist Ebbinghaus metadata atomically
         try:
-            with open(self._meta_path, "w", encoding="utf-8") as f:
-                json.dump(self._meta, f)
+            meta_content = json.dumps(self._meta, ensure_ascii=False)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(self._meta_path.parent), suffix=".tmp", prefix=".meta_"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(meta_content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(self._meta_path))
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception:
             pass  # Meta persistence is best-effort
 
@@ -466,6 +500,7 @@ class MemoryStore:
                 # All identical -- safe to replace just the first
 
             idx = matches[0][0]
+            old_entry = entries[idx]
             limit = self._char_limit(target)
 
             # Check that replacement doesn't blow the budget
@@ -482,8 +517,15 @@ class MemoryStore:
                     ),
                 }
 
+            old_meta = self._get_meta(target, old_entry)
             entries[idx] = new_content
             self._set_entries(target, entries)
+            if old_meta:
+                old_meta["last_accessed"] = time.time()
+                old_meta["access_count"] = old_meta.get("access_count", 0) + 1
+                self._set_meta(target, new_content, old_meta)
+                old_key = self._entry_key(old_entry)
+                self._meta.get(target, {}).pop(old_key, None)
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry replaced.")
@@ -516,6 +558,9 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
+            old_entry = entries[idx]
+            old_key = self._entry_key(old_entry)
+            self._meta.get(target, {}).pop(old_key, None)
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
@@ -545,7 +590,7 @@ class MemoryStore:
             return {"success": False, "error": "Query cannot be empty."}
 
         query_lower = query.lower().strip()
-        query_words = set(re.findall(r'\w+', query_lower))
+        query_words = _extract_tokens(query_lower)
         query_hash = self._simhash(query_lower)
         results = []
 
@@ -565,6 +610,9 @@ class MemoryStore:
                     })
                     self._touch_meta(target, entry)
 
+        if touched:
+            self._save_meta()
+
         results.sort(key=lambda r: r["score"], reverse=True)
         top = results[:8]
 
@@ -581,7 +629,7 @@ class MemoryStore:
         if not query_words:
             return 0.0
 
-        text_words = set(re.findall(r'\w+', text))
+        text_words = _extract_tokens(text)
         overlap = query_words & text_words
         if not overlap:
             if query_lower in text:
@@ -600,7 +648,10 @@ class MemoryStore:
         Zero-dependency vector-like similarity using hash-based feature extraction.
         """
         v = [0] * hashbits
-        tokens = re.findall(r'\w{2,}', text.lower())
+        compound_pattern = re.compile(r'[a-zA-Z][\w.-]+[\w]')
+        cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,}')
+        tokens = [m.group() for m in compound_pattern.finditer(text.lower())]
+        tokens += [m.group() for m in cjk_pattern.finditer(text)]
         if not tokens:
             return 0
         for token in tokens:

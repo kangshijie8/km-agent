@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -136,6 +137,7 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["container_path"] == "/home/user/.kunming/skills"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin privileges on Windows")
     def test_symlinks_are_sanitized(self, tmp_path):
         """Symlinks in skills dir should be excluded from the mount."""
         KUNMING_home = tmp_path / ".kunming"
@@ -175,6 +177,7 @@ class TestSkillsDirectoryMount:
 
 
 class TestIterSkillsFiles:
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin privileges on Windows")
     def test_returns_files_skipping_symlinks(self, tmp_path):
         KUNMING_home = tmp_path / ".kunming"
         skills_dir = KUNMING_home / "skills"
@@ -287,6 +290,7 @@ class TestPathTraversalSecurity:
 
         assert result is True
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin privileges on Windows")
     def test_symlink_traversal_rejected(self, tmp_path, monkeypatch):
         """A symlink inside KUNMING_HOME pointing outside must be rejected."""
         KUNMING_home = tmp_path / ".kunming"
@@ -441,6 +445,7 @@ class TestIterCacheFiles:
         assert "upload.zip" in names
         assert "report.pdf" in names
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin privileges on Windows")
     def test_skips_symlinks(self, tmp_path, monkeypatch):
         """Symlinks inside cache dirs are skipped."""
         KUNMING_home = tmp_path / ".kunming"
@@ -467,7 +472,7 @@ class TestIterCacheFiles:
 
         entries = iter_cache_files()
         assert len(entries) == 1
-        assert entries[0]["container_path"] == "/root/.kunming/cache/screenshots/session_abc/screen1.png"
+        assert entries[0]["container_path"].replace("\\", "/") == "/root/.kunming/cache/screenshots/session_abc/screen1.png"
 
     def test_empty_cache(self, tmp_path, monkeypatch):
         """No cache dirs → empty list."""

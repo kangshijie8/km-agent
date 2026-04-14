@@ -40,7 +40,7 @@ class HybridMemoryProvider(MemoryProvider):
     """
     
     def __init__(self):
-        self._fts_db_path = get_kunming_home() / "sessions.db"
+        self._fts_db_path = get_kunming_home() / "memories" / "memory.db"
         self._vector_index = None
         self._initialized = False
         self._session_id = ""
@@ -193,19 +193,16 @@ class HybridMemoryProvider(MemoryProvider):
             conn = sqlite3.connect(str(self._fts_db_path))
             cursor = conn.cursor()
             
-            # 检查是否有FTS5表
             cursor.execute("""
                 SELECT name FROM sqlite_master 
-                WHERE type='table' AND name='messages_fts'
+                WHERE type='table' AND name='memory_fts_idx'
             """)
             
             if cursor.fetchone():
-                # 使用FTS5搜索
                 cursor.execute("""
-                    SELECT m.id, m.content, m.role, m.timestamp,
+                    SELECT fts.id, fts.content, fts.memory_type,
                            rank as score
-                    FROM messages_fts fts
-                    JOIN messages m ON fts.rowid = m.id
+                    FROM memory_fts_idx fts
                     WHERE fts MATCH ?
                     ORDER BY rank
                     LIMIT ?
@@ -216,13 +213,12 @@ class HybridMemoryProvider(MemoryProvider):
                         'id': str(row[0]),
                         'content': row[1],
                         'type': row[2],
-                        'score': float(row[4]) if row[4] else 0.0,
+                        'score': float(row[3]) if row[3] else 0.0,
                         'source': 'fts'
                     })
             
             conn.close()
         except Exception as e:
-            # FTS5可能不存在，静默失败
             logger.debug(f"FTS5 search failed: {e}")
         
         return results
@@ -390,6 +386,7 @@ class HybridMemoryProvider(MemoryProvider):
     ) -> None:
         """同步存储到FTS5（用于asyncio.to_thread）"""
         try:
+            self._fts_db_path.parent.mkdir(parents=True, exist_ok=True)
             with sqlite3.connect(str(self._fts_db_path)) as conn:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("""
@@ -420,13 +417,6 @@ class HybridMemoryProvider(MemoryProvider):
             raise
 
 
-# 全局单例
-_hybrid_memory_provider: Optional[HybridMemoryProvider] = None
-
-
 def get_hybrid_memory_provider() -> HybridMemoryProvider:
-    """获取混合内存提供者单例"""
-    global _hybrid_memory_provider
-    if _hybrid_memory_provider is None:
-        _hybrid_memory_provider = HybridMemoryProvider()
-    return _hybrid_memory_provider
+    """创建新的混合内存提供者实例（每次调用重新解析profile路径）"""
+    return HybridMemoryProvider()

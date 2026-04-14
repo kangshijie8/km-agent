@@ -30,6 +30,7 @@ Threshold gating prevents low-quality promotions:
   - max_age_days:      30    (ignore stale signals)
 """
 
+import hashlib
 import json
 import logging
 import math
@@ -467,7 +468,18 @@ def _promote_to_memory(
                 return (0 if has_protected else 1, len(entry))
 
             candidates_for_eviction.sort(key=lambda x: _eviction_score(x[1]))
-            store._entries["experiences"].pop(candidates_for_eviction[0][0])
+
+            evicted_indices = []
+            for idx, _ in candidates_for_eviction:
+                evicted_indices.append(idx)
+                tentative = [e for i, e in enumerate(store._entries["experiences"]) if i not in evicted_indices]
+                freed_chars = len(ENTRY_DELIMITER.join(tentative)) + len(ENTRY_DELIMITER) + len(entry_text)
+                if freed_chars <= store._char_limits.get("experiences", 4000):
+                    break
+
+            for idx in sorted(evicted_indices, reverse=True):
+                store._entries["experiences"].pop(idx)
+            store.save_to_disk("experiences")
 
         result = store.add("experiences", entry_text)
         if result.get("success"):

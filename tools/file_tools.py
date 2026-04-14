@@ -71,6 +71,13 @@ _BLOCKED_DEVICE_PATHS = frozenset({
     "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
 })
 
+if sys.platform == "win32":
+    _BLOCKED_DEVICE_PATHS = _BLOCKED_DEVICE_PATHS.union(frozenset({
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(10)),
+        *(f"LPT{i}" for i in range(10)),
+    }))
+
 
 def _is_blocked_device(filepath: str) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
@@ -82,6 +89,9 @@ def _is_blocked_device(filepath: str) -> bool:
     """
     normalized = os.path.expanduser(filepath)
     if normalized in _BLOCKED_DEVICE_PATHS:
+        return True
+    # Windows raw device access (\\.\PhysicalDrive0, \\.\C:, etc.)
+    if sys.platform == "win32" and normalized.startswith("\\\\.\\"):
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
     import platform

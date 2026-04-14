@@ -614,7 +614,7 @@ def _ask_for_approval(prompt: str, timeout: Optional[int] = None) -> bool:
 
     try:
         if timeout:
-            # Use select for timeout on Unix, input on Windows
+            # Use select for timeout on Unix, threading on Windows
             if os.name == "posix":
                 import select
 
@@ -626,8 +626,20 @@ def _ask_for_approval(prompt: str, timeout: Optional[int] = None) -> bool:
                     print("\nTimeout - operation not approved")
                     return False
             else:
-                # Windows doesn't support select on stdin easily
-                response = input().strip().lower()
+                # Windows: use threading.Timer-based timeout since select doesn't work on stdin
+                result = [None]
+                def _read_input():
+                    try:
+                        result[0] = input().strip().lower()
+                    except EOFError:
+                        result[0] = ""
+                t = threading.Thread(target=_read_input, daemon=True)
+                t.start()
+                t.join(timeout=timeout)
+                if t.is_alive():
+                    print("\nTimeout - operation not approved")
+                    return False
+                response = result[0] or ""
         else:
             response = input().strip().lower()
 
@@ -837,11 +849,17 @@ def safe_execute(
 # Shell command escaping utilities
 def escape_shell_arg(arg: str) -> str:
     """Escape a string for safe use as a shell argument."""
+    if sys.platform == "win32":
+        import subprocess
+        return subprocess.list2cmdline([arg])
     return shlex.quote(arg)
 
 
 def escape_shell_command(command: str) -> str:
     """Escape special characters in a shell command string."""
+    if sys.platform == "win32":
+        import subprocess
+        return subprocess.list2cmdline([command])
     return shlex.quote(command)
 
 

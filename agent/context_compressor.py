@@ -14,6 +14,7 @@ Improvements over v1:
 """
 
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +32,9 @@ SUMMARY_PREFIX = (
     "already completed, and the current session state may still reflect "
     "that work (for example, files may already be changed). Use the summary "
     "and the current state to continue from where things left off, and "
-    "avoid repeating work:"
+    "avoid repeating work. Preserve the state of any in-progress multi-step "
+    "tasks: which steps have been completed, which are pending, and any "
+    "intermediate results that haven't been verified yet:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
@@ -50,7 +53,15 @@ _PRUNE_IMPORTANT_THRESHOLD = 3000
 _IMPORTANT_RESULT_TOOLS = frozenset({"read_file", "search_files", "web_search", "web_extract"})
 
 # Chars per token rough estimate
-_CHARS_PER_TOKEN = 4
+_CHARS_PER_TOKEN_LATIN = 4
+_CHARS_PER_TOKEN_CJK = 1.5
+_CJK_CHAR_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
+
+
+def _estimate_tokens(text: str) -> int:
+    cjk_count = len(_CJK_CHAR_RE.findall(text))
+    latin_count = len(text) - cjk_count
+    return int(latin_count / _CHARS_PER_TOKEN_LATIN + cjk_count / _CHARS_PER_TOKEN_CJK)
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 120
 
 
@@ -186,11 +197,11 @@ class ContextCompressor:
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 content_len = len(msg.get("content") or "")
-                msg_tokens = content_len // _CHARS_PER_TOKEN + 10
+                msg_tokens = _estimate_tokens(msg.get("content") or "") + 10
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
                         args = tc.get("function", {}).get("arguments", "")
-                        msg_tokens += len(args) // _CHARS_PER_TOKEN
+                        msg_tokens += _estimate_tokens(args)
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -596,12 +607,12 @@ Write only the summary body. Do not include any preamble or prefix."""
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
             content = msg.get("content") or ""
-            msg_tokens = len(content) // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
+            msg_tokens = _estimate_tokens(content) + 10  # +10 for role/metadata
             # Include tool call arguments in estimate
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+                    msg_tokens += _estimate_tokens(args)
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break

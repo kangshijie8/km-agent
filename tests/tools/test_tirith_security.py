@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 import time
 from unittest.mock import MagicMock, patch
 
@@ -984,23 +985,20 @@ class TestKunmingHomeIsolation:
         assert os.path.isdir(result)
 
     def test_failure_marker_respects_KUNMING_home(self):
-        """_failure_marker_path must use KUNMING_HOME, not hardcoded ~/.kunming."""
         from tools.tirith_security import _failure_marker_path
         with patch.dict(os.environ, {"KUNMING_HOME": "/custom/kunming"}):
             result = _failure_marker_path()
-        assert result == "/custom/kunming/.tirith-install-failed"
+        assert result.replace("\\", "/") == "/custom/kunming/.tirith-install-failed"
 
     def test_conftest_isolation_prevents_real_home_writes(self):
-        """The conftest autouse fixture sets KUNMING_HOME; verify it's active."""
         KUNMING_home = os.getenv("KUNMING_HOME")
         assert KUNMING_home is not None, "KUNMING_HOME should be set by conftest"
-        assert "KUNMING_test" in KUNMING_home, "Should point to test temp dir"
+        assert "kunming_test" in KUNMING_home.lower(), "Should point to test temp dir"
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Path.home() may fail in test env on Windows")
     def test_get_kunming_home_fallback(self):
-        """Without KUNMING_HOME set, falls back to ~/.kunming."""
         from kunming_constants import get_kunming_home
         with patch.dict(os.environ, {}, clear=True):
-            # Remove KUNMING_HOME entirely
             os.environ.pop("KUNMING_HOME", None)
             result = str(get_kunming_home())
-        assert result == os.path.join(os.path.expanduser("~"), ".kunming")
+        assert result.replace("\\", "/") == os.path.join(os.path.expanduser("~"), ".kunming").replace("\\", "/")

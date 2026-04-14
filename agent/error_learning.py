@@ -17,16 +17,34 @@ import os
 import re
 import tempfile
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from kunming_constants import get_kunming_home
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 logger = logging.getLogger(__name__)
 
+_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
+
+
+def _extract_tokens(text: str) -> set:
+    tokens = set(re.findall(r'[a-zA-Z][\w.-]+[\w]|\d+', text.lower()))
+    cjk_chars = _CJK_RE.findall(text)
+    tokens.update(cjk_chars)
+    for i in range(len(cjk_chars) - 1):
+        tokens.add(cjk_chars[i] + cjk_chars[i + 1])
+    return tokens
+
 _CORRECTION_PATTERNS = [
-    (r"(?:no|don't|stop|wrong|incorrect|that's wrong|not like that|不用|不要|错了|不对)", "explicit_rejection"),
+    (r"(?:no|don't|stop|wrong|incorrect|that's wrong|not like that)", "explicit_rejection"),
+    (r"(?:不用.*(?:应该|要|得)|不要.*(?:应该|要|得)|错了[，,].*|不对[，,].*(?:应该|要|得))", "explicit_rejection_cjk"),
     (r"(?:instead|rather|actually|I meant|应该是|其实是|而是)", "redirect"),
     (r"(?:I said|I told you|as I mentioned|我说过|我之前说过)", "reference_previous"),
     (r"(?:fix|correct|change it to|修改|改正|换成)", "fix_request"),
@@ -40,6 +58,39 @@ _PROMOTION_THRESHOLD = 3
 
 def _error_log_path() -> Path:
     return get_kunming_home() / "memories" / _ERROR_LOG_FILE
+
+
+@contextmanager
+def _error_lock():
+    lock_path = _error_log_path().with_suffix(".json.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = open(lock_path, "w")
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            import msvcrt
+            _deadline = time.monotonic() + 10
+            while time.monotonic() < _deadline:
+                try:
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            else:
+                fd.close()
+                raise TimeoutError("Error log lock acquisition timed out")
+        yield
+    finally:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        else:
+            try:
+                import msvcrt
+                msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        fd.close()
 
 
 def _load_error_log() -> Dict[str, Any]:
@@ -119,46 +170,46 @@ def log_error(
     import hashlib
     key = hashlib.sha256(f"{what_was_wrong}:{what_should_be}".encode()).hexdigest()[:16]
 
-    log = _load_error_log()
-    errors = log.setdefault("errors", {})
+    with _error_lock():
+        log = _load_error_log()
+        errors = log.setdefault("errors", {})
 
-    now_iso = datetime.now(timezone.utc).isoformat()
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    if key in errors:
-        entry = errors[key]
-        entry["occurrence_count"] = entry.get("occurrence_count", 0) + 1
-        entry["last_seen"] = now_iso
-        days = set(entry.get("seen_days", []))
-        days.add(today)
-        entry["seen_days"] = sorted(days)[-16:]
-        if what_should_be and not entry.get("what_should_be"):
-            entry["what_should_be"] = what_should_be
-    else:
-        errors[key] = {
-            "error_type": error_type,
-            "context": context[:300],
-            "what_was_wrong": what_was_wrong[:300],
-            "what_should_be": what_should_be[:300],
-            "task_context": task_context[:200],
-            "occurrence_count": 1,
-            "first_seen": now_iso,
-            "last_seen": now_iso,
-            "seen_days": [today],
-            "promoted": False,
-        }
+        if key in errors:
+            entry = errors[key]
+            entry["occurrence_count"] = entry.get("occurrence_count", 0) + 1
+            entry["last_seen"] = now_iso
+            days = set(entry.get("seen_days", []))
+            days.add(today)
+            entry["seen_days"] = sorted(days)[-16:]
+            if what_should_be and not entry.get("what_should_be"):
+                entry["what_should_be"] = what_should_be
+        else:
+            errors[key] = {
+                "error_type": error_type,
+                "context": context[:300],
+                "what_was_wrong": what_was_wrong[:300],
+                "what_should_be": what_should_be[:300],
+                "task_context": task_context[:200],
+                "occurrence_count": 1,
+                "first_seen": now_iso,
+                "last_seen": now_iso,
+                "seen_days": [today],
+                "promoted": False,
+            }
 
-    if len(errors) > _MAX_ERROR_ENTRIES:
-        sorted_errors = sorted(errors.items(), key=lambda x: x[1].get("last_seen", ""), reverse=True)
-        errors = dict(sorted_errors[:_MAX_ERROR_ENTRIES])
-        log["errors"] = errors
+        if len(errors) > _MAX_ERROR_ENTRIES:
+            sorted_errors = sorted(errors.items(), key=lambda x: x[1].get("last_seen", ""), reverse=True)
+            errors = dict(sorted_errors[:_MAX_ERROR_ENTRIES])
+            log["errors"] = errors
 
-    log["updated_at"] = now_iso
-    _save_error_log(log)
+        if errors[key]["occurrence_count"] >= _PROMOTION_THRESHOLD and not errors[key].get("promoted"):
+            _promote_error_to_models(errors[key])
+            errors[key]["promoted"] = True
 
-    if errors[key]["occurrence_count"] >= _PROMOTION_THRESHOLD and not errors[key].get("promoted"):
-        _promote_error_to_models(errors[key])
-        errors[key]["promoted"] = True
+        log["updated_at"] = now_iso
         _save_error_log(log)
 
     return {
@@ -199,14 +250,14 @@ def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]
         return []
 
     query_lower = query.lower()
-    query_words = set(re.findall(r'\w+', query_lower))
+    query_words = _extract_tokens(query_lower)
 
     scored = []
     for key, entry in errors.items():
         if entry.get("promoted"):
             continue
         entry_text = f"{entry.get('context', '')} {entry.get('what_was_wrong', '')} {entry.get('task_context', '')}".lower()
-        entry_words = set(re.findall(r'\w+', entry_text))
+        entry_words = _extract_tokens(entry_text)
         overlap = query_words & entry_words
         if not overlap and query_lower not in entry_text:
             continue

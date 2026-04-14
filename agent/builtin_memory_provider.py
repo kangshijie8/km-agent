@@ -45,6 +45,7 @@ class BuiltinMemoryProvider(MemoryProvider):
         self._store = memory_store
         self._memory_enabled = memory_enabled
         self._user_profile_enabled = user_profile_enabled
+        self._loaded = False
 
     @property
     def name(self) -> str:
@@ -56,6 +57,9 @@ class BuiltinMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Load memory from disk if not already loaded."""
+        if self._loaded:
+            return
+        self._loaded = True
         if self._store is not None:
             self._store.load_from_disk()
 

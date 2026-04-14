@@ -1494,15 +1494,14 @@ async def web_extract_tool(
         ]
         trimmed_response = {"results": trimmed_results}
 
-        if trimmed_response.get("results") == []:
+        results = trimmed_response.get("results", [])
+        has_content = any(r.get("content") for r in results if isinstance(r, dict))
+        if not results or not has_content:
             result_json = tool_error("Content was inaccessible or not found")
-
-            cleaned_result = clean_base64_images(result_json)
-        
         else:
             result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
-            
-            cleaned_result = clean_base64_images(result_json)
+
+        cleaned_result = clean_base64_images(result_json)
         
         debug_call_data["final_response_size"] = len(cleaned_result)
         debug_call_data["processing_applied"].append("base64_image_removal")
