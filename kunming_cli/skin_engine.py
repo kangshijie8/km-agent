@@ -27,9 +27,20 @@ DEFAULT_SKIN = {
         "response_border": "#D4A574",
     },
     "spinner": {
-        "waiting_faces": ["(o_o)", "(O_o)", "(o_O)", "(-_-)", "(o.o)"],
-        "thinking_faces": ["(o_o)", "(O_o)", "(o_O)", "(-_-)", "(o.o)"],
-        "thinking_verbs": ["thinking", "processing", "analyzing"],
+        "waiting_faces": [
+            "(｡◕‿◕｡)", "(◕‿◕)", "٩(◕‿◕)۶", "(✿◕‿◕)", "(◕ᴗ◕✿)",
+            "(*◕‿◕*)", "(◕‿◕✿)", "(◠‿◠)", "(◡‿◡)", "(✧ω✧)",
+        ],
+        "thinking_faces": [
+            "(｡•́︿•̀｡)", "(◔_◔)", "(¬‿¬)", "( ͡° ͜ʖ ͡°)", "ಠ_ಠ",
+            "(˘_˘)", "(⊙_⊙)", "(◉_◉)", "(◑_◑)", "(•̀ᴗ•́)و",
+            "(ᵔᴥᵔ)", "(◕‿◕)", "(◠‿◠)", "(◕ᴗ◕✿)", "(✧ω✧)",
+        ],
+        "thinking_verbs": [
+            "pondering", "contemplating", "musing", "cogitating", "deliberating",
+            "ruminating", "reflecting", "reasoning", "deducing", "inferring",
+            "analyzing", "synthesizing", "computing", "processing", "thinking",
+        ],
     },
     "branding": {
         "agent_name": "km agent",
@@ -86,6 +97,116 @@ _active_skin_name: str = "default"
 
 _BUILTIN_SKINS: Dict[str, dict] = {
     "default": DEFAULT_SKIN,
+    "ares": {
+        "name": "ares",
+        "description": "Crimson/bronze war-god theme with custom spinner wings",
+        "colors": {
+            "banner_border": "#8B4513",
+            "banner_title": "#DC143C",
+            "banner_accent": "#CD853F",
+            "banner_dim": "#696969",
+            "banner_text": "#F5DEB3",
+            "response_border": "#8B4513",
+        },
+        "spinner": {
+            "waiting_faces": ["⚔(o_o)", "🛡(O_o)", "⚔(o_O)", "🛡(-_-)", "⚔(o.o)"],
+            "thinking_faces": ["⚔(｡•́︿•̀｡)", "🛡(◔_◔)", "⚔(¬‿¬)", "🛡ಠ_ಠ", "⚔(⊙_⊙)"],
+            "thinking_verbs": ["conquering", "striking", "vanquishing", "campaigning", "marching"],
+            "wings": [["⟨⚔", "⚔⟩"], ["⟨🛡", "🛡⟩"]],
+        },
+        "branding": {
+            "agent_name": "Ares",
+            "welcome": "Ares is ready for battle",
+            "goodbye": "Ares retreats",
+            "response_label": " ⚔ Ares ",
+            "prompt_symbol": "⚔",
+            "help_header": "Ares Commands",
+        },
+        "tool_prefix": "⚔",
+        "tool_emojis": {},
+    },
+    "mono": {
+        "name": "mono",
+        "description": "Clean grayscale monochrome theme",
+        "colors": {
+            "banner_border": "#666666",
+            "banner_title": "#CCCCCC",
+            "banner_accent": "#999999",
+            "banner_dim": "#555555",
+            "banner_text": "#AAAAAA",
+            "response_border": "#666666",
+        },
+        "spinner": {
+            "waiting_faces": ["[o_o]", "[O_o]", "[o_O]", "[-_-]", "[o.o]"],
+            "thinking_faces": ["[>_<]", "[o_o]", "[O_O]", "[-_-]", "[._.]"],
+            "thinking_verbs": ["processing", "computing", "calculating", "evaluating", "running"],
+        },
+        "branding": {
+            "agent_name": "km",
+            "welcome": "ready",
+            "goodbye": "done",
+            "response_label": " km ",
+            "prompt_symbol": ">",
+            "help_header": "commands",
+        },
+        "tool_prefix": "|",
+        "tool_emojis": {},
+    },
+    "slate": {
+        "name": "slate",
+        "description": "Cool blue developer-focused theme",
+        "colors": {
+            "banner_border": "#4A6FA5",
+            "banner_title": "#7EB8DA",
+            "banner_accent": "#6B8FB5",
+            "banner_dim": "#4A5568",
+            "banner_text": "#B0C4DE",
+            "response_border": "#4A6FA5",
+        },
+        "spinner": {
+            "waiting_faces": ["(o_o)", "(O_o)", "(o_O)", "(-_-)", "(o.o)"],
+            "thinking_faces": ["(⊙_⊙)", "(◉_◉)", "(◑_◑)", "(˘_˘)", "(•̀ᴗ•́)و"],
+            "thinking_verbs": ["compiling", "debugging", "refactoring", "building", "deploying"],
+        },
+        "branding": {
+            "agent_name": "slate",
+            "welcome": "slate dev environment ready",
+            "goodbye": "slate shutting down",
+            "response_label": " slate ",
+            "prompt_symbol": "»",
+            "help_header": "slate commands",
+        },
+        "tool_prefix": "→",
+        "tool_emojis": {},
+    },
+    "cyberpunk": {
+        "name": "cyberpunk",
+        "description": "Neon-soaked futuristic terminal theme",
+        "colors": {
+            "banner_border": "#FF00FF",
+            "banner_title": "#00FFFF",
+            "banner_accent": "#FF1493",
+            "banner_dim": "#6A0DAD",
+            "banner_text": "#E0FFFF",
+            "response_border": "#FF00FF",
+        },
+        "spinner": {
+            "waiting_faces": ["(◕‿◕)⌐■-■", "(✧ω✧)⌐■-■", "(◕ᴗ◕)⌐■-■", "⌐■-■(o_o)", "(◡‿◡)⌐■-■"],
+            "thinking_faces": ["(⊙_⊙)⚡", "(◉_◉)⚡", "(◑_◑)⚡", "⚡(˘_˘)", "⚡(•̀ᴗ•́)و"],
+            "thinking_verbs": ["jacking in", "decrypting", "uploading", "hacking", "scanning"],
+            "wings": [["⟨⚡", "⚡⟩"], ["⟨◈", "◈⟩"]],
+        },
+        "branding": {
+            "agent_name": "Cyber Agent",
+            "welcome": "Jack in. The net awaits.",
+            "goodbye": "Connection terminated",
+            "response_label": " ◈ Cyber ",
+            "prompt_symbol": "⚡",
+            "help_header": "◈ Cyber Commands",
+        },
+        "tool_prefix": "◈",
+        "tool_emojis": {},
+    },
 }
 
 _skins_dir: Optional[Path] = None
@@ -129,7 +250,11 @@ def load_skin(name: str) -> SkinConfig:
         _active_skin = _load_skin_from_dict(DEFAULT_SKIN)
         return _active_skin
 
-    # Try to load from user skins directory
+    if name in _BUILTIN_SKINS:
+        merged = _deep_merge(DEFAULT_SKIN, _BUILTIN_SKINS[name])
+        _active_skin = _load_skin_from_dict(merged)
+        return _active_skin
+
     from kunming_cli.config import get_kunming_home
     skin_path = get_kunming_home() / "skins" / f"{name}.yaml"
 
@@ -138,14 +263,12 @@ def load_skin(name: str) -> SkinConfig:
             with open(skin_path, 'r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
             if data:
-                # Merge with default for missing values
                 merged = _deep_merge(DEFAULT_SKIN, data)
                 _active_skin = _load_skin_from_dict(merged)
                 return _active_skin
         except Exception as e:
             logger.warning(f"Failed to load skin {name}: {e}")
 
-    # Fall back to default
     _active_skin = _load_skin_from_dict(DEFAULT_SKIN)
     return _active_skin
 
@@ -172,20 +295,22 @@ def set_active_skin(name: str) -> None:
 
 def init_skin_from_config(config: dict) -> None:
     """Initialize skin from config dictionary."""
+    global _active_skin_name
     skin_name = config.get("display", {}).get("skin", "default")
+    _active_skin_name = skin_name
     load_skin(skin_name)
 
 
 def list_available_skins() -> List[str]:
     """List all available skin names."""
-    skins = ["default"]
+    skins = list(_BUILTIN_SKINS.keys())
 
     try:
         from kunming_cli.config import get_kunming_home
         skins_dir = get_kunming_home() / "skins"
         if skins_dir.exists():
             for f in skins_dir.iterdir():
-                if f.suffix == ".yaml":
+                if f.suffix == ".yaml" and f.stem not in _BUILTIN_SKINS:
                     skins.append(f.stem)
     except Exception:
         pass
@@ -197,8 +322,8 @@ def list_skins() -> List[dict]:
     """List all available skins with metadata."""
     result = []
     for name in list_available_skins():
-        if name == "default":
-            result.append({"name": "default", "source": "builtin"})
+        if name in _BUILTIN_SKINS:
+            result.append({"name": name, "source": "builtin", "description": _BUILTIN_SKINS[name].get("description", "")})
         else:
             result.append({"name": name, "source": "user"})
     return result

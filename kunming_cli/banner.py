@@ -500,10 +500,10 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     skills_by_category = get_available_skills()
     total_skills = sum(len(s) for s in skills_by_category.values())
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
-    summary_parts = [f"{len(tools)} 个工具", f"{total_skills} 个技能"]
+    summary_parts = [f"🔧 {len(tools)} 个工具", f"🎯 {total_skills} 个技能"]
     if mcp_connected:
-        summary_parts.append(f"{mcp_connected} 个MCP服务器")
-    summary_parts.append("/help 查看命令")
+        summary_parts.append(f"🔗 {mcp_connected} 个MCP服务器")
+    summary_parts.append("💡 /help 查看命令")
     # Show active profile name when not 'default'
     try:
         from kunming_cli.profiles import get_active_profile_name
@@ -513,7 +513,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     except Exception:
         pass  # Never break the banner over a profiles.py bug
 
-    right_lines.append(f"[dim {dim}]{' | '.join(summary_parts)}[/]")
+    right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
     # Update check -use prefetched result if available
     try:

@@ -7036,7 +7036,8 @@ class KunmingCLI:
         except Exception:
             _welcome_text = "km agent ready"
             _welcome_color = "#FFF8DC"
-        self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
+        self.console.print(f"[{_welcome_color}]✨ {_welcome_text}[/]")
+        self.console.print(f"[dim]💡 /help 查看命令，或直接开始对话[/]")
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)
             self.console.print(
