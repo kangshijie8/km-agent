@@ -23,7 +23,7 @@ import os
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 # Truncation limits to prevent parent context overflow
 _MAX_SUMMARY_CHARS = 10000
@@ -40,7 +40,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
     "session_search",  # no access to parent session history
 ])
 
-MAX_CONCURRENT_CHILDREN = 3
+MAX_CONCURRENT_CHILDREN = 5
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
@@ -121,7 +121,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
-def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
+def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[Callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:

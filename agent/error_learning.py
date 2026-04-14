@@ -11,6 +11,7 @@ Three components:
   3. Experience retrieval: fetch relevant past errors when starting tasks
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from kunming_constants import get_kunming_home
+from utils import _extract_tokens
 
 try:
     import fcntl
@@ -30,17 +32,6 @@ except ImportError:
     fcntl = None
 
 logger = logging.getLogger(__name__)
-
-_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
-
-
-def _extract_tokens(text: str) -> set:
-    tokens = set(re.findall(r'[a-zA-Z][\w.-]+[\w]|\d+', text.lower()))
-    cjk_chars = _CJK_RE.findall(text)
-    tokens.update(cjk_chars)
-    for i in range(len(cjk_chars) - 1):
-        tokens.add(cjk_chars[i] + cjk_chars[i + 1])
-    return tokens
 
 _CORRECTION_PATTERNS = [
     (r"(?:no|don't|stop|wrong|incorrect|that's wrong|not like that)", "explicit_rejection"),
@@ -236,11 +227,38 @@ def _promote_error_to_models(error_entry: Dict[str, Any]) -> None:
     logger.info("Promoted recurring error to models: %s", rule[:80])
 
 
-def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]:
-    """Retrieve errors relevant to the current task context.
+def _simhash(text: str, hashbits: int = 64) -> int:
+    v = [0] * hashbits
+    compound_pattern = re.compile(r'[a-zA-Z][\w.-]+[\w]')
+    cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,}')
+    tokens = [m.group() for m in compound_pattern.finditer(text.lower())]
+    tokens += [m.group() for m in cjk_pattern.finditer(text)]
+    if not tokens:
+        return 0
+    for token in tokens:
+        h = int(hashlib.md5(token.encode()).hexdigest(), 16)
+        for i in range(hashbits):
+            if h & (1 << i):
+                v[i] += 1
+            else:
+                v[i] -= 1
+    fingerprint = 0
+    for i in range(hashbits):
+        if v[i] > 0:
+            fingerprint |= (1 << i)
+    return fingerprint
 
-    Uses keyword matching to find past errors that might be relevant.
-    """
+
+def _simhash_similarity(hash1: int, hash2: int, hashbits: int = 64) -> float:
+    if hash1 == 0 and hash2 == 0:
+        return 0.0
+    xor = hash1 ^ hash2
+    diff_bits = bin(xor).count('1')
+    return 1.0 - (diff_bits / hashbits)
+
+
+def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]:
+    """Uses hybrid scoring: keyword matching (60%) + SimHash semantic similarity (40%)."""
     if not query.strip():
         return []
 
@@ -251,6 +269,7 @@ def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]
 
     query_lower = query.lower()
     query_words = _extract_tokens(query_lower)
+    query_hash = _simhash(query_lower)
 
     scored = []
     for key, entry in errors.items():
@@ -259,14 +278,19 @@ def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]
         entry_text = f"{entry.get('context', '')} {entry.get('what_was_wrong', '')} {entry.get('task_context', '')}".lower()
         entry_words = _extract_tokens(entry_text)
         overlap = query_words & entry_words
-        if not overlap and query_lower not in entry_text:
-            continue
-        score = len(overlap) / max(len(query_words), 1) if query_words else 0
+
+        keyword_score = 0.0
+        if overlap:
+            keyword_score = len(overlap) / max(len(query_words), 1)
         if query_lower in entry_text:
-            score += 0.3
-        score += min(0.3, entry.get("occurrence_count", 1) * 0.1)
-        if score > 0.1:
-            scored.append((score, entry))
+            keyword_score += 0.3
+
+        sem_score = _simhash_similarity(query_hash, _simhash(entry_text))
+
+        combined = 0.6 * keyword_score + 0.4 * sem_score
+        combined += min(0.3, entry.get("occurrence_count", 1) * 0.1)
+        if combined > 0.08:
+            scored.append((combined, entry))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [entry for _, entry in scored[:limit]]

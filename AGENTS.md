@@ -261,7 +261,7 @@ Single `memory` tool with four actions:
 - **add**: Create a new entry in the specified layer
 - **replace**: Update an existing entry (identified by `old_text` substring match)
 - **remove**: Delete an entry (identified by `old_text` substring match)
-- **recall**: Hybrid search across all layers (FTS5 keyword + simhash vector)
+- **recall**: Hybrid search across all layers (FTS keyword + simhash vector)
 
 ```python
 # Tool call examples:
@@ -276,9 +276,11 @@ memory(action="recall", target="facts", query="deploy environment")
 The `recall` action uses a built-in hybrid scoring system — no external vector DB
 or embedding API needed:
 
-- **FTS5 keyword matching** (35% weight): word overlap, coverage, exact substring bonus
+- **FTS keyword matching** (35% weight): word overlap, coverage, exact substring bonus.
+  Pure Python implementation (not SQLite FTS5), with CJK tokenization support.
 - **SimHash vector similarity** (65% weight): hash-based fingerprint comparison using
-  `hashlib.md5` — similar texts produce similar fingerprints
+  `hashlib.md5` — similar texts produce similar fingerprints. 64-bit signatures with
+  Hamming distance for O(1) similarity lookup.
 
 Scoring: `hybrid = 0.35 * fts_score + 0.65 * vector_score`. Returns top-8 results
 across all layers, ranked by relevance.

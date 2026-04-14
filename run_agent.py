@@ -37,7 +37,7 @@ import time
 import threading
 from types import SimpleNamespace
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -481,53 +481,53 @@ class AIAgent:
 
     def __init__(
         self,
-        base_url: str = None,
-        api_key: str = None,
-        provider: str = None,
-        api_mode: str = None,
-        acp_command: str = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        provider: Optional[str] = None,
+        api_mode: Optional[str] = None,
+        acp_command: Optional[str] = None,
         acp_args: list[str] | None = None,
-        command: str = None,
+        command: Optional[str] = None,
         args: list[str] | None = None,
         model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
-        enabled_toolsets: List[str] = None,
-        disabled_toolsets: List[str] = None,
+        enabled_toolsets: Optional[List[str]] = None,
+        disabled_toolsets: Optional[List[str]] = None,
         save_trajectories: bool = False,
         verbose_logging: bool = False,
         quiet_mode: bool = False,
-        ephemeral_system_prompt: str = None,
+        ephemeral_system_prompt: Optional[str] = None,
         log_prefix_chars: int = 100,
         log_prefix: str = "",
-        providers_allowed: List[str] = None,
-        providers_ignored: List[str] = None,
-        providers_order: List[str] = None,
-        provider_sort: str = None,
+        providers_allowed: Optional[List[str]] = None,
+        providers_ignored: Optional[List[str]] = None,
+        providers_order: Optional[List[str]] = None,
+        provider_sort: Optional[str] = None,
         provider_require_parameters: bool = False,
-        provider_data_collection: str = None,
-        session_id: str = None,
-        tool_progress_callback: callable = None,
-        tool_start_callback: callable = None,
-        tool_complete_callback: callable = None,
-        thinking_callback: callable = None,
-        reasoning_callback: callable = None,
-        clarify_callback: callable = None,
-        step_callback: callable = None,
-        stream_delta_callback: callable = None,
-        tool_gen_callback: callable = None,
-        status_callback: callable = None,
-        max_tokens: int = None,
-        reasoning_config: Dict[str, Any] = None,
-        prefill_messages: List[Dict[str, Any]] = None,
-        platform: str = None,
-        user_id: str = None,
+        provider_data_collection: Optional[str] = None,
+        session_id: Optional[str] = None,
+        tool_progress_callback: Optional[Callable] = None,
+        tool_start_callback: Optional[Callable] = None,
+        tool_complete_callback: Optional[Callable] = None,
+        thinking_callback: Optional[Callable] = None,
+        reasoning_callback: Optional[Callable] = None,
+        clarify_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+        stream_delta_callback: Optional[Callable] = None,
+        tool_gen_callback: Optional[Callable] = None,
+        status_callback: Optional[Callable] = None,
+        max_tokens: Optional[int] = None,
+        reasoning_config: Optional[Dict[str, Any]] = None,
+        prefill_messages: Optional[List[Dict[str, Any]]] = None,
+        platform: Optional[str] = None,
+        user_id: Optional[str] = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
         session_db=None,
-        parent_session_id: str = None,
-        iteration_budget: "IterationBudget" = None,
-        fallback_model: Dict[str, Any] = None,
+        parent_session_id: Optional[str] = None,
+        iteration_budget: Optional["IterationBudget"] = None,
+        fallback_model: Optional[Dict[str, Any]] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
@@ -1054,7 +1054,7 @@ class AIAgent:
                     )
                     self._memory_store.load_from_disk()
             except Exception:
-                pass  # Memory is optional -- don't break agent init
+                logger.warning("Memory initialization failed; running without memory", exc_info=True)
         
 
 
@@ -1083,12 +1083,12 @@ class AIAgent:
                                 _cfg.setdefault("memory", {})["provider"] = "honcho"
                                 _sc(_cfg)
                             except Exception:
-                                pass
+                                logger.debug("Honcho config persist failed", exc_info=True)
                             if not self.quiet_mode:
                                 print("  ?Auto-migrated Honcho to memory provider plugin.")
                                 print("    Your config and data are preserved.\n")
                     except Exception:
-                        pass
+                        logger.debug("Honcho auto-migration skipped", exc_info=True)
 
                 if _mem_provider_name:
                     from agent.memory_manager import MemoryManager as _MemoryManager
@@ -1115,7 +1115,7 @@ class AIAgent:
                             _init_kwargs["agent_identity"] = _profile
                             _init_kwargs["agent_workspace"] = "kunming"
                         except Exception:
-                            pass
+                            logger.debug("Profile identity resolution skipped", exc_info=True)
                         self._memory_manager.initialize_all(**_init_kwargs)
                         logger.info("Memory provider '%s' activated", _mem_provider_name)
                     else:
@@ -1140,7 +1140,7 @@ class AIAgent:
             skills_config = _agent_cfg.get("skills", {})
             self._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
         except Exception:
-            pass
+            logger.debug("Skills config parsing skipped", exc_info=True)
 
         # Tool-use enforcement config: "auto" (default ?matches hardcoded
         # model list), true (always), false (never), or list of substrings.
@@ -1544,7 +1544,7 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
-    def _is_direct_openai_url(self, base_url: str = None) -> bool:
+    def _is_direct_openai_url(self, base_url: Optional[str] = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
         url = (base_url or self._base_url_lower).lower()
         return "api.openai.com" in url and "openrouter" not in url
@@ -2854,7 +2854,7 @@ class AIAgent:
                         _error_lines.append(f"    INSTEAD: {_err.get('what_should_be', '')[:100]}")
                 prompt_parts.append("\n".join(_error_lines))
         except Exception:
-            pass
+            logger.debug("Error learning injection skipped", exc_info=True)
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:
@@ -2863,7 +2863,7 @@ class AIAgent:
                 if _ext_mem_block:
                     prompt_parts.append(_ext_mem_block)
             except Exception:
-                pass
+                logger.debug("External memory provider skipped", exc_info=True)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
@@ -4315,7 +4315,7 @@ class AIAgent:
         if status_code == 402:
             next_entry = pool.mark_exhausted_and_rotate(status_code=402, error_context=error_context)
             if next_entry is not None:
-                logger.info(f"Credential 402 (billing) ?rotated to pool entry {getattr(next_entry, 'id', '?')}")
+                logger.info("Credential 402 (billing) — rotated to pool entry %s", getattr(next_entry, 'id', '?'))
                 self._swap_credential(next_entry)
                 return True, False
             return False, has_retried_429
@@ -7109,6 +7109,13 @@ class AIAgent:
         """
         Run a complete conversation with tool calling until completion.
 
+        Architecture note: This is a synchronous function (not async def).
+        The Gateway wraps it with loop.run_in_executor() for non-blocking behavior.
+        Subagents run on ThreadPoolExecutor for parallel execution.
+        A full async migration of this ~2300-line method is planned but not
+        yet implemented — it requires changing the OpenAI client to an async
+        variant and updating every caller site.
+
         Args:
             user_message (str): The user's message/question
             system_message (str): Custom system message (optional, overrides ephemeral_system_prompt if provided)
@@ -9611,13 +9618,13 @@ class AIAgent:
 
 
 def main(
-    query: str = None,
+    query: Optional[str] = None,
     model: str = "",
-    api_key: str = None,
+    api_key: Optional[str] = None,
     base_url: str = "",
     max_turns: int = 10,
-    enabled_toolsets: str = None,
-    disabled_toolsets: str = None,
+    enabled_toolsets: Optional[str] = None,
+    disabled_toolsets: Optional[str] = None,
     list_tools: bool = False,
     save_trajectories: bool = False,
     save_sample: bool = False,

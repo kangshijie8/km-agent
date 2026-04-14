@@ -24,9 +24,9 @@ Scoring formula (6 dimensions, based on forgetting curve + spaced repetition):
   - conceptual:   number of distinct concept tags extracted from the snippet
 
 Threshold gating prevents low-quality promotions:
-  - min_score:         0.75  (composite score floor)
-  - min_signal_count:  3     (must appear at least N times)
-  - min_unique_days:   2     (must span at least N distinct days)
+  - min_score:         0.65  (composite score floor, overridable via config)
+  - min_signal_count:  2     (must appear at least N times)
+  - min_unique_days:   1     (must span at least N distinct days)
   - max_age_days:      30    (ignore stale signals)
 """
 
@@ -289,9 +289,9 @@ def _score_candidates(
     """
     now = datetime.now(timezone.utc)
     half_life = config.get("recency_half_life_days", 14)
-    min_score = config.get("min_score", 0.75)
-    min_signals = config.get("min_signal_count", 3)
-    min_days = config.get("min_unique_days", 2)
+    min_score = config.get("min_score", DEFAULT_CONFIG.get("min_score", 0.65))
+    min_signals = config.get("min_signal_count", DEFAULT_CONFIG.get("min_signal_count", 2))
+    min_days = config.get("min_unique_days", DEFAULT_CONFIG.get("min_unique_days", 1))
     max_age = config.get("max_age_days", 30)
 
     candidates = []
