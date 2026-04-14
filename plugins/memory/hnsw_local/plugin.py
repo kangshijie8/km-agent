@@ -110,7 +110,7 @@ class HnswMemoryPlugin:
 
         # Generate key if not provided
         if key is None:
-            key = f"entry_{hash(content) & 0xFFFFFFFF}"
+            key = f"entry_{hashlib.sha256(content.encode()).hexdigest()[:16]}"
 
         # Create input
         input_data = MemoryEntryInput(

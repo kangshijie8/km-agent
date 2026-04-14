@@ -95,7 +95,7 @@ class TestMemoryInjection:
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: memory_dir)}),
+            patch("tools.memory_tool.get_memory_dir", return_value=memory_dir),
         ):
             runner._flush_memories_for_session("session_123")
 
@@ -119,7 +119,7 @@ class TestMemoryInjection:
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: empty_dir)}),
+            patch("tools.memory_tool.get_memory_dir", return_value=empty_dir),
         ):
             runner._flush_memories_for_session("session_456")
 
@@ -140,7 +140,7 @@ class TestMemoryInjection:
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: memory_dir)}),
+            patch("tools.memory_tool.get_memory_dir", return_value=memory_dir),
         ):
             runner._flush_memories_for_session("session_789")
 
@@ -171,7 +171,7 @@ class TestFlushAgentSilenced:
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: tmp_path)}),
+            patch("tools.memory_tool.get_memory_dir", return_value=tmp_path),
         ):
             runner._flush_memories_for_session("session_silent")
 
@@ -213,7 +213,7 @@ class TestFlushPromptStructure:
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: Path("/nonexistent"))}),
+            patch("tools.memory_tool.get_memory_dir", return_value=Path("/nonexistent")),
         ):
             runner._flush_memories_for_session("session_struct")
 

@@ -462,34 +462,34 @@ class TestSystemUnitKunmingHome:
 
 
 class TestKunmingHomeForTargetUser:
-    """Unit tests for _KUNMING_home_for_target_user()."""
+    """Unit tests for _kunming_home_for_target_user()."""
 
     def test_remaps_default_home(self, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
         monkeypatch.delenv("KUNMING_HOME", raising=False)
 
-        result = gateway_cli._KUNMING_home_for_target_user("/home/alice")
+        result = gateway_cli._kunming_home_for_target_user("/home/alice")
         assert result == "/home/alice/.kunming"
 
     def test_remaps_profile_path(self, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
         monkeypatch.setenv("KUNMING_HOME", "/root/.kunming/profiles/coder")
 
-        result = gateway_cli._KUNMING_home_for_target_user("/home/alice")
+        result = gateway_cli._kunming_home_for_target_user("/home/alice")
         assert result == "/home/alice/.kunming/profiles/coder"
 
     def test_keeps_custom_path(self, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
         monkeypatch.setenv("KUNMING_HOME", "/opt/kunming")
 
-        result = gateway_cli._KUNMING_home_for_target_user("/home/alice")
+        result = gateway_cli._kunming_home_for_target_user("/home/alice")
         assert result == "/opt/kunming"
 
     def test_noop_when_same_user(self, monkeypatch):
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/home/alice")))
         monkeypatch.delenv("KUNMING_HOME", raising=False)
 
-        result = gateway_cli._KUNMING_home_for_target_user("/home/alice")
+        result = gateway_cli._kunming_home_for_target_user("/home/alice")
         assert result == "/home/alice/.kunming"
 
 

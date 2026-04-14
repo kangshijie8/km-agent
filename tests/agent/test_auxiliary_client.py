@@ -582,8 +582,11 @@ class TestGetTextAuxiliaryClient:
         call_kwargs = mock_openai.call_args
         assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
 
-    def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
+    def test_codex_fallback_when_nothing_else(self, codex_auth_dir, monkeypatch):
+        monkeypatch.delenv("KUNMING_CUSTOM_RUNTIME_BASE_URL", raising=False)
+        monkeypatch.delenv("KUNMING_CUSTOM_RUNTIME_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
         assert model == "gpt-5.2-codex"
@@ -621,9 +624,12 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("KUNMING_CUSTOM_RUNTIME_BASE_URL", raising=False)
+        monkeypatch.delenv("KUNMING_CUSTOM_RUNTIME_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
         assert client is None
         assert model is None
@@ -1003,7 +1009,10 @@ class TestResolveForcedProvider:
         assert model == "my-local-model"
 
     def test_forced_main_falls_to_codex(self, codex_auth_dir, monkeypatch):
+        monkeypatch.delenv("KUNMING_CUSTOM_RUNTIME_BASE_URL", raising=False)
+        monkeypatch.delenv("KUNMING_CUSTOM_RUNTIME_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
              patch("agent.auxiliary_client.OpenAI"):
             client, model = _resolve_forced_provider("main")
         from agent.auxiliary_client import CodexAuxiliaryClient

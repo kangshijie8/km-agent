@@ -21,8 +21,13 @@ import logging
 logger = logging.getLogger(__name__)
 import os
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
+
+# Truncation limits to prevent parent context overflow
+_MAX_SUMMARY_CHARS = 10000
+_MAX_TOOL_TRACE_ENTRIES = 50
 
 
 # Tools that children must never have access to
@@ -32,12 +37,15 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
     "memory",          # no writes to shared MEMORY.md
     "send_message",    # no cross-platform side effects
     "execute_code",    # children should reason step-by-step, not write scripts
+    "session_search",  # no access to parent session history
 ])
 
 MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+_delegate_tool_names_lock = threading.Lock()
 
 
 def check_delegate_requirements() -> bool:
@@ -201,6 +209,7 @@ def _build_child_agent(
     model: Optional[str],
     max_iterations: int,
     parent_agent,
+    child_count: int = 1,
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -219,7 +228,7 @@ def _build_child_agent(
     routing subagents to a different provider:model pair (e.g. cheap/fast
     model on OpenRouter while the parent runs on Nous Portal).
     """
-    from run_agent import AIAgent
+    from run_agent import AIAgent, IterationBudget
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -312,9 +321,15 @@ def _build_child_agent(
         providers_order=parent_agent.providers_order,
         provider_sort=parent_agent.provider_sort,
         tool_progress_callback=child_progress_cb,
-        iteration_budget=None,  # fresh budget per subagent
+        iteration_budget=None,  # set below
     )
     child._print_fn = getattr(parent_agent, '_print_fn', None)
+    parent_remaining = getattr(parent_agent, 'iteration_budget', None)
+    if parent_remaining and isinstance(getattr(parent_remaining, 'remaining', 0), int) and parent_remaining.remaining > 0:
+        child_budget = min(50, max(10, parent_remaining.remaining // max(child_count, 1)))
+    else:
+        child_budget = 50
+    child.iteration_budget = IterationBudget(child_budget)
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
@@ -354,8 +369,9 @@ def _run_single_child(
     # Restore parent tool names using the value saved before child construction
     # mutated the global. This is the correct parent toolset, not the child's.
     import model_tools
-    _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
-                                list(model_tools._get_resolved_tool_names()))
+    with _delegate_tool_names_lock:
+        _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
+                                    list(model_tools._get_resolved_tool_names()))
 
     child_pool = getattr(child, '_credential_pool', None)
     leased_cred_id = None
@@ -464,9 +480,20 @@ def _run_single_child(
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
+        # Truncate to prevent parent context overflow
+        _summary = entry.get("summary") or ""
+        if len(_summary) > _MAX_SUMMARY_CHARS:
+            entry["summary"] = _summary[:_MAX_SUMMARY_CHARS] + "\n...[truncated]"
+        if len(entry.get("tool_trace") or []) > _MAX_TOOL_TRACE_ENTRIES:
+            original_len = len(entry["tool_trace"])
+            entry["tool_trace"] = entry["tool_trace"][:_MAX_TOOL_TRACE_ENTRIES]
+            entry["tool_trace"].append({"tool": "...", "args_bytes": 0, "note": f"truncated, {_MAX_TOOL_TRACE_ENTRIES} of {original_len} entries shown"})
+
         return entry
 
-    except Exception as exc:
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:
         duration = round(time.monotonic() - child_start, 2)
         logging.exception(f"[subagent-{task_index}] failed")
         return {
@@ -488,10 +515,10 @@ def _run_single_child(
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
         import model_tools
-
-        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
-        if isinstance(saved_tool_names, list):
-            model_tools._set_resolved_tool_names(list(saved_tool_names))
+        with _delegate_tool_names_lock:
+            saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
+            if isinstance(saved_tool_names, list):
+                model_tools._set_resolved_tool_names(list(saved_tool_names))
 
         # Remove child from active tracking
 
@@ -579,7 +606,7 @@ def delegate_task(
 
     # Save parent tool names BEFORE any child construction mutates the global.
     # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
-    # which overwrites model_tools._last_resolved_tool_names with child's toolset.
+    # which overwrites model_tools._get_resolved_tool_names() with child's toolset.
     import model_tools as _model_tools
     _parent_tool_names = list(_model_tools._get_resolved_tool_names())
 
@@ -593,6 +620,7 @@ def delegate_task(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=creds["model"],
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
+                child_count=n_tasks,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
@@ -684,6 +712,17 @@ def delegate_task(
                 pass
 
     total_duration = round(time.monotonic() - overall_start, 2)
+
+    # Final truncation pass on all results before returning to parent
+    for entry in results:
+        _summary = entry.get("summary") or ""
+        if len(_summary) > _MAX_SUMMARY_CHARS:
+            entry["summary"] = _summary[:_MAX_SUMMARY_CHARS] + "\n...[truncated]"
+        trace = entry.get("tool_trace") or []
+        if len(trace) > _MAX_TOOL_TRACE_ENTRIES:
+            original_len = len(trace)
+            entry["tool_trace"] = trace[:_MAX_TOOL_TRACE_ENTRIES]
+            entry["tool_trace"].append({"tool": "...", "args_bytes": 0, "note": f"truncated, {_MAX_TOOL_TRACE_ENTRIES} of {original_len} entries shown"})
 
     return json.dumps({
         "results": results,
@@ -813,24 +852,16 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from unified config layer.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (kunming_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Uses get_config_section() from kunming_cli.config for consistent
+    config loading across all entry points (CLI, gateway, tools).
+    This ensures ``delegation.model`` / ``delegation.provider`` are
+    picked up regardless of the entry point.
     """
     try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
-    except Exception:
-        pass
-    try:
-        from kunming_cli.config import load_config
-        full = load_config()
-        return full.get("delegation", {})
+        from kunming_cli.config import get_config_section
+        return get_config_section("delegation")
     except Exception:
         return {}
 
@@ -975,4 +1006,5 @@ registry.register(
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
+    is_agent_tool=True,
 )

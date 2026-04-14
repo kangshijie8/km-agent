@@ -67,6 +67,9 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_email_not_loaded_without_env(self):
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        os.environ.setdefault("KUNMING_HOME", os.path.join(tmp, ".kunming"))
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
         config = GatewayConfig()
         _apply_env_overrides(config)
@@ -363,7 +366,7 @@ class TestEnvExample(unittest.TestCase):
 
     def test_env_example_has_email_vars(self):
         env_path = Path(__file__).resolve().parents[2] / ".env.example"
-        content = env_path.read_text()
+        content = env_path.read_text(encoding="utf-8")
         self.assertIn("EMAIL_ADDRESS", content)
         self.assertIn("EMAIL_PASSWORD", content)
         self.assertIn("EMAIL_IMAP_HOST", content)

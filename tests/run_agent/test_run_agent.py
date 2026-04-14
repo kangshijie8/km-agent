@@ -86,7 +86,7 @@ def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
-    error_log_path = (run_agent._KUNMING_home / "logs" / "errors.log").resolve()
+    error_log_path = (run_agent._kunming_home / "logs" / "errors.log").resolve()
 
     try:
         for handler in list(root_logger.handlers):
@@ -1346,10 +1346,18 @@ class TestConcurrentToolExecution:
         assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
-        """_invoke_tool should handle todo tool directly."""
-        with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
+        """_invoke_tool should handle todo tool via registry dispatch."""
+        from tools.registry import registry
+
+        # Verify todo is marked as agent_tool
+        tool = registry.get_tool("todo")
+        assert tool is not None
+        assert tool.is_agent_tool is True
+
+        # Verify the tool is dispatched correctly through _invoke_tool
+        with patch.object(registry, "dispatch", return_value='{"ok":true}') as mock_dispatch:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
-            mock_todo.assert_called_once()
+            mock_dispatch.assert_called_once()
         assert "ok" in result
 
 

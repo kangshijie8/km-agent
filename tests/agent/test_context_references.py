@@ -245,6 +245,7 @@ async def test_blocks_sensitive_home_and_KUNMING_paths(tmp_path: Path, monkeypat
     from agent.context_references import preprocess_context_references_async
 
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("KUNMING_HOME", str(tmp_path / ".kunming"))
 
     KUNMING_env = tmp_path / ".kunming" / ".env"

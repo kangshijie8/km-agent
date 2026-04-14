@@ -24,6 +24,7 @@ Usage:
 """
 
 from typing import List, Dict, Any, Set, Optional
+import threading
 
 
 # Shared tool list for CLI and all messaging platform toolsets.
@@ -46,6 +47,15 @@ _KUNMING_CORE_TOOLS = [
     "browser_vision", "browser_console",
     # Text-to-speech
     "text_to_speech",
+    # Media & content creation (video, subtitles, covers, audio)
+    "video_assemble", "srt_generate", "cover_generate",
+    "video_trim", "video_merge", "audio_mix", "content_pipeline",
+    # Experience learning
+    "experience_record", "experience_search", "experience_feedback", "experience_stats",
+    # Usage analytics
+    "usage_record", "usage_stats", "usage_trends", "usage_export",
+    # Tier & monetization
+    "tier_check", "tier_set", "tier_compare", "tier_upgrade_prompt",
     # Planning & memory
     "todo", "memory",
     # Session history search
@@ -65,6 +75,7 @@ _KUNMING_CORE_TOOLS = [
 
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
+_toolsets_lock = threading.Lock()
 TOOLSETS = {
     # Basic toolsets - individual tool categories
     "web": {
@@ -153,6 +164,36 @@ TOOLSETS = {
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, or OpenAI",
         "tools": ["text_to_speech"],
+        "includes": []
+    },
+
+    "media": {
+        "description": "Video & content creation tools: assemble, trim, merge videos, generate subtitles/covers, audio mixing (ffmpeg+PIL, free)",
+        "tools": [
+            "video_assemble", "srt_generate", "cover_generate",
+            "video_trim", "video_merge", "audio_mix", "content_pipeline",
+        ],
+        "includes": ["tts"]
+    },
+
+    "learning": {
+        "description": "Experience learning system: record patterns, search past experiences, feedback loop, learning stats (local SQLite, no API)",
+        "tools": [
+            "experience_record", "experience_search",
+            "experience_feedback", "experience_stats",
+        ],
+        "includes": []
+    },
+
+    "analytics": {
+        "description": "Usage analytics and telemetry: track invocations, success rates, trends, export data (local SQLite, privacy-first)",
+        "tools": ["usage_record", "usage_stats", "usage_trends", "usage_export"],
+        "includes": []
+    },
+
+    "monetization": {
+        "description": "Tier system and feature gating: free/creator/pro tiers, quota management, upgrade prompts",
+        "tools": ["tier_check", "tier_set", "tier_compare", "tier_upgrade_prompt"],
         "includes": []
     },
     
@@ -500,7 +541,7 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict: All toolset definitions
     """
-    result = TOOLSETS.copy()
+    result = {k: v.copy() for k, v in TOOLSETS.items()}
     # Add plugin-provided toolsets (synthetic entries)
     for ts_name in _get_plugin_toolset_names():
         if ts_name not in result:
@@ -566,11 +607,12 @@ def create_custom_toolset(
         tools (List[str]): Direct tools to include
         includes (List[str]): Other toolsets to include
     """
-    TOOLSETS[name] = {
-        "description": description,
-        "tools": tools or [],
-        "includes": includes or []
-    }
+    with _toolsets_lock:
+        TOOLSETS[name] = {
+            "description": description,
+            "tools": tools or [],
+            "includes": includes or []
+        }
 
 
 

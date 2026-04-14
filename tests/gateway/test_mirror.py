@@ -223,7 +223,7 @@ class TestAppendToSqlite:
         mock_db = MagicMock()
         mock_db.append_message.side_effect = Exception("db error")
 
-        with patch("KUNMING_state.SessionDB", return_value=mock_db):
+        with patch("kunming_state.SessionDB", return_value=mock_db):
             _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
 
         mock_db.close.assert_called_once()

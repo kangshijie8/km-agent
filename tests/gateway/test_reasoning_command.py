@@ -86,7 +86,7 @@ class TestReasoningCommand:
             encoding="utf-8",
         )
 
-        monkeypatch.setattr(gateway_run, "_KUNMING_home", KUNMING_home)
+        monkeypatch.setattr(gateway_run, "_kunming_home", KUNMING_home)
 
         runner = _make_runner()
         runner._reasoning_config = {"enabled": True, "effort": "xhigh"}
@@ -95,7 +95,7 @@ class TestReasoningCommand:
         result = await runner._handle_reasoning_command(_make_event("/reasoning"))
 
         assert "**Effort:** `none (disabled)`" in result
-        assert "**Display:** on ✓" in result
+        assert "**Display:** on" in result
         assert runner._reasoning_config == {"enabled": False}
         assert runner._show_reasoning is True
 
@@ -106,7 +106,8 @@ class TestReasoningCommand:
         config_path = KUNMING_home / "config.yaml"
         config_path.write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_run, "_KUNMING_home", KUNMING_home)
+        monkeypatch.setattr(gateway_run, "_kunming_home", KUNMING_home)
+        monkeypatch.setenv("KUNMING_HOME", str(KUNMING_home))
 
         runner = _make_runner()
         runner._reasoning_config = {"enabled": True, "effort": "medium"}
@@ -123,7 +124,7 @@ class TestReasoningCommand:
         KUNMING_home.mkdir()
         (KUNMING_home / "config.yaml").write_text("agent:\n  reasoning_effort: low\n", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_run, "_KUNMING_home", KUNMING_home)
+        monkeypatch.setattr(gateway_run, "_kunming_home", KUNMING_home)
         monkeypatch.setattr(gateway_run, "_env_path", KUNMING_home / ".env")
         monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
         monkeypatch.setattr(
@@ -181,7 +182,7 @@ class TestReasoningCommand:
             encoding="utf-8",
         )
 
-        monkeypatch.setattr(gateway_run, "_KUNMING_home", KUNMING_home)
+        monkeypatch.setattr(gateway_run, "_kunming_home", KUNMING_home)
         monkeypatch.setattr(gateway_run, "_env_path", KUNMING_home / ".env")
         monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
         monkeypatch.setattr(
@@ -233,7 +234,7 @@ class TestReasoningCommand:
         KUNMING_home.mkdir()
         (KUNMING_home / "config.yaml").write_text("", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_run, "_KUNMING_home", KUNMING_home)
+        monkeypatch.setattr(gateway_run, "_kunming_home", KUNMING_home)
         monkeypatch.setattr(gateway_run, "_env_path", KUNMING_home / ".env")
         monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
         monkeypatch.setattr(

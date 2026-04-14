@@ -36,6 +36,8 @@ class ToolMetadata:
     dangerous: bool = False
     dangerous_patterns: Optional[List[tuple]] = None
     max_result_size_chars: Optional[int] = None
+    is_agent_tool: bool = False  # True for tools requiring agent-level state (todo, memory, etc.)
+    is_async: bool = False  # True if handler is a coroutine function
 
 
 class ToolRegistry:
@@ -65,6 +67,7 @@ class ToolRegistry:
         emoji: Optional[str] = None,
         max_result_size_chars: Optional[int] = None,
         is_async: bool = False,  # For backward compatibility
+        is_agent_tool: bool = False,  # True for tools requiring agent-level state
     ) -> None:
         """Register a tool with the registry.
 
@@ -82,88 +85,104 @@ class ToolRegistry:
             allow_override: Whether to allow overriding existing tool (default: False)
             emoji: Optional emoji for the tool (stored in schema metadata)
             max_result_size_chars: Optional maximum result size in characters
+            is_agent_tool: Whether this tool requires agent-level state (todo, memory, etc.)
 
         Raises:
             ValueError: If tool name already exists and allow_override is False
         """
         # Check for duplicate registration
         # Note: In production, we warn about duplicates but allow them in test environments
-        if name in self._tools and not allow_override:
-            import os
-            if os.getenv("KUNMING_TEST_MODE"):
-                # In test mode, silently allow override
-                pass
-            else:
-                existing = self._tools[name]
-                raise ValueError(
-                    f"Tool '{name}' is already registered in toolset '{existing.toolset}'. "
-                    f"Use allow_override=True to force override."
-                )
+        with self._lock:
+            if name in self._tools and not allow_override:
+                import os
+                if os.getenv("KUNMING_TEST_MODE"):
+                    pass
+                else:
+                    existing = self._tools[name]
+                    raise ValueError(
+                        f"Tool '{name}' is already registered in toolset '{existing.toolset}'. "
+                        f"Use allow_override=True to force override."
+                    )
 
-        if self._frozen:
-            # During frozen phase, only store for later validation
-            self._pending_registrations.append(
-                ToolMetadata(
-                    name=name,
-                    toolset=toolset,
-                    schema=schema,
-                    handler=handler,
-                    check_fn=check_fn,
-                    requires_env=requires_env or [],
-                    requires_config=requires_config or [],
-                    requires_env_var=requires_env_var,
-                    dangerous=dangerous,
-                    dangerous_patterns=dangerous_patterns,
-                    max_result_size_chars=max_result_size_chars,
+            if self._frozen:
+                self._pending_registrations.append(
+                    ToolMetadata(
+                        name=name,
+                        toolset=toolset,
+                        schema=schema,
+                        handler=handler,
+                        check_fn=check_fn,
+                        requires_env=requires_env or [],
+                        requires_config=requires_config or [],
+                        requires_env_var=requires_env_var,
+                        dangerous=dangerous,
+                        dangerous_patterns=dangerous_patterns,
+                        max_result_size_chars=max_result_size_chars,
+                        is_agent_tool=is_agent_tool,
+                        is_async=is_async,
+                    )
                 )
+                return
+
+            all_requires_env = list(requires_env or [])
+            if requires_env_var and requires_env_var not in all_requires_env:
+                all_requires_env.append(requires_env_var)
+
+            if emoji:
+                schema = schema.copy()
+                if "_metadata" not in schema:
+                    schema["_metadata"] = {}
+                schema["_metadata"]["emoji"] = emoji
+
+            metadata = ToolMetadata(
+                name=name,
+                toolset=toolset,
+                schema=schema,
+                handler=handler,
+                check_fn=check_fn,
+                requires_env=all_requires_env,
+                requires_config=list(requires_config or []),
+                requires_env_var=requires_env_var,
+                dangerous=dangerous,
+                dangerous_patterns=dangerous_patterns,
+                max_result_size_chars=max_result_size_chars,
+                is_agent_tool=is_agent_tool,
+                is_async=is_async,
             )
-            return
 
-        # Merge requires_env_var into requires_env for unified handling
-        all_requires_env = list(requires_env or [])
-        if requires_env_var and requires_env_var not in all_requires_env:
-            all_requires_env.append(requires_env_var)
+            if name in self._tools and allow_override:
+                old_metadata = self._tools[name]
+                if old_metadata.schema in self._schemas:
+                    self._schemas.remove(old_metadata.schema)
+                if old_metadata.toolset in self._toolsets and name in self._toolsets[old_metadata.toolset]:
+                    self._toolsets[old_metadata.toolset].remove(name)
 
-        # Store emoji in schema metadata if provided
-        if emoji:
-            schema = schema.copy()
-            if "_metadata" not in schema:
-                schema["_metadata"] = {}
-            schema["_metadata"]["emoji"] = emoji
+            self._tools[name] = metadata
 
-        metadata = ToolMetadata(
-            name=name,
-            toolset=toolset,
-            schema=schema,
-            handler=handler,
-            check_fn=check_fn,
-            requires_env=all_requires_env,
-            requires_config=list(requires_config or []),
-            requires_env_var=requires_env_var,
-            dangerous=dangerous,
-            dangerous_patterns=dangerous_patterns,
-            max_result_size_chars=max_result_size_chars,
-        )
+            if toolset not in self._toolsets:
+                self._toolsets[toolset] = []
+            if name not in self._toolsets[toolset]:
+                self._toolsets[toolset].append(name)
 
-        # Remove old schema if overriding
-        if name in self._tools and allow_override:
-            old_metadata = self._tools[name]
-            if old_metadata.schema in self._schemas:
-                self._schemas.remove(old_metadata.schema)
-            # Remove from old toolset
-            if old_metadata.toolset in self._toolsets and name in self._toolsets[old_metadata.toolset]:
-                self._toolsets[old_metadata.toolset].remove(name)
+            self._schemas.append(schema)
 
-        self._tools[name] = metadata
+    def deregister(self, name: str) -> bool:
+        """Remove a tool from the registry.
 
-        # Add to toolset
-        if toolset not in self._toolsets:
-            self._toolsets[toolset] = []
-        if name not in self._toolsets[toolset]:
-            self._toolsets[toolset].append(name)
+        Returns True if the tool was found and removed, False otherwise.
+        """
+        with self._lock:
+            metadata = self._tools.pop(name, None)
+            if metadata is None:
+                return False
 
-        # Add schema to list
-        self._schemas.append(schema)
+            if metadata.schema in self._schemas:
+                self._schemas.remove(metadata.schema)
+
+            if metadata.toolset in self._toolsets and name in self._toolsets[metadata.toolset]:
+                self._toolsets[metadata.toolset].remove(name)
+
+            return True
 
     def get_tool(self, name: str) -> Optional[ToolMetadata]:
         """Get a tool's metadata by name."""
@@ -232,33 +251,6 @@ class ToolRegistry:
             }
         return requirements
 
-    def check_tool_availability(self, quiet: bool = False) -> Tuple[List[str], List[dict]]:
-        for env_var in tool.requires_env:
-            if not os.getenv(env_var):
-                return False
-
-        # Check required config keys
-        if tool.requires_config:
-            try:
-                from kunming_cli.config import load_cli_config
-
-                cfg = load_cli_config()
-                for key_path in tool.requires_config:
-                    parts = key_path.split(".")
-                    value = cfg
-                    for part in parts:
-                        if isinstance(value, dict):
-                            value = value.get(part)
-                        else:
-                            value = None
-                            break
-                    if value is None:
-                        return False
-            except Exception:
-                return False
-
-        return True
-
     def freeze(self):
         """Freeze the registry - no new registrations allowed.
 
@@ -286,7 +278,8 @@ class ToolRegistry:
 
     def clear_pending_registrations(self):
         """Clear pending registrations list."""
-        self._pending_registrations.clear()
+        with self._lock:
+            self._pending_registrations.clear()
 
     # -------------------------------------------------------------------------
     # Methods required by model_tools.py
@@ -299,6 +292,7 @@ class ToolRegistry:
         task_id: Optional[str] = None,
         enabled_tools: Optional[List[str]] = None,
         user_task: Optional[str] = None,
+        **kwargs,
     ) -> str:
         """Dispatch a tool call to the appropriate handler.
 
@@ -323,11 +317,15 @@ class ToolRegistry:
             )
 
         # Delegate to the main dispatch function
-        return dispatch_tool(tool_name, params, task_id=task_id)
+        return dispatch_tool(tool_name, params, task_id=task_id, **kwargs)
 
     def get_all_tool_names(self) -> List[str]:
         """Return all registered tool names."""
         return self.list_tools()
+
+    def get_agent_tool_names(self) -> List[str]:
+        """Return names of all tools marked with is_agent_tool=True."""
+        return [name for name, tool in self._tools.items() if tool.is_agent_tool]
 
     def get_toolset_for_tool(self, tool_name: str) -> Optional[str]:
         """Return the toolset a tool belongs to."""
@@ -398,6 +396,7 @@ class ToolRegistry:
                 if not tool.check_fn():
                     return False
             except Exception:
+                logger.debug("check_fn for tool '%s' raised exception", name, exc_info=True)
                 return False
 
         # Check required environment variables
@@ -503,6 +502,7 @@ def register_tool(
     allow_override: bool = False,
     emoji: Optional[str] = None,
     max_result_size_chars: Optional[int] = None,
+    is_agent_tool: bool = False,
 ) -> None:
     """Register a tool with the global registry."""
     registry.register(
@@ -519,6 +519,7 @@ def register_tool(
         allow_override=allow_override,
         emoji=emoji,
         max_result_size_chars=max_result_size_chars,
+        is_agent_tool=is_agent_tool,
     )
 
 
@@ -642,6 +643,7 @@ def dispatch_tool(
     task_id: Optional[str] = None,
     require_approval: bool = True,
     approval_mode: Optional[str] = None,
+    **kwargs,
 ) -> str:
     """Dispatch a tool call to the appropriate handler.
 
@@ -721,13 +723,43 @@ def dispatch_tool(
     # Call the handler
     try:
         start_time = time.time()
-        result = tool.handler(params, task_id=task_id)
+        if tool.is_async:
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop and loop.is_running():
+                # Already inside an event loop — create a new thread to run the coroutine
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    result = pool.submit(
+                        asyncio.run, tool.handler(params, task_id=task_id, **kwargs)
+                    ).result()
+            else:
+                result = asyncio.run(tool.handler(params, task_id=task_id, **kwargs))
+        else:
+            result = tool.handler(params, task_id=task_id, **kwargs)
         elapsed = time.time() - start_time
 
         # Log slow tool calls
         if elapsed > 30:
             logger.warning(f"Tool '{tool_name}' took {elapsed:.1f}s to complete")
 
+        if isinstance(result, dict):
+            if result.get("error") and result.get("success") is False:
+                error_result = {"error": result["error"]}
+                for k, v in result.items():
+                    if k not in ("error", "success"):
+                        error_result[k] = v
+                result = error_result
+            elif result.get("success") is False and result.get("message"):
+                error_result = {"error": result["message"]}
+                for k, v in result.items():
+                    if k not in ("success", "message"):
+                        error_result[k] = v
+                result = error_result
+            return json.dumps(result, ensure_ascii=False)
         return result
     except Exception as e:
         logger.error(f"Tool '{tool_name}' failed: {e}")
@@ -813,12 +845,13 @@ def escape_shell_command(command: str) -> str:
     return shlex.quote(command)
 
 
-def tool_error(message: str, tool_name: str = "") -> str:
+def tool_error(message: str, tool_name: str = "", success: bool = None) -> str:
     """Format an error message for tool execution failures.
 
     Args:
         message: The error message
         tool_name: Optional name of the tool that failed
+        success: Optional success flag (typically False for errors)
 
     Returns:
         JSON formatted error string
@@ -826,4 +859,6 @@ def tool_error(message: str, tool_name: str = "") -> str:
     error_data = {"error": message}
     if tool_name:
         error_data["tool"] = tool_name
+    if success is not None:
+        error_data["success"] = success
     return json.dumps(error_data, ensure_ascii=False)

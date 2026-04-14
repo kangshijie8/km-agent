@@ -9,8 +9,6 @@ it starts working in a new area of the codebase.
 This complements the startup context loading in ``prompt_builder.py`` which only
 loads from the CWD.  Subdirectory hints are discovered lazily and injected into
 the conversation without modifying the system prompt (preserving prompt caching).
-
-Inspired by Block/goose's SubdirectoryHintTracker.
 """
 
 import logging
@@ -140,17 +138,21 @@ class SubdirectoryHintTracker:
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
         """Extract path-like tokens from a shell command string."""
-        try:
-            tokens = shlex.split(cmd)
-        except ValueError:
+        import sys
+        if sys.platform == "win32":
             tokens = cmd.split()
+        else:
+            try:
+                tokens = shlex.split(cmd)
+            except ValueError:
+                tokens = cmd.split()
 
         for token in tokens:
             # Skip flags
             if token.startswith("-"):
                 continue
             # Must look like a path (contains / or .)
-            if "/" not in token and "." not in token:
+            if "/" not in token and "\\" not in token and "." not in token:
                 continue
             # Skip URLs
             if token.startswith(("http://", "https://", "git@")):

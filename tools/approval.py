@@ -489,9 +489,6 @@ def _smart_approve(command: str, description: str) -> str:
 
     Returns 'approve' if the LLM determines the command is safe,
     'deny' if genuinely dangerous, or 'escalate' if uncertain.
-
-    Inspired by OpenAI Codex's Smart Approvals guardian subagent
-    (openai/codex#13860).
     """
     try:
         from agent.auxiliary_client import get_text_auxiliary_client, auxiliary_max_tokens_param
@@ -503,7 +500,9 @@ def _smart_approve(command: str, description: str) -> str:
 
         prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
 
-Command: {command}
+<command>
+{command}
+</command>
 Flagged reason: {description}
 
 Assess the ACTUAL risk of this command. Many flagged commands are false positives for example, `python -c "print('hello')"` is flagged as "script execution via -c flag" but is completely harmless.
@@ -712,8 +711,6 @@ def check_all_command_guards(command: str, env_type: str,
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
-    # Inspired by OpenAI Codex's Smart Approvals guardian subagent
-    # (openai/codex#13860).
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)

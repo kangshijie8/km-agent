@@ -434,97 +434,8 @@ def _get_or_create_env(task_id: str):
     terminal and file tools use, creating one if it doesn't exist yet.
     Returns ``(env, env_type)`` tuple.
     """
-    from tools.terminal_tool import (
-        _active_environments, _env_lock, _create_environment,
-        _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, _task_env_overrides,
-    )
-
-    effective_task_id = task_id or "default"
-
-    # Fast path: environment already exists
-    with _env_lock:
-        if effective_task_id in _active_environments:
-            _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
-
-    # Slow path: create environment (same pattern as file_tools._get_file_ops)
-    with _creation_locks_lock:
-        if effective_task_id not in _creation_locks:
-            _creation_locks[effective_task_id] = threading.Lock()
-        task_lock = _creation_locks[effective_task_id]
-
-    with task_lock:
-        with _env_lock:
-            if effective_task_id in _active_environments:
-                _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
-
-        config = _get_env_config()
-        env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
-
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
-            image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
-        else:
-            image = ""
-
-        cwd = overrides.get("cwd") or config["cwd"]
-
-        container_config = None
-        if env_type in ("docker", "singularity", "modal", "daytona"):
-            container_config = {
-                "container_cpu": config.get("container_cpu", 1),
-                "container_memory": config.get("container_memory", 5120),
-                "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
-                "docker_volumes": config.get("docker_volumes", []),
-            }
-
-        ssh_config = None
-        if env_type == "ssh":
-            ssh_config = {
-                "host": config.get("ssh_host", ""),
-                "user": config.get("ssh_user", ""),
-                "port": config.get("ssh_port", 22),
-                "key": config.get("ssh_key", ""),
-                "persistent": config.get("ssh_persistent", False),
-            }
-
-        local_config = None
-        if env_type == "local":
-            local_config = {
-                "persistent": config.get("local_persistent", False),
-            }
-
-        logger.info("Creating new %s environment for execute_code task %s...",
-                     env_type, effective_task_id[:8])
-        env = _create_environment(
-            env_type=env_type,
-            image=image,
-            cwd=cwd,
-            timeout=config["timeout"],
-            ssh_config=ssh_config,
-            container_config=container_config,
-            local_config=local_config,
-            task_id=effective_task_id,
-            host_cwd=config.get("host_cwd"),
-        )
-
-        with _env_lock:
-            _active_environments[effective_task_id] = env
-            _last_activity[effective_task_id] = time.time()
-
-        _start_cleanup_thread()
-        logger.info("%s environment ready for execute_code task %s",
-                     env_type, effective_task_id[:8])
-        return env, env_type
+    from tools.terminal_tool import get_or_create_environment
+    return get_or_create_environment(task_id)
 
 
 def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
@@ -536,8 +447,9 @@ def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     quotes are fine.
     """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    import shlex
     env.execute(
-        f"echo '{encoded}' | base64 -d > {remote_path}",
+        f"echo '{encoded}' | base64 -d > {shlex.quote(remote_path)}",
         cwd="/",
         timeout=30,
     )
@@ -758,19 +670,20 @@ def _execute_remote(
         rpc_thread.start()
 
         # Build environment variable prefix for the script
+        import shlex
         env_prefix = (
-            f"KUNMING_RPC_DIR={sandbox_dir}/rpc "
+            f"KUNMING_RPC_DIR={shlex.quote(sandbox_dir + '/rpc')} "
             f"PYTHONDONTWRITEBYTECODE=1"
         )
         tz = os.getenv("KUNMING_TIMEZONE", "").strip()
         if tz:
-            env_prefix += f" TZ={tz}"
+            env_prefix += f" TZ={shlex.quote(tz)}"
 
         # Execute the script on the remote backend
         logger.info("Executing code on %s backend (task %s)...",
                      env_type, effective_task_id[:8])
         script_result = env.execute(
-            f"cd {sandbox_dir} && {env_prefix} python3 script.py",
+            f"cd {shlex.quote(sandbox_dir)} && {env_prefix} python3 script.py",
             timeout=timeout,
         )
 
@@ -1221,10 +1134,14 @@ def _kill_process_group(proc, escalate: bool = False):
 
 
 def _load_config() -> dict:
-    """Load code_execution config from CLI_CONFIG if available."""
+    """Load code_execution config from unified config layer.
+    
+    Uses get_config_section() from kunming_cli.config for consistent
+    config loading across all entry points (CLI, gateway, tools).
+    """
     try:
-        from cli import CLI_CONFIG
-        return CLI_CONFIG.get("code_execution", {})
+        from kunming_cli.config import get_config_section
+        return get_config_section("code_execution")
     except Exception:
         return {}
 

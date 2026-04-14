@@ -6,6 +6,7 @@ the _send_update_notification startup hook (sends results after restart).
 
 import json
 import os
+import platform
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -215,6 +216,7 @@ class TestHandleUpdateCommand:
         assert not (kunming_home / ".update_exit_code").exists()
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(platform.system() == "Windows", reason="setsid is Unix-only")
     async def test_spawns_setsid(self, tmp_path):
         """Uses setsid when available."""
         runner = _make_runner()
@@ -244,6 +246,7 @@ class TestHandleUpdateCommand:
         assert "Starting Kunming update" in result
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(platform.system() == "Windows", reason="bash fallback is Unix-only")
     async def test_fallback_when_no_setsid(self, tmp_path):
         """Falls back to start_new_session=True when setsid is not available."""
         runner = _make_runner()

@@ -21,7 +21,9 @@ Defense against context-window overflow operates at three levels:
 """
 
 import logging
+import tempfile
 import uuid
+from pathlib import Path
 
 from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
@@ -32,7 +34,7 @@ from tools.budget_config import (
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
-STORAGE_DIR = "/tmp/kunming-results"
+STORAGE_DIR = str(Path(tempfile.gettempdir()) / "kunming-results")
 HEREDOC_MARKER = "KUNMING_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 

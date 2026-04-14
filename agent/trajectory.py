@@ -8,7 +8,10 @@ the file-write logic live here.
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List
+
+from kunming_constants import get_kunming_home
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,10 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
     if filename is None:
         filename = "trajectory_samples.jsonl" if completed else "failed_trajectories.jsonl"
 
+    filepath = Path(filename)
+    if not filepath.is_absolute():
+        filepath = get_kunming_home() / filepath
+
     entry = {
         "conversations": trajectory,
         "timestamp": datetime.now().isoformat(),
@@ -49,8 +56,8 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
     }
 
     try:
-        with open(filename, "a", encoding="utf-8") as f:
+        with open(filepath, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        logger.info("Trajectory saved to %s", filename)
+        logger.info("Trajectory saved to %s", filepath)
     except Exception as e:
         logger.warning("Failed to save trajectory: %s", e)

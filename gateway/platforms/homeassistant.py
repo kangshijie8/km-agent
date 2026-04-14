@@ -108,6 +108,26 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             logger.warning("[%s] No HASS_TOKEN configured", self.name)
             return False
 
+        # Scoped lock: prevent multiple gateways from using the same HA instance
+        from gateway.status import acquire_scoped_lock
+
+        self._lock_identity = self._hass_url
+        acquired, existing = acquire_scoped_lock(
+            "homeassistant-url",
+            self._lock_identity,
+            metadata={"platform": self.platform.value},
+        )
+        if not acquired:
+            owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+            message = (
+                "Another local Kunming gateway is already using this Home Assistant instance"
+                + (f" (PID {owner_pid})." if owner_pid else ".")
+                + " Stop the other gateway before starting a second HA adapter."
+            )
+            logger.error("[%s] %s", self.name, message)
+            self._set_fatal_error("homeassistant_url_lock", message, retryable=False)
+            return False
+
         try:
             success = await self._ws_connect()
             if not success:
@@ -208,6 +228,15 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         if self._rest_session and not self._rest_session.closed:
             await self._rest_session.close()
         self._rest_session = None
+
+        if getattr(self, "_lock_identity", None):
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("homeassistant-url", self._lock_identity)
+            except Exception as e:
+                logger.warning("[%s] Error releasing HA URL lock: %s", self.name, e, exc_info=True)
+            self._lock_identity = None
+
         logger.info("[%s] Disconnected", self.name)
 
     # ------------------------------------------------------------------

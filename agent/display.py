@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from difflib import unified_diff
 from pathlib import Path
 
@@ -105,7 +106,7 @@ def get_tool_emoji(tool_name: str, default: str = "🔧") -> str:
     """
     # 1. Skin override
     skin = _get_skin()
-    if skin and skin.tool_emojis:
+    if skin and skin.tool_emojis and tool_name:
         override = skin.tool_emojis.get(tool_name)
         if override:
             return override
@@ -145,12 +146,29 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "read_file": "path", "write_file": "path", "patch": "path",
         "search_files": "pattern", "browser_navigate": "url",
         "browser_click": "ref", "browser_type": "text",
+        "browser_snapshot": "selector", "browser_scroll": "direction",
+        "browser_back": "url", "browser_press": "key",
+        "browser_get_images": "selector", "browser_vision": "question",
+        "browser_console": "expression",
         "image_generate": "prompt", "text_to_speech": "text",
         "vision_analyze": "question", "mixture_of_agents": "user_prompt",
         "skill_view": "name", "skills_list": "category",
         "cronjob": "action",
         "execute_code": "code", "delegate_task": "goal",
         "clarify": "question", "skill_manage": "name",
+        "send_message": "target", "process": "action",
+        "todo": "action", "memory": "action",
+        "session_search": "query",
+        "experience_record": "query_type", "experience_search": "query",
+        "experience_feedback": "pattern_id", "experience_stats": "stat_type",
+        "usage_record": "tool_name", "usage_stats": "period",
+        "usage_trends": "metric", "usage_export": "format",
+        "tier_check": "feature", "tier_set": "user_tier",
+        "tier_compare": "feature", "tier_upgrade_prompt": "feature",
+        "video_assemble": "output_path", "video_trim": "input_path",
+        "video_merge": "output_path", "audio_mix": "output_path",
+        "srt_generate": "video_path", "cover_generate": "title",
+        "content_pipeline": "topic",
     }
 
     if tool_name == "process":
@@ -703,16 +721,13 @@ class KawaiiSpinner:
 
         is_tty = self._is_tty
         if is_tty:
-            # Clear the spinner line with spaces instead of \033[K to avoid
-            # garbled escape codes when prompt_toolkit's patch_stdout is active.
             blanks = ' ' * max(self.last_line_len + 5, 40)
             self._write(f"\r{blanks}\r", end='', flush=True)
         if final_message:
             elapsed = f" ({time.time() - self.start_time:.1f}s)" if self.start_time else ""
-            if is_tty:
-                self._write(f"  {final_message}", flush=True)
-            else:
-                self._write(f"  [done] {final_message}{elapsed}", flush=True)
+            # Add ISO timestamp for visibility into when operations complete
+            ts = datetime.now().strftime('%H:%M:%S')
+            self._write(f"  [{ts}] [done] {final_message}{elapsed}", flush=True)
 
     def __enter__(self):
         self.start()
@@ -798,8 +813,16 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
 
     # Generic heuristic for non-terminal tools
     lower = result[:500].lower()
-    if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
-        return True, " [error]"
+    try:
+        data = json.loads(result)
+        if isinstance(data, dict):
+            if data.get("success") is False:
+                return True, " [error]"
+            if data.get("error") and data.get("success") is not True and data.get("success") is not None:
+                return True, " [error]"
+    except (json.JSONDecodeError, TypeError):
+        if result.strip().lower().startswith("error"):
+            return True, " [error]"
 
     return False, ""
 
@@ -958,7 +981,28 @@ def get_cute_tool_message(
         return _wrap(f"✨🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""
-    return _wrap(f"⏰{tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
+
+    # Fallback emoji based on tool name prefix
+    if tool_name.startswith("ha_"):
+        emoji = "🏠"
+    elif tool_name.startswith("experience_"):
+        emoji = "📚"
+    elif tool_name.startswith("video_"):
+        emoji = "🎬"
+    elif tool_name.startswith("analytics_") or tool_name.startswith("usage_"):
+        emoji = "📊"
+    elif tool_name.startswith("tier_"):
+        emoji = "💎"
+    elif tool_name.startswith("browser_"):
+        emoji = "🌐"
+    elif tool_name == "cronjob":
+        emoji = "⏰"
+    elif tool_name == "process":
+        emoji = "⚙️"
+    else:
+        emoji = "🔧"
+
+    return _wrap(f"{emoji}{tool_name[:15]:15} {_trunc(preview, 35)}  {dur}")
 
 
 # =========================================================================

@@ -455,7 +455,7 @@ class TestBuildNousSubscriptionPrompt:
 
         prompt = build_kunming_subscription_prompt({"image_generate"})
 
-        assert "suggest Kunming subscription as one option" in prompt
+        assert "suggest Nous subscription as one option" in prompt
         assert "Do not mention subscription unless" in prompt
 
     def test_feature_flag_off_returns_empty_prompt(self, monkeypatch):

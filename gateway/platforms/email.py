@@ -267,6 +267,27 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
+
+        # Scoped lock: prevent multiple gateways from using the same email account
+        from gateway.status import acquire_scoped_lock
+
+        self._lock_identity = self._address
+        acquired, existing = acquire_scoped_lock(
+            "email-address",
+            self._lock_identity,
+            metadata={"platform": self.platform.value},
+        )
+        if not acquired:
+            owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+            message = (
+                "Another local Kunming gateway is already using this email account"
+                + (f" (PID {owner_pid})." if owner_pid else ".")
+                + " Stop the other gateway before starting a second Email adapter."
+            )
+            logger.error("[Email] %s", message)
+            self._set_fatal_error("email_address_lock", message, retryable=False)
+            return False
+
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
@@ -311,6 +332,15 @@ class EmailAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
             self._poll_task = None
+
+        if getattr(self, "_lock_identity", None):
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("email-address", self._lock_identity)
+            except Exception as e:
+                logger.warning("[Email] Error releasing address lock: %s", e, exc_info=True)
+            self._lock_identity = None
+
         logger.info("[Email] Disconnected.")
 
     async def _poll_loop(self) -> None:

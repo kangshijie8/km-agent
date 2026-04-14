@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 def _make_cli(tmp_path, mcp_servers=None):
     """Create a minimal KunmingCLI instance with mocked config."""
     import cli as cli_mod
-    obj = object.__new__(cli_mod.kunmingCLI)
+    obj = object.__new__(cli_mod.KunmingCLI)
     obj.config = {"mcp_servers": mcp_servers or {}}
     obj._agent_running = False
     obj._last_config_check = 0.0

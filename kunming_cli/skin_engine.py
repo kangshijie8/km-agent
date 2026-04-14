@@ -91,6 +91,16 @@ _BUILTIN_SKINS: Dict[str, dict] = {
 _skins_dir: Optional[Path] = None
 
 
+def _deep_merge(base, override):
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 def _build_skin_config(data: dict) -> SkinConfig:
     """Build a SkinConfig from a dictionary. Alias for _load_skin_from_dict."""
     return _load_skin_from_dict(data)
@@ -129,8 +139,7 @@ def load_skin(name: str) -> SkinConfig:
                 data = yaml.safe_load(f)
             if data:
                 # Merge with default for missing values
-                merged = DEFAULT_SKIN.copy()
-                merged.update(data)
+                merged = _deep_merge(DEFAULT_SKIN, data)
                 _active_skin = _load_skin_from_dict(merged)
                 return _active_skin
         except Exception as e:

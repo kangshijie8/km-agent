@@ -9,6 +9,7 @@ Tests the new --gateway mode for kunming update, including:
 
 import json
 import os
+import platform
 import time
 import asyncio
 from pathlib import Path
@@ -224,11 +225,13 @@ class TestUpdateCommandGatewayFlag:
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        # Check the bash command string contains --gateway and PYTHONUNBUFFERED
+        # Check the command string contains --gateway
         call_args = mock_popen.call_args[0][0]
         cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
         assert "--gateway" in cmd_string
-        assert "PYTHONUNBUFFERED" in cmd_string
+        # PYTHONUNBUFFERED is only present in the Unix spawn path
+        if platform.system() != "Windows":
+            assert "PYTHONUNBUFFERED" in cmd_string
         assert "stream progress" in result
 
 

@@ -45,9 +45,13 @@ _SUMMARY_TOKENS_CEILING = 12_000
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
+_PRUNE_DEFAULT_THRESHOLD = 800
+_PRUNE_IMPORTANT_THRESHOLD = 3000
+_IMPORTANT_RESULT_TOOLS = frozenset({"read_file", "search_files", "web_search", "web_extract"})
+
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
-_SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+_SUMMARY_FAILURE_COOLDOWN_SECONDS = 120
 
 
 class ContextCompressor:
@@ -121,6 +125,7 @@ class ContextCompressor:
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
         self._summary_failure_cooldown_until: float = 0.0
+        self._consecutive_compress_failures: int = 0
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -202,8 +207,9 @@ class ContextCompressor:
             content = msg.get("content", "")
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
                 continue
-            # Only prune if the content is substantial (>200 chars)
-            if len(content) > 200:
+            tool_name = msg.get("name", "") or msg.get("tool_call_id", "")
+            threshold = _PRUNE_IMPORTANT_THRESHOLD if tool_name in _IMPORTANT_RESULT_TOOLS else _PRUNE_DEFAULT_THRESHOLD
+            if len(content) > threshold:
                 result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
                 pruned += 1
 
@@ -257,6 +263,12 @@ class ContextCompressor:
             if role == "assistant":
                 if len(content) > self._CONTENT_MAX:
                     content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                reasoning = msg.get("reasoning") or msg.get("reasoning_content")
+                if reasoning:
+                    reasoning_text = reasoning if isinstance(reasoning, str) else str(reasoning)
+                    if len(reasoning_text) > 2000:
+                        reasoning_text = reasoning_text[:1000] + "\n...[truncated]...\n" + reasoning_text[-500:]
+                    content += f"\n[Reasoning: {reasoning_text}]"
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
                     tc_parts = []
@@ -296,12 +308,15 @@ class ContextCompressor:
         placeholder.
         """
         now = time.monotonic()
-        if now < self._summary_failure_cooldown_until:
-            logger.debug(
-                "Skipping context summary during cooldown (%.0fs remaining)",
-                self._summary_failure_cooldown_until - now,
-            )
-            return None
+        if now < self._summary_failure_cooldown_until and self._consecutive_compress_failures < 3:
+            usage_ratio = (self.last_prompt_tokens / self.threshold_tokens) if self.threshold_tokens > 0 else 0
+            if usage_ratio < 0.9:
+                logger.debug(
+                    "Skipping context summary during cooldown (%.0fs remaining)",
+                    self._summary_failure_cooldown_until - now,
+                )
+                return None
+            logger.warning("Context usage at %.0f%%, forcing compression despite cooldown", usage_ratio * 100)
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
@@ -410,9 +425,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
+            self._consecutive_compress_failures = 0
             return self._with_summary_prefix(summary)
         except RuntimeError:
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+            self._consecutive_compress_failures += 1
             logging.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary "
                             "for %d seconds.",
@@ -420,6 +437,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             return None
         except Exception as e:
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+            self._consecutive_compress_failures += 1
             logging.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
@@ -715,17 +733,36 @@ Write only the summary body. Do not include any preamble or prefix."""
                     _merge_summary_into_tail = True
             if not _merge_summary_into_tail:
                 compressed.append({"role": summary_role, "content": summary})
+            else:
+                # Both roles collide with neighbors — merge summary into
+                # the first tail message instead of inserting a system message
+                # (which would break API role alternation rules).
+                _summary_text = f"[Context Summary]\n{summary}"
+                _tail_appended = False
+                for i in range(compress_end, n_messages):
+                    msg = messages[i].copy()
+                    if not _tail_appended and msg.get("role") in ("user", "assistant"):
+                        _existing = msg.get("content", "")
+                        if isinstance(_existing, str):
+                            msg["content"] = f"{_summary_text}\n\n{_existing}"
+                        elif isinstance(_existing, list):
+                            msg["content"].insert(0, {"type": "text", "text": _summary_text})
+                        _tail_appended = True
+                    compressed.append(msg)
+                if not _tail_appended:
+                    # No suitable tail message found — fall back to inserting
+                    # with the opposite role of the head.
+                    _flip_role = "assistant" if last_head_role == "user" else "user"
+                    compressed.append({"role": _flip_role, "content": _summary_text})
         else:
             if not self.quiet_mode:
                 logger.debug("No summary model available — middle turns dropped without summary")
 
-        for i in range(compress_end, n_messages):
-            msg = messages[i].copy()
-            if _merge_summary_into_tail and i == compress_end:
-                original = msg.get("content") or ""
-                msg["content"] = summary + "\n\n" + original
-                _merge_summary_into_tail = False
-            compressed.append(msg)
+        # Append tail messages (skip if already appended in merge-into-tail branch)
+        if not _merge_summary_into_tail:
+            for i in range(compress_end, n_messages):
+                msg = messages[i].copy()
+                compressed.append(msg)
 
         self.compression_count += 1
 

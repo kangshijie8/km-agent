@@ -5,9 +5,8 @@ Analyzes historical session data from the SQLite state database to produce
 comprehensive usage insights — token consumption, cost estimates, tool usage
 patterns, activity trends, model/platform breakdowns, and session metrics.
 
-Inspired by Claude Code's /insights command, adapted for Kunming Agent's
-multi-platform architecture with additional cost estimation and platform
-breakdown capabilities.
+Adapted for Kunming Agent's multi-platform architecture with additional
+cost estimation and platform breakdown capabilities.
 
 Usage:
     from agent.insights import InsightsEngine
@@ -430,8 +429,12 @@ class InsightsEngine:
             d["tool_calls"] += s.get("tool_call_count") or 0
             estimate, status = _estimate_cost(s)
             d["cost"] += estimate
-            d["has_pricing"] = _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
-            d["cost_status"] = status
+            d["has_pricing"] = d.get("has_pricing", True) and _has_known_pricing(model, s.get("billing_provider"), s.get("billing_base_url"))
+            _status = status
+            if _status == "actual":
+                d["cost_status"] = "actual"
+            elif _status == "estimated" and d.get("cost_status", "unknown") != "actual":
+                d["cost_status"] = "estimated"
 
         result = [
             {"model": model, **data}

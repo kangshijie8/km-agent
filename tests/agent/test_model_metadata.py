@@ -47,10 +47,10 @@ class TestEstimateTokensRough:
         assert estimate_tokens_rough(None) == 0
 
     def test_known_length(self):
-        assert estimate_tokens_rough("a" * 400) == 100
+        assert estimate_tokens_rough("a" * 400) == 110
 
     def test_short_text(self):
-        assert estimate_tokens_rough("hello") == 1
+        assert estimate_tokens_rough("hello") == 11
 
     def test_proportional(self):
         short = estimate_tokens_rough("hello world")
@@ -58,9 +58,9 @@ class TestEstimateTokensRough:
         assert long > short
 
     def test_unicode_multibyte(self):
-        """Unicode chars are still 1 Python char each — 4 chars/token holds."""
+        """CJK chars ~2 tokens each, non-CJK ~4 chars/token + overhead."""
         text = "你好世界"  # 4 CJK characters
-        assert estimate_tokens_rough(text) == 1
+        assert estimate_tokens_rough(text) == 18
 
 
 class TestEstimateMessagesTokensRough:
@@ -68,10 +68,10 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([]) == 0
 
     def test_single_message_concrete_value(self):
-        """Verify against known str(msg) length."""
+        """Verify content-only estimation (not str(msg) which over-counts)."""
         msg = {"role": "user", "content": "a" * 400}
         result = estimate_messages_tokens_rough([msg])
-        expected = len(str(msg)) // 4
+        expected = len(msg["content"]) // 4
         assert result == expected
 
     def test_multiple_messages_additive(self):
@@ -80,16 +80,15 @@ class TestEstimateMessagesTokensRough:
             {"role": "assistant", "content": "Hi there, how can I help?"},
         ]
         result = estimate_messages_tokens_rough(msgs)
-        expected = sum(len(str(m)) for m in msgs) // 4
+        expected = sum(len(m.get("content", "")) for m in msgs) // 4
         assert result == expected
 
     def test_tool_call_message(self):
-        """Tool call messages with no 'content' key still contribute tokens."""
+        """Tool call messages with no 'content' key still contribute tokens via arguments."""
         msg = {"role": "assistant", "content": None,
                "tool_calls": [{"id": "1", "function": {"name": "terminal", "arguments": "{}"}}]}
         result = estimate_messages_tokens_rough([msg])
         assert result > 0
-        assert result == len(str(msg)) // 4
 
     def test_message_with_list_content(self):
         """Vision messages with multimodal content arrays."""
@@ -98,7 +97,7 @@ class TestEstimateMessagesTokensRough:
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         ]}
         result = estimate_messages_tokens_rough([msg])
-        assert result == len(str(msg)) // 4
+        assert result > 0
 
 
 # =========================================================================

@@ -30,6 +30,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
+from utils import is_process_running
+from kunming_constants import _get_default_kunming_home
+
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # Directories bootstrapped inside every new profile
@@ -120,11 +123,6 @@ def _get_profiles_root() -> Path:
     This ensures ``coder profile list`` can see all profiles.
     """
     return Path.home() / ".kunming" / "profiles"
-
-
-def _get_default_kunming_home() -> Path:
-    """Return the default (pre-profile) KUNMING_HOME path."""
-    return Path.home() / ".kunming"
 
 
 def _get_active_profile_path() -> Path:
@@ -299,10 +297,8 @@ def _check_gateway_running(profile_dir: Path) -> bool:
             return False
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
-        os.kill(pid, 0)  # existence check
-        return True
-    except (json.JSONDecodeError, KeyError, ValueError, TypeError,
-            ProcessLookupError, PermissionError, OSError):
+        return is_process_running(pid)
+    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
         return False
 
 
@@ -643,9 +639,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         # Wait up to 10s for graceful shutdown
         for _ in range(20):
             _time.sleep(0.5)
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            if not is_process_running(pid):
                 print(f"[OK]Gateway stopped (PID {pid})")
                 return
         # Force kill

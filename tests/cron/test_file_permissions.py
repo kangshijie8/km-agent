@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import stat
 import tempfile
 import unittest
@@ -9,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+@unittest.skipIf(sys.platform == "win32", "Unix permissions not supported on Windows")
 class TestCronFilePermissions(unittest.TestCase):
     """Verify cron files get secure permissions."""
 
@@ -75,6 +77,7 @@ class TestCronFilePermissions(unittest.TestCase):
             self.assertEqual(dir_mode, 0o700)
 
 
+@unittest.skipIf(sys.platform == "win32", "Unix permissions not supported on Windows")
 class TestConfigFilePermissions(unittest.TestCase):
     """Verify config files get secure permissions."""
 
@@ -88,7 +91,7 @@ class TestConfigFilePermissions(unittest.TestCase):
     def test_save_config_sets_0600(self):
         config_path = Path(self.tmpdir) / "config.yaml"
         with patch("kunming_cli.config.get_config_path", return_value=config_path), \
-             patch("kunming_cli.config.ensure_KUNMING_home"):
+             patch("kunming_cli.config.ensure_kunming_home"):
             from kunming_cli.config import save_config
             save_config({"model": "test/model"})
 
@@ -98,18 +101,18 @@ class TestConfigFilePermissions(unittest.TestCase):
     def test_save_env_value_sets_0600(self):
         env_path = Path(self.tmpdir) / ".env"
         with patch("kunming_cli.config.get_env_path", return_value=env_path), \
-             patch("kunming_cli.config.ensure_KUNMING_home"):
+             patch("kunming_cli.config.ensure_kunming_home"):
             from kunming_cli.config import save_env_value
             save_env_value("TEST_KEY", "test_value")
 
             file_mode = stat.S_IMODE(os.stat(env_path).st_mode)
             self.assertEqual(file_mode, 0o600)
 
-    def test_ensure_KUNMING_home_sets_0700(self):
+    def test_ensure_kunming_home_sets_0700(self):
         home = Path(self.tmpdir) / ".kunming"
         with patch("kunming_cli.config.get_kunming_home", return_value=home):
-            from kunming_cli.config import ensure_KUNMING_home
-            ensure_KUNMING_home()
+            from kunming_cli.config import ensure_kunming_home
+            ensure_kunming_home()
 
             home_mode = stat.S_IMODE(os.stat(home).st_mode)
             self.assertEqual(home_mode, 0o700)

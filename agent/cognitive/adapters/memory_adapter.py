@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from kunming_constants import get_kunming_home
+from agent.memory_provider import MemoryProvider
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class HybridSearchResult:
     metadata: Dict[str, Any]
 
 
-class HybridMemoryProvider:
+class HybridMemoryProvider(MemoryProvider):
     """
     混合内存提供者 - 结合Kunming的FTS5和Cognitive Core的HNSW
     
@@ -42,17 +43,34 @@ class HybridMemoryProvider:
         self._fts_db_path = get_kunming_home() / "sessions.db"
         self._vector_index = None
         self._initialized = False
-    
-    async def initialize(self) -> None:
-        """初始化混合内存系统"""
+        self._session_id = ""
+        self._last_prefetch_result = ""
+
+    @property
+    def name(self) -> str:
+        return "hybrid"
+
+    def is_available(self) -> bool:
+        return True
+
+    def initialize(self, session_id: str = "", **kwargs) -> None:
+        self._session_id = session_id
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    pool.submit(lambda: asyncio.run(self._async_initialize())).result()
+            else:
+                asyncio.run(self._async_initialize())
+        except RuntimeError:
+            asyncio.run(self._async_initialize())
+
+    async def _async_initialize(self) -> None:
         if self._initialized:
             return
-        
         try:
-            # 延迟导入避免循环依赖
             from plugins.memory.hnsw_local import MemoryStore, MemoryStoreConfig
-            
-            # 初始化HNSW向量索引
             config = MemoryStoreConfig(
                 dimensions=1536,
                 auto_embed=True,
@@ -60,15 +78,61 @@ class HybridMemoryProvider:
             )
             self._vector_index = MemoryStore(config=config)
             await self._vector_index.initialize()
-            
             self._initialized = True
         except ImportError as e:
             logger.warning(f"HNSW plugin not available: {e}")
-            # 没有HNSW插件时仍然可以使用FTS5
             self._initialized = True
         except Exception as e:
             logger.error(f"Failed to initialize HybridMemoryProvider: {e}")
             raise
+
+    def system_prompt_block(self) -> str:
+        if not self._initialized:
+            return ""
+        parts = ["[Hybrid Memory Provider active - FTS5 + HNSW vector search]"]
+        if self._vector_index:
+            parts.append("Vector search: enabled")
+        else:
+            parts.append("Vector search: unavailable (FTS5 only)")
+        return "\n".join(parts)
+
+    def prefetch(self, query: str, *, session_id: str = "") -> str:
+        return self._last_prefetch_result
+
+    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        try:
+            if not self._initialized:
+                return
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(lambda: asyncio.run(self._do_prefetch(query)))
+                    self._last_prefetch_result = future.result()
+            else:
+                self._last_prefetch_result = asyncio.run(self._do_prefetch(query))
+        except RuntimeError:
+            self._last_prefetch_result = asyncio.run(self._do_prefetch(query))
+        except Exception as e:
+            logger.debug(f"Prefetch failed: {e}")
+
+    async def _do_prefetch(self, query: str) -> str:
+        results = await self.search(query, k=5, use_hybrid=True)
+        if not results:
+            return ""
+        lines = []
+        for r in results[:3]:
+            lines.append(f"- {r.content[:200]}")
+        return "\n".join(lines)
+
+    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+        pass
+
+    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        return []
+
+    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        pass
     
     async def search(
         self,
@@ -142,7 +206,7 @@ class HybridMemoryProvider:
                            rank as score
                     FROM messages_fts fts
                     JOIN messages m ON fts.rowid = m.id
-                    WHERE messages_fts MATCH ?
+                    WHERE fts MATCH ?
                     ORDER BY rank
                     LIMIT ?
                 """, (query, k))
@@ -260,7 +324,7 @@ class HybridMemoryProvider:
         if not self._initialized:
             raise RuntimeError("HybridMemoryProvider not initialized. Call initialize() first.")
         
-        memory_id = f"memory_{hash(content) & 0xFFFFFFFF}"
+        memory_id = f"memory_{hashlib.sha256(content.encode()).hexdigest()[:16]}"
         hnsw_success = False
         fts_success = False
         
@@ -326,25 +390,31 @@ class HybridMemoryProvider:
     ) -> None:
         """同步存储到FTS5（用于asyncio.to_thread）"""
         try:
-            conn = sqlite3.connect(str(self._fts_db_path))
-            cursor = conn.cursor()
-            
-            # 检查messages表是否存在
-            cursor.execute("""
-                SELECT name FROM sqlite_master 
-                WHERE type='table' AND name='messages'
-            """)
-            
-            if cursor.fetchone():
-                # 插入到messages表
-                cursor.execute("""
-                    INSERT INTO messages (id, content, role, timestamp)
-                    VALUES (?, ?, ?, datetime('now'))
-                """, (memory_id, content, memory_type))
-                
+            with sqlite3.connect(str(self._fts_db_path)) as conn:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS memory_fts (
+                        id TEXT PRIMARY KEY,
+                        content TEXT,
+                        memory_type TEXT,
+                        metadata TEXT,
+                        timestamp TEXT DEFAULT (datetime('now'))
+                    )
+                """)
+                conn.execute("""
+                    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts_idx
+                    USING fts5(id, content, memory_type, tokenize='trigram')
+                """)
+                meta_json = json.dumps(metadata) if metadata else "{}"
+                conn.execute(
+                    "INSERT OR REPLACE INTO memory_fts (id, content, memory_type, metadata) VALUES (?, ?, ?, ?)",
+                    (memory_id, content, memory_type, meta_json),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO memory_fts_idx (id, content, memory_type) VALUES (?, ?, ?)",
+                    (memory_id, content, memory_type),
+                )
                 conn.commit()
-            
-            conn.close()
         except Exception as e:
             logger.warning(f"FTS5 store sync failed: {e}")
             raise

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -15,6 +16,19 @@ try:
     _HAS_LARK_OAPI = True
 except ImportError:
     _HAS_LARK_OAPI = False
+
+try:
+    import websockets
+    _WEBSOCKETS_VERSION = tuple(int(x) for x in websockets.__version__.split(".")[:2])
+except (ImportError, AttributeError):
+    _WEBSOCKETS_VERSION = (0, 0)
+
+import pytest
+
+_skip_websockets_compat = pytest.mark.skipif(
+    _WEBSOCKETS_VERSION >= (14, 0),
+    reason="lark_oapi incompatible with websockets >= 14.0",
+)
 
 
 def _mock_event_dispatcher_builder(mock_handler_class):
@@ -29,6 +43,7 @@ def _mock_event_dispatcher_builder(mock_handler_class):
     return mock_builder
 
 
+@_skip_websockets_compat
 class TestPlatformEnum(unittest.TestCase):
     def test_feishu_in_platform_enum(self):
         from gateway.config import Platform
@@ -36,6 +51,7 @@ class TestPlatformEnum(unittest.TestCase):
         self.assertEqual(Platform.FEISHU.value, "feishu")
 
 
+@_skip_websockets_compat
 class TestConfigEnvOverrides(unittest.TestCase):
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_xxx",
@@ -82,6 +98,7 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
 
+@_skip_websockets_compat
 class TestGatewayIntegration(unittest.TestCase):
     def test_feishu_in_adapter_factory(self):
         source = Path("gateway/run.py").read_text(encoding="utf-8")
@@ -100,6 +117,7 @@ class TestGatewayIntegration(unittest.TestCase):
         self.assertIn("kunming-feishu", TOOLSETS["kunming-gateway"]["includes"])
 
 
+@_skip_websockets_compat
 class TestFeishuPostParsing(unittest.TestCase):
     def test_parse_post_content_extracts_text_mentions_and_media_refs(self):
         from gateway.platforms.feishu import parse_feishu_post_content
@@ -168,6 +186,7 @@ class TestFeishuPostParsing(unittest.TestCase):
         )
 
 
+@_skip_websockets_compat
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
         from gateway.platforms.feishu import normalize_feishu_message
@@ -249,6 +268,7 @@ class TestFeishuMessageNormalization(unittest.TestCase):
         )
 
 
+@_skip_websockets_compat
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
@@ -539,6 +559,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(info["name"], "Kunming Group")
         self.assertEqual(info["type"], "group")
 
+@_skip_websockets_compat
 class TestAdapterModule(unittest.TestCase):
     def test_adapter_requirement_helper_exists(self):
         source = Path("gateway/platforms/feishu.py").read_text(encoding="utf-8")
@@ -669,6 +690,7 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._ping_interval, 4)
 
 
+@_skip_websockets_compat
 class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_event_handler_registers_reaction_and_card_processors(self):
@@ -2604,6 +2626,7 @@ class TestAdapterBehavior(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+@_skip_websockets_compat
 class TestWebhookSecurity(unittest.TestCase):
     """Tests for webhook signature verification, rate limiting, and body size limits."""
 
@@ -2728,6 +2751,7 @@ class TestWebhookSecurity(unittest.TestCase):
         self.assertIn(b"test_challenge_token", response.body)
 
 
+@_skip_websockets_compat
 class TestDedupTTL(unittest.TestCase):
     """Tests for TTL-aware deduplication."""
 
@@ -2786,6 +2810,7 @@ class TestDedupTTL(unittest.TestCase):
         self.assertIn("om_b", adapter._seen_message_ids)
 
 
+@_skip_websockets_compat
 class TestGroupMentionAtAll(unittest.TestCase):
     """Tests for @_all (Feishu @everyone) group mention routing."""
 
@@ -2819,6 +2844,7 @@ class TestGroupMentionAtAll(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+@_skip_websockets_compat
 class TestSenderNameResolution(unittest.TestCase):
     """Tests for _resolve_sender_name_from_api."""
 

@@ -169,6 +169,26 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"
             )
             return False
+
+        # Scoped lock: prevent multiple gateways from using the same BlueBubbles server
+        from gateway.status import acquire_scoped_lock
+
+        self._lock_identity = self.server_url
+        acquired, existing = acquire_scoped_lock(
+            "bluebubbles-server",
+            self._lock_identity,
+            metadata={"platform": self.platform.value},
+        )
+        if not acquired:
+            owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+            message = (
+                "Another local Kunming gateway is already using this BlueBubbles server"
+                + (f" (PID {owner_pid})." if owner_pid else ".")
+                + " Stop the other gateway before starting a second BlueBubbles adapter."
+            )
+            logger.error("[bluebubbles] %s", message)
+            self._set_fatal_error("bluebubbles_server_lock", message, retryable=False)
+            return False
         from aiohttp import web
 
         self.client = httpx.AsyncClient(timeout=30.0)
@@ -217,6 +237,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._mark_disconnected()
+
+        if getattr(self, "_lock_identity", None):
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("bluebubbles-server", self._lock_identity)
+            except Exception as e:
+                logger.warning("[bluebubbles] Error releasing server lock: %s", e, exc_info=True)
+            self._lock_identity = None
 
     # ------------------------------------------------------------------
     # Chat GUID resolution

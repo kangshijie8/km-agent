@@ -1,8 +1,11 @@
 """Tests for kunming_cli.gateway."""
 
 import signal
+import sys
 from types import SimpleNamespace
 from unittest.mock import patch, call
+
+import pytest
 
 import kunming_cli.gateway as gateway
 
@@ -141,6 +144,7 @@ def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):
     assert "--system" in out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.geteuid not available on Windows")
 def test_install_linux_gateway_from_setup_system_choice_without_root_prints_followup(monkeypatch, capsys):
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
     monkeypatch.setattr(gateway.os, "geteuid", lambda: 1000)
@@ -155,6 +159,7 @@ def test_install_linux_gateway_from_setup_system_choice_without_root_prints_foll
     assert "sudo km gateway start --system" in out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.geteuid not available on Windows")
 def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeypatch):
     monkeypatch.setattr(gateway, "prompt_linux_gateway_install_scope", lambda: "system")
     monkeypatch.setattr(gateway.os, "geteuid", lambda: 0)
@@ -203,6 +208,7 @@ class TestWaitForGatewayExit:
         # Should have polled until None was returned.
         assert poll_count == 3
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL not available on Windows")
     def test_force_kills_after_grace_period(self, monkeypatch):
         """When the process doesn't exit, SIGKILL the saved PID."""
         import time as _time
@@ -232,6 +238,7 @@ class TestWaitForGatewayExit:
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=5.0)
         assert (42, signal.SIGKILL) in kills
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="SIGKILL not available on Windows")
     def test_handles_process_already_gone_on_kill(self, monkeypatch):
         """ProcessLookupError during SIGKILL is not fatal."""
         import time as _time

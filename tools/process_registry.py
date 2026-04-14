@@ -1,5 +1,3 @@
-import tempfile
-
 """Process Registry -- In-memory registry for managed background processes.
 
 Tracks processes spawned via terminal(background=true), providing:
@@ -37,12 +35,14 @@ import platform
 import shlex
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _sanitize_subprocess_env
+from utils import is_process_running
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -52,7 +52,8 @@ logger = logging.getLogger(__name__)
 
 
 # Checkpoint file for crash recovery (gateway only)
-CHECKPOINT_PATH = get_kunming_home() / "processes.json"
+def _get_checkpoint_path():
+    return get_kunming_home() / "processes.json"
 
 # Limits
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
@@ -134,11 +135,7 @@ class ProcessRegistry:
         """Best-effort liveness check for host-visible PIDs."""
         if not pid:
             return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except (ProcessLookupError, PermissionError):
-            return False
+        return is_process_running(pid)
 
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
         """Update recovered host-PID sessions when the underlying process has exited."""
@@ -318,13 +315,27 @@ class ProcessRegistry:
 
         # Run the command in the sandbox with output capture
         tmp_dir = tempfile.gettempdir()
-        log_path = f"{tmp_dir}/kunming_bg_{session.id}.log"
-        pid_path = f"{tmp_dir}/kunming_bg_{session.id}.pid"
-        quoted_command = shlex.quote(command)
-        bg_command = (
-            f"nohup bash -c {quoted_command} > {log_path} 2>&1 & "
-            f"echo $! > {pid_path} && cat {pid_path}"
-        )
+        log_path = os.path.join(tmp_dir, f"kunming_bg_{session.id}.log")
+        pid_path = os.path.join(tmp_dir, f"kunming_bg_{session.id}.pid")
+
+        env_is_windows = _IS_WINDOWS
+        if not env_is_windows and hasattr(env, '_is_windows'):
+            env_is_windows = getattr(env, '_is_windows', False)
+
+        if env_is_windows:
+            ps_command = command.replace("'", "''")
+            bg_command = (
+                f'powershell -Command "Start-Process -FilePath \'cmd.exe\' '
+                f'-ArgumentList \'/c {ps_command}\' -NoNewWindow -RedirectStandardOutput \'{log_path}\' '
+                f'-RedirectStandardError \'{os.path.join(tmp_dir, f"kunming_bg_{session.id}_err.log")}\'" '
+                f'&& echo $LASTEXITCODE > {pid_path}'
+            )
+        else:
+            quoted_command = shlex.quote(command)
+            bg_command = (
+                f"nohup bash -c {quoted_command} > {log_path} 2>&1 & "
+                f"echo $! > {pid_path} && cat {pid_path}"
+            )
 
         try:
             result = env.execute(bg_command, timeout=timeout)
@@ -385,8 +396,9 @@ class ProcessRegistry:
             session.process.wait(timeout=5)
         except Exception as e:
             logger.debug("Process wait timed out or failed: %s", e)
-        session.exited = True
-        session.exit_code = session.process.returncode
+        with session._lock:
+            session.exited = True
+            session.exit_code = session.process.returncode
         self._move_to_finished(session)
 
     def _env_poller_loop(
@@ -435,7 +447,8 @@ class ProcessRegistry:
                         session.exit_code = int(exit_str.splitlines()[-1].strip())
                     except (ValueError, IndexError):
                         session.exit_code = -1
-                    session.exited = True
+                    with session._lock:
+                        session.exited = True
                     self._move_to_finished(session)
                     return
 
@@ -472,8 +485,9 @@ class ProcessRegistry:
             pty.wait()
         except Exception as e:
             logger.debug("PTY wait timed out or failed: %s", e)
-        session.exited = True
-        session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
+        with session._lock:
+            session.exited = True
+            session.exit_code = pty.exitstatus if hasattr(pty, 'exitstatus') else -1
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
@@ -687,9 +701,10 @@ class ProcessRegistry:
                         "its original runtime handle is no longer available"
                     ),
                 }
-            session.exited = True
-            # Use signal.SIGTERM if available (Unix), otherwise use 15 (Windows)
-            session.exit_code = -getattr(signal, 'SIGTERM', 15)
+            with session._lock:
+                session.exited = True
+                # Use signal.SIGTERM if available (Unix), otherwise use 15 (Windows)
+                session.exit_code = -getattr(signal, 'SIGTERM', 15)
             self._move_to_finished(session)
             self._write_checkpoint()
             return {"status": "killed", "session_id": session.id}
@@ -846,7 +861,7 @@ class ProcessRegistry:
                         })
                 # Atomic write to avoid corruption on crash
                 from utils import atomic_json_write
-                atomic_json_write(CHECKPOINT_PATH, entries)
+                atomic_json_write(_get_checkpoint_path(), entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
@@ -856,11 +871,11 @@ class ProcessRegistry:
 
         Returns the number of processes recovered as detached.
         """
-        if not CHECKPOINT_PATH.exists():
+        if not _get_checkpoint_path().exists():
             return 0
 
         try:
-            entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
+            entries = json.loads(_get_checkpoint_path().read_text(encoding="utf-8"))
         except Exception:
             return 0
 

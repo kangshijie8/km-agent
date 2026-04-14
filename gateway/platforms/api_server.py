@@ -1652,6 +1652,12 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._site.start()
 
             self._mark_connected()
+            if not self._api_key:
+                logger.warning(
+                    "[%s] API server running WITHOUT authentication. "
+                    "Set KUNMING_API_KEY or api_key in config to secure the endpoint.",
+                    self.name,
+                )
             logger.info(
                 "[%s] API server listening on http://%s:%d",
                 self.name, self._host, self._port,

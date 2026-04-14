@@ -310,6 +310,15 @@ async def _fetch_url_content(
     *,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
 ) -> str:
+    from agent.model_metadata import is_local_endpoint
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        if is_local_endpoint(hostname):
+            return f"[Blocked: URL points to a private/local address ({hostname})]"
+    except Exception:
+        pass
     fetcher = url_fetcher or _default_url_fetcher
     content = fetcher(url)
     if inspect.isawaitable(content):

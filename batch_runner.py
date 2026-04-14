@@ -257,6 +257,17 @@ def _process_single_prompt(
     """
     prompt = prompt_data["prompt"]
     task_id = f"task_{prompt_index}"
+
+    output_dir = config.get("output_dir")
+    if output_dir:
+        ckpt_dir = Path(output_dir) / "completed"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_file = ckpt_dir / f"prompt_{prompt_index}.json"
+        if ckpt_file.exists():
+            try:
+                return json.loads(ckpt_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
     
     # Per-prompt container image override: if the dataset row has an 'image' field,
     # register it for this task's sandbox. Works with Docker, Modal, Singularity, and Daytona.
@@ -309,8 +320,8 @@ def _process_single_prompt(
         if config.get("verbose"):
             print(f"   Prompt {prompt_index}: Using container image {container_image}")
     
+    agent = None
     try:
-        # Sample toolsets from distribution for this prompt
         selected_toolsets = sample_toolsets_from_distribution(config["distribution"])
         
         if config.get("verbose"):
@@ -390,6 +401,10 @@ def _process_single_prompt(
                 "timestamp": datetime.now().isoformat()
             }
         }
+    finally:
+        if agent is not None:
+            del agent
+            import gc; gc.collect()
 
 
 def _process_batch_worker(args: Tuple) -> Dict[str, Any]:
@@ -868,6 +883,7 @@ class BatchRunner:
             "max_tokens": self.max_tokens,
             "reasoning_config": self.reasoning_config,
             "prefill_messages": self.prefill_messages,
+            "output_dir": str(self.output_dir),
         }
         
         # For backward compatibility, still track by index (but this is secondary to content matching)

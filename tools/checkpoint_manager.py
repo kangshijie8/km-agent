@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-CHECKPOINT_BASE = get_kunming_home() / "checkpoints"
+def _get_checkpoint_base():
+    return get_kunming_home() / "checkpoints"
 
 DEFAULT_EXCLUDES = [
     "node_modules/",
@@ -73,7 +74,7 @@ def _shadow_repo_path(working_dir: str) -> Path:
     """Deterministic shadow repo path: sha256(abs_path)[:16]."""
     abs_path = str(Path(working_dir).resolve())
     dir_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
-    return CHECKPOINT_BASE / dir_hash
+    return _get_checkpoint_base() / dir_hash
 
 
 def _git_env(shadow_repo: Path, working_dir: str) -> dict:
@@ -422,8 +423,11 @@ class CheckpointManager:
         # Walk up looking for project root markers
         markers = {".git", "pyproject.toml", "package.json", "Cargo.toml",
                     "go.mod", "Makefile", "pom.xml", ".hg", "Gemfile"}
+        home = Path.home()
         check = candidate
         while check != check.parent:
+            if check == home or check.parent == home:
+                break
             if any((check / m).exists() for m in markers):
                 return str(check)
             check = check.parent
@@ -502,19 +506,29 @@ class CheckpointManager:
         if count <= self.max_snapshots:
             return
 
-        # Get the hash of the commit at the cutoff point
-        ok, cutoff_hash, _ = _run_git(
-            ["rev-list", "--reverse", "HEAD", "--skip=0",
-             "--max-count=1"],
+        keep = max(self.max_snapshots, 1)
+        ok, keep_hash, _ = _run_git(
+            ["rev-list", "--reverse", "HEAD", f"--max-count={keep}", "--skip=0"],
             shadow_repo, working_dir,
         )
+        if not ok or not keep_hash:
+            logger.debug("Checkpoint repo has %d commits (limit %d)", count, self.max_snapshots)
+            return
 
-        # For simplicity, we don't actually prune — git's pack mechanism
-        # handles this efficiently, and the objects are small.  The log
-        # listing is already limited by max_snapshots.
-        # Full pruning would require rebase --onto or filter-branch which
-        # is fragile for a background feature.  We just limit the log view.
-        logger.debug("Checkpoint repo has %d commits (limit %d)", count, self.max_snapshots)
+        lines = keep_hash.strip().splitlines()
+        if not lines:
+            return
+
+        newest_to_keep = lines[-1]
+
+        ok, _, _ = _run_git(
+            ["update-ref", "refs/heads/main", newest_to_keep],
+            shadow_repo, working_dir,
+        )
+        if ok:
+            _run_git(["reflog", "expire", "--expire=now", "--all"], shadow_repo, working_dir)
+            _run_git(["gc", "--prune=now", "--quiet"], shadow_repo, working_dir)
+            logger.debug("Pruned checkpoint repo from %d to %d commits", count, keep)
 
 
 def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:

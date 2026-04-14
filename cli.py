@@ -2,7 +2,7 @@
 """
 Kunming Agent CLI - Interactive Terminal Interface
 
-A beautiful command-line interface for the Kunming Agent, inspired by Claude Code.
+A beautiful command-line interface for the Kunming Agent.
 Features ASCII art branding, interactive REPL, toolset selection, and rich formatting.
 
 Usage:
@@ -72,6 +72,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # User-managed env files should override stale shell exports on restart.
 from kunming_constants import get_kunming_home, display_kunming_home
 from kunming_cli.env_loader import load_kunming_dotenv
+from kunming_cli.config import save_config_value, resolve_personality_prompt
 
 _kunming_home = get_kunming_home()
 _project_env = Path(__file__).parent / '.env'
@@ -389,6 +390,17 @@ except Exception:
 try:
     from kunming_cli.config import print_config_warnings
     print_config_warnings()
+except Exception:
+    pass
+
+try:
+    from kunming_cli.config import validate_critical_config
+    _critical_warnings = validate_critical_config(CLI_CONFIG)
+    if _critical_warnings:
+        import sys as _sys
+        for _w in _critical_warnings:
+            _sys.stderr.write(f"\033[33m⚠ {_w}\033[0m\n")
+        _sys.stderr.write("\n")
 except Exception:
     pass
 
@@ -1103,61 +1115,7 @@ def _parse_skills_argument(skills: str | list[str] | tuple[str, ...] | None) -> 
     return parsed
 
 
-def save_config_value(key_path: str, value: any) -> bool:
-    """
-    Save a value to the active config file at the specified key path.
-    
-    Respects the same lookup order as load_cli_config():
-    1. ~/.kunming/config.yaml (user config - preferred, used if it exists)
-    2. ./cli-config.yaml (project config - fallback)
-    
-    Args:
-        key_path: Dot-separated path like "agent.system_prompt"
-        value: Value to save
-    
-    Returns:
-        True if successful, False otherwise
-    """
-    # Use the same precedence as load_cli_config: user config first, then project config
-    user_config_path = _kunming_home / 'config.yaml'
-    project_config_path = Path(__file__).parent / 'cli-config.yaml'
-    config_path = user_config_path if user_config_path.exists() else project_config_path
-    
-    try:
-        # Ensure parent directory exists (for ~/.kunming/config.yaml on first use)
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Load existing config
-        if config_path.exists():
-            with open(config_path, 'r') as f:
-                config = yaml.safe_load(f) or {}
-        else:
-            config = {}
-        
-        # Navigate to the key and set value
-        keys = key_path.split('.')
-        current = config
-        for key in keys[:-1]:
-            if key not in current or not isinstance(current[key], dict):
-                current[key] = {}
-            current = current[key]
-        current[keys[-1]] = value
-        
-        # Save back atomically █write to temp file + fsync + os.replace
-        # so an interrupt never leaves config.yaml truncated or empty.
-        from utils import atomic_yaml_write
-        atomic_yaml_write(config_path, config)
-        
-        # Enforce owner-only permissions on config files (contain API keys)
-        try:
-            os.chmod(config_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
-        
-        return True
-    except Exception as e:
-        logger.error("Failed to save config: %s", e)
-        return False
+
 
 
 
@@ -2376,7 +2334,7 @@ class KunmingCLI:
             return False
     
     def show_banner(self):
-        """Display the welcome banner in Claude Code style."""
+        """Display the welcome banner."""
         self.console.clear()
 
         # Get context length for display before branching so it remains
@@ -2793,10 +2751,9 @@ class KunmingCLI:
             return ref
 
     def _handle_stop_command(self):
-        """Handle /stop █kill all running background processes.
+        """Handle /stop - kill all running background processes.
 
-        Inspired by OpenAI Codex's separation of interrupt (stop current turn)
-        from /stop (clean up background processes). See openai/codex#14602.
+        Separates interrupt (stop current turn) from /stop (clean up background processes).
         """
         from tools.process_registry import process_registry
 
@@ -3106,11 +3063,12 @@ class KunmingCLI:
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
         from kunming_constants import get_kunming_home, display_kunming_home
+        from kunming_cli.profiles import _get_profiles_root
 
         home = get_kunming_home()
         display = display_kunming_home()
 
-        profiles_parent = get_kunming_home() / "profiles"
+        profiles_parent = _get_profiles_root()
         try:
             rel = home.relative_to(profiles_parent)
             profile_name = str(rel).split("/")[0]
@@ -3445,7 +3403,6 @@ class KunmingCLI:
 
         Copies the full conversation history to a new session so the user can
         explore a different approach without losing the original session state.
-        Inspired by Claude Code's /branch command.
         """
         if not self.conversation_history:
             _cprint("  No conversation to branch █send a message first.")
@@ -3935,18 +3892,6 @@ class KunmingCLI:
             print()
     
 
-    @staticmethod
-    def _resolve_personality_prompt(value) -> str:
-        """Accept string or dict personality value; return system prompt string."""
-        if isinstance(value, dict):
-            parts = [value.get("system_prompt", "")]
-            if value.get("tone"):
-                parts.append(f'Tone: {value["tone"]}' )
-            if value.get("style"):
-                parts.append(f'Style: {value["style"]}' )
-            return "\n".join(p for p in parts if p)
-        return str(value)
-
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         parts = cmd.split(maxsplit=1)
@@ -3964,7 +3909,7 @@ class KunmingCLI:
                     print("(^_^) Personality cleared (session only)")
                 print("  No personality overlay █using base agent behavior.")
             elif personality_name in self.personalities:
-                self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
+                self.system_prompt = resolve_personality_prompt(self.personalities[personality_name])
                 self.agent = None  # Force re-init
                 if save_config_value("agent.system_prompt", self.system_prompt):
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
@@ -4529,6 +4474,8 @@ class KunmingCLI:
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
+        elif canonical == "stats":
+            self._show_stats(cmd_original)
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "reload-mcp":
@@ -5449,6 +5396,37 @@ class KunmingCLI:
             db.close()
         except Exception as e:
             print(f"  Error generating insights: {e}")
+
+    def _show_stats(self, command: str = "/stats"):
+        """Show runtime metrics from the metrics database."""
+        parts = command.split()
+        days = 7
+        if len(parts) > 1:
+            try:
+                days = int(parts[1])
+            except ValueError:
+                pass
+        try:
+            from metrics import format_stats_text, MetricsCollector
+            current = MetricsCollector.get_instance().get_session_stats()
+            if current:
+                print(f"\n  Current Session:")
+                print(f"    API calls: {current.total_api_calls}")
+                print(f"    Tokens: {current.total_input_tokens:,} in / {current.total_output_tokens:,} out")
+                if current.total_cache_read_tokens:
+                    print(f"    Cache: {current.total_cache_read_tokens:,} read / {current.total_cache_write_tokens:,} write")
+                print(f"    Tool calls: {current.total_tool_calls} ({current.total_tool_errors} errors)")
+                print(f"    Cost: ${current.total_estimated_cost_usd:.4f}")
+                tool_stats = MetricsCollector.get_instance().get_tool_stats()
+                if tool_stats:
+                    print(f"\n  Tool Breakdown:")
+                    for name, stats in sorted(tool_stats.items(), key=lambda x: x[1]["calls"], reverse=True)[:10]:
+                        err = f" ({stats['errors']} err)" if stats["errors"] else ""
+                        print(f"    {name}: {stats['calls']} calls{err}, avg {stats['avg_latency_ms']:.0f}ms")
+            print()
+            print(format_stats_text(days))
+        except Exception as e:
+            print(f"  Error loading stats: {e}")
 
     def _check_cron_inbox(self) -> None:
         """Poll the cron inbox file for CLI and display any new messages."""
@@ -6818,7 +6796,7 @@ class KunmingCLI:
                 tts_thread.join(timeout=5)
     
     def _print_exit_summary(self):
-        """Print session resume info on exit, similar to Claude Code."""
+        """Print session resume info on exit."""
         print()
         msg_count = len(self.conversation_history)
         if msg_count > 0:
@@ -8403,7 +8381,8 @@ class KunmingCLI:
                             pass  # Non-fatal █don't break the main loop
 
                 except Exception as e:
-                    print(f"Error: {e}")
+                    print(f"\n⚠️  Unexpected error: {type(e).__name__}: {e}")
+                    print("   The session is still active. You can continue chatting or type /help for options.")
         
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)
@@ -8419,14 +8398,8 @@ class KunmingCLI:
             _gateway_running = bool(find_gateway_pids())
         except Exception:
             pass
-        try:
-            from cron.scheduler import ensure_heartbeat_job
-            if ensure_heartbeat_job():
-                self.console.print("[dim]Created default heartbeat cron job[/]")
-        except Exception:
-            pass
         if not _gateway_running:
-            def _cli_cron_ticker(stop_event, interval=60):
+            def _cli_cron_ticker(stop_event, interval=180):  # 3 minutes
                 from cron.scheduler import tick as cron_tick
                 _tick_count = 0
                 while not stop_event.is_set():
@@ -8435,7 +8408,8 @@ class KunmingCLI:
                     except Exception:
                         pass
                     _tick_count += 1
-                    if _tick_count % 60 == 0:
+                    # Memory distillation every 20 ticks (60 minutes / 3 min interval)
+                    if _tick_count % 20 == 0:
                         try:
                             from agent.memory_distillation import run_distillation, DEFAULT_CONFIG
                             _dcfg = DEFAULT_CONFIG.copy()

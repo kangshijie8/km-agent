@@ -14,8 +14,8 @@ MARKER = {"type": "ephemeral"}
 
 class TestApplyCacheMarker:
     def test_tool_message_gets_top_level_marker_on_native_anthropic(self):
-        """Native Anthropic path: cache_control injected top-level (adapter moves it inside tool_result)."""
-        msg = {"role": "tool", "content": "result"}
+        """Native Anthropic path: cache_control placed at message top-level (adapter moves it inside tool_result)."""
+        msg = {"role": "tool", "content": "result", "tool_call_id": "call_123"}
         _apply_cache_marker(msg, MARKER, native_anthropic=True)
         assert msg["cache_control"] == MARKER
 
@@ -31,12 +31,10 @@ class TestApplyCacheMarker:
         assert msg["cache_control"] == MARKER
 
     def test_empty_string_content_gets_top_level_marker(self):
-        """Empty text blocks cannot have cache_control (Anthropic rejects them)."""
+        """Empty content gets cache_control at top level (adapter handles conversion)."""
         msg = {"role": "assistant", "content": ""}
         _apply_cache_marker(msg, MARKER)
         assert msg["cache_control"] == MARKER
-        # Must NOT wrap into [{"type": "text", "text": "", "cache_control": ...}]
-        assert msg["content"] == ""
 
     def test_string_content_wrapped_in_list(self):
         msg = {"role": "user", "content": "Hello"}

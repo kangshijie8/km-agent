@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 import re
+import logging
 from typing import Any, Dict, Optional
 
 from utils import is_truthy_value
+
+logger = logging.getLogger(__name__)
 
 _COMPLEX_KEYWORDS = {
     "debug",
@@ -149,7 +152,8 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             explicit_api_key=explicit_api_key,
             explicit_base_url=route.get("base_url"),
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning("Smart model routing failed, falling back to primary model: %s", exc)
         return {
             "model": primary.get("model"),
             "runtime": {
@@ -181,6 +185,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             "api_mode": runtime.get("api_mode"),
             "command": runtime.get("command"),
             "args": list(runtime.get("args") or []),
+            "credential_pool": route.get("credential_pool"),
         },
         "label": f"smart route -> {route.get('model')} ({runtime.get('provider')})",
         "signature": (

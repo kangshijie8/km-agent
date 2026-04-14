@@ -94,7 +94,8 @@ FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
     content=messages,
-    content_rowid=id
+    content_rowid=id,
+    tokenize="trigram"
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
@@ -177,6 +178,7 @@ class SessionDB:
         Returns whatever *fn* returns.
         """
         last_err: Optional[Exception] = None
+        self._ensure_conn()
         for attempt in range(self._WRITE_MAX_RETRIES):
             try:
                 with self._lock:
@@ -191,9 +193,10 @@ class SessionDB:
                             pass
                         raise
                 # Success — periodic best-effort checkpoint.
-                self._write_count += 1
-                if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
-                    self._try_wal_checkpoint()
+                with self._lock:
+                    self._write_count += 1
+                    if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
+                        self._try_wal_checkpoint()
                 return result
             except sqlite3.OperationalError as exc:
                 err_msg = str(exc).lower()
@@ -233,6 +236,10 @@ class SessionDB:
                     )
         except Exception:
             pass  # Best effort — never fatal.
+
+    def _ensure_conn(self):
+        if self._conn is None:
+            raise RuntimeError("SessionDB is closed")
 
     def close(self):
         """Close the database connection.
@@ -1232,6 +1239,62 @@ class SessionDB:
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
                 (session_id,),
             )
+        self._execute_write(_do)
+
+    def rewrite_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Atomically replace all messages for a session.
+
+        Unlike calling clear_messages() + append_message() in sequence (which
+        uses separate transactions and can lose data on crash), this method
+        performs the DELETE and all INSERTs inside a single write transaction.
+        """
+        # Pre-serialize structured fields outside the write lock
+        prepared = []
+        total_tool_calls = 0
+        for msg in messages:
+            role = msg.get("role", "unknown")
+            tool_calls = msg.get("tool_calls")
+            tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+            num_tool_calls = 0
+            if tool_calls is not None:
+                num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
+            total_tool_calls += num_tool_calls
+            reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+            codex_items = msg.get("codex_reasoning_items") if role == "assistant" else None
+            prepared.append((
+                session_id,
+                role,
+                msg.get("content"),
+                msg.get("tool_call_id"),
+                tool_calls_json,
+                msg.get("tool_name"),
+                msg.get("reasoning") if role == "assistant" else None,
+                json.dumps(reasoning_details) if reasoning_details else None,
+                json.dumps(codex_items) if codex_items else None,
+                num_tool_calls,
+            ))
+
+        msg_count = len(messages)
+
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
+            conn.executemany(
+                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                   tool_calls, tool_name, reasoning, reasoning_details,
+                   codex_reasoning_items, timestamp)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8],
+                  time.time())
+                 for p in prepared],
+            )
+            conn.execute(
+                """UPDATE sessions SET message_count = ?, tool_call_count = ?
+                   WHERE id = ?""",
+                (msg_count, total_tool_calls, session_id),
+            )
+
         self._execute_write(_do)
 
     def delete_session(self, session_id: str) -> bool:

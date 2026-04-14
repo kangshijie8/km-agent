@@ -261,7 +261,7 @@ def test_init_env_args_uses_KUNMING_dotenv_for_allowlisted_env(monkeypatch):
     env = _make_execute_only_env(["GITHUB_TOKEN"])
 
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    monkeypatch.setattr(docker_env, "_load_KUNMING_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
+    monkeypatch.setattr(docker_env, "_load_kunming_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
@@ -274,7 +274,7 @@ def test_init_env_args_prefers_shell_env_over_KUNMING_dotenv(monkeypatch):
     env = _make_execute_only_env(["GITHUB_TOKEN"])
 
     monkeypatch.setenv("GITHUB_TOKEN", "value_from_shell")
-    monkeypatch.setattr(docker_env, "_load_KUNMING_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
+    monkeypatch.setattr(docker_env, "_load_kunming_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
@@ -318,7 +318,7 @@ def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     env._env = {"MY_KEY": "static_value"}
 
     monkeypatch.setenv("MY_KEY", "dynamic_value")
-    monkeypatch.setattr(docker_env, "_load_KUNMING_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_kunming_env_vars", lambda: {})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
@@ -333,7 +333,7 @@ def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
     env._env = {"SSH_AUTH_SOCK": "/run/user/1000/agent.sock"}
 
     monkeypatch.setenv("TOKEN", "secret123")
-    monkeypatch.setattr(docker_env, "_load_KUNMING_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_kunming_env_vars", lambda: {})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)

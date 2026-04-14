@@ -65,6 +65,7 @@ from model_tools import (
     get_toolset_for_tool,
     handle_function_call,
     check_toolset_requirements,
+    reset_tool_failure_counts,
 )
 from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
@@ -80,6 +81,7 @@ from agent.retry_utils import jittered_backoff
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    EXPERIENCE_GUIDANCE,
     build_kunming_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -231,10 +233,27 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 })
 
 # File tools can run concurrently when they target independent paths.
-_PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
+_PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch", "search_files"})
 
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
+
+# Default timeout for tool execution in seconds (configurable via agent.tool_timeout)
+_DEFAULT_TOOL_TIMEOUT = 30
+
+_TOOL_TIMEOUT_OVERRIDES = {
+    "terminal": 180,
+    "browser_navigate": 60,
+    "browser_snapshot": 30,
+    "browser_click": 30,
+    "browser_type": 30,
+    "execute_code": 120,
+    "delegate_task": 300,
+    "web_extract": 60,
+    "vision_analyze": 60,
+    "image_generate": 120,
+    "text_to_speech": 60,
+}
 
 # Patterns that indicate a terminal command may modify/delete files.
 _DESTRUCTIVE_PATTERNS = re.compile(
@@ -580,6 +599,7 @@ class AIAgent:
         self.pass_session_id = pass_session_id
         self.persist_session = persist_session
         self._credential_pool = credential_pool
+        self._consecutive_429_count = 0
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -772,8 +792,8 @@ class AIAgent:
             self._client_kwargs = {}
             if not self.quiet_mode:
                 print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
-                if effective_key and len(effective_key) > 12:
-                    print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+                if effective_key:
+                    print(f"🔑 API key: ***configured***")
         else:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway ?construct directly.
@@ -861,12 +881,11 @@ class AIAgent:
                     print(f"🤖 AI Agent initialized with model: {self.model}")
                     if base_url:
                         print(f"🔗 Using custom base URL: {base_url}")
-                    # Always show API key info (masked) for debugging auth issues
                     key_used = client_kwargs.get("api_key", "none")
-                    if key_used and key_used != "dummy-key" and len(key_used) > 12:
-                        print(f"🔑 Using API key: {key_used[:8]}...{key_used[-4:]}")
+                    if key_used and key_used != "dummy-key":
+                        print(f"🔑 API key: ***configured***")
                     else:
-                        print(f"[!]  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
+                        print(f"[!]  Warning: API key appears invalid or missing")
             except Exception as e:
                 raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
         
@@ -961,6 +980,9 @@ class AIAgent:
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
+
+        # Compression attempt counter -- reset at the start of each run_conversation()
+        self._compression_attempts: int = 0
         
         # Filesystem checkpoint manager (transparent ?not a tool)
         from tools.checkpoint_manager import CheckpointManager
@@ -1126,6 +1148,16 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+
+        # Tool execution timeout (seconds) - configurable via agent.tool_timeout
+        self._tool_timeout = _DEFAULT_TOOL_TIMEOUT
+        try:
+            _timeout_val = _agent_section.get("tool_timeout", _DEFAULT_TOOL_TIMEOUT)
+            self._tool_timeout = int(_timeout_val)
+            if self._tool_timeout < 1:
+                self._tool_timeout = _DEFAULT_TOOL_TIMEOUT
+        except (TypeError, ValueError):
+            self._tool_timeout = _DEFAULT_TOOL_TIMEOUT
 
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
@@ -2714,7 +2746,7 @@ class AIAgent:
 
 
 
-    def _build_system_prompt(self, system_message: str = None) -> str:
+    def _build_system_prompt(self, system_message: str = None, user_message: str = None) -> str:
         """
         Assemble the full system prompt from all layers.
         
@@ -2751,6 +2783,8 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        if "experience_search" in self.valid_tool_names:
+            tool_guidance.append(EXPERIENCE_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
@@ -2797,16 +2831,30 @@ class AIAgent:
         if system_message is not None:
             prompt_parts.append(system_message)
 
-        if self._memory_store:
+        if self._memory_store and not (self._memory_manager and self._memory_manager.providers):
             if self._memory_enabled:
-                mem_block = self._memory_store.format_for_system_prompt("memory")
-                if mem_block:
-                    prompt_parts.append(mem_block)
-            # USER.md is always included when enabled.
+                for _mem_target in ("facts", "experiences", "models"):
+                    mem_block = self._memory_store.format_for_system_prompt(_mem_target)
+                    if mem_block:
+                        prompt_parts.append(mem_block)
             if self._user_profile_enabled:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        # Error learning: inject relevant past errors as warnings
+        try:
+            from agent.error_learning import retrieve_relevant_errors
+            _relevant_errors = retrieve_relevant_errors(user_message or "", limit=2)
+            if _relevant_errors:
+                _error_lines = ["[PAST ERRORS TO AVOID:]"]
+                for _err in _relevant_errors:
+                    _error_lines.append(f"  - AVOID: {_err.get('what_was_wrong', '')[:100]}")
+                    if _err.get('what_should_be'):
+                        _error_lines.append(f"    INSTEAD: {_err.get('what_should_be', '')[:100]}")
+                prompt_parts.append("\n".join(_error_lines))
+        except Exception:
+            pass
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:
@@ -3038,12 +3086,10 @@ class AIAgent:
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
         
-        Called after context compression events. Also reloads memory from disk
-        so the rebuilt prompt captures any writes from this session.
+        Called after context compression events. Does NOT reload memory from disk
+        to preserve the frozen snapshot design that keeps prefix cache stable.
         """
         self._cached_system_prompt = None
-        if self._memory_store:
-            self._memory_store.load_from_disk()
 
     def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
         """Convert chat-completions tool schemas to Responses function-tool schemas."""
@@ -4275,6 +4321,10 @@ class AIAgent:
             return False, has_retried_429
 
         if status_code == 429:
+            self._consecutive_429_count += 1
+            backoff = min(5 * (2 ** (self._consecutive_429_count - 1)), 300)
+            logger.info(f"429 rate limit - backing off {backoff}s (attempt {self._consecutive_429_count})")
+            time.sleep(backoff)
             if not has_retried_429:
                 return False, True
             next_entry = pool.mark_exhausted_and_rotate(status_code=429, error_context=error_context)
@@ -6199,75 +6249,64 @@ class AIAgent:
                      tool_call_id: Optional[str] = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
-        Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
-        tools. Used by the concurrent execution path; the sequential path retains
-        its own inline invocation for backward-compatible display handling.
+        All tools are dispatched through the registry. Agent-level tools (todo, memory, etc.)
+        receive their required state (stores, callbacks, parent_agent) via kwargs.
         """
-        if function_name == "todo":
-            from tools.todo_tool import todo_tool as _todo_tool
-            return _todo_tool(
-                todos=function_args.get("todos"),
-                merge=function_args.get("merge", False),
-                store=self._todo_store,
-            )
-        elif function_name == "session_search":
-            if not self._session_db:
-                return json.dumps({"success": False, "error": "Session database not available."})
-            from tools.session_search_tool import session_search as _session_search
-            return _session_search(
-                query=function_args.get("query", ""),
-                role_filter=function_args.get("role_filter"),
-                limit=function_args.get("limit", 3),
-                db=self._session_db,
-                current_session_id=self.session_id,
-            )
-        elif function_name == "memory":
-            target = function_args.get("target", "memory")
-            from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
-                action=function_args.get("action"),
-                target=target,
-                content=function_args.get("content"),
-                old_text=function_args.get("old_text"),
-                store=self._memory_store,
-            )
-            # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in ("add", "replace"):
-                try:
-                    self._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
-                        target,
-                        function_args.get("content", ""),
-                    )
-                except Exception:
-                    pass
-            return result
-        elif self._memory_manager and self._memory_manager.has_tool(function_name):
-            return self._memory_manager.handle_tool_call(function_name, function_args)
-        elif function_name == "clarify":
-            from tools.clarify_tool import clarify_tool as _clarify_tool
-            return _clarify_tool(
-                question=function_args.get("question", ""),
-                choices=function_args.get("choices"),
-                callback=self.clarify_callback,
-            )
-        elif function_name == "delegate_task":
-            from tools.delegate_tool import delegate_task as _delegate_task
-            return _delegate_task(
-                goal=function_args.get("goal"),
-                context=function_args.get("context"),
-                toolsets=function_args.get("toolsets"),
-                tasks=function_args.get("tasks"),
-                max_iterations=function_args.get("max_iterations"),
-                parent_agent=self,
-            )
-        else:
-            return handle_function_call(
-                function_name, function_args, effective_task_id,
-                tool_call_id=tool_call_id,
-                session_id=self.session_id or "",
+        from tools.registry import registry
+
+        # Check if this is an agent-level tool that needs special context
+        tool_metadata = registry.get_tool(function_name)
+        if tool_metadata and tool_metadata.is_agent_tool:
+            # Build kwargs with agent-level state for agent tools
+            kwargs = {}
+
+            if function_name == "todo":
+                kwargs["store"] = self._todo_store
+            elif function_name == "memory":
+                kwargs["store"] = self._memory_store
+            elif function_name == "session_search":
+                if not self._session_db:
+                    return json.dumps({"success": False, "error": "Session database not available."})
+                kwargs["db"] = self._session_db
+                kwargs["current_session_id"] = self.session_id
+            elif function_name == "clarify":
+                kwargs["callback"] = self.clarify_callback
+            elif function_name == "delegate_task":
+                kwargs["parent_agent"] = self
+
+            # Dispatch through registry with agent context
+            result = registry.dispatch(
+                function_name, function_args,
+                task_id=effective_task_id,
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                **kwargs
             )
+
+            # Bridge: notify external memory provider of built-in memory writes
+            if function_name == "memory" and self._memory_manager:
+                if function_args.get("action") in ("add", "replace"):
+                    try:
+                        self._memory_manager.on_memory_write(
+                            function_args.get("action", ""),
+                            function_args.get("target", "memory"),
+                            function_args.get("content", ""),
+                        )
+                    except Exception:
+                        pass
+
+            return result
+
+        # External memory manager tools (not registered in our registry)
+        if self._memory_manager and self._memory_manager.has_tool(function_name):
+            return self._memory_manager.handle_tool_call(function_name, function_args)
+
+        # Regular tools: dispatch through handle_function_call for full error handling
+        return handle_function_call(
+            function_name, function_args, effective_task_id,
+            tool_call_id=tool_call_id,
+            session_id=self.session_id or "",
+            enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+        )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.
@@ -6389,13 +6428,29 @@ class AIAgent:
         try:
             max_workers = min(num_tools, _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = []
+                futures = {}
                 for i, (tc, name, args) in enumerate(parsed_calls):
                     f = executor.submit(_run_tool, i, tc, name, args)
-                    futures.append(f)
+                    futures[f] = (i, tc, name, args)
 
-                # Wait for all to complete (exceptions are captured inside _run_tool)
-                concurrent.futures.wait(futures)
+                # Wait for all to complete with timeout control
+                for future in concurrent.futures.as_completed(futures):
+                    i, tc, name, args = futures[future]
+                    _tool_timeout = _TOOL_TIMEOUT_OVERRIDES.get(name, self._tool_timeout)
+                    try:
+                        # Wait for this specific future with timeout
+                        future.result(timeout=_tool_timeout)
+                    except concurrent.futures.TimeoutError:
+                        # Timeout occurred - mark as error
+                        elapsed = _tool_timeout
+                        timeout_msg = f"Error executing tool '{name}': Tool execution timed out after {_tool_timeout} seconds"
+                        logger.error("Tool %s timed out after %ds", name, _tool_timeout)
+                        results[i] = (name, args, timeout_msg, elapsed, True)
+                        # Cancel the future if possible
+                        future.cancel()
+                    except Exception:
+                        # Other exceptions are already handled inside _run_tool
+                        pass
         finally:
             if spinner:
                 # Build a summary message for the spinner stop
@@ -7126,6 +7181,18 @@ class AIAgent:
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
         self.iteration_budget = IterationBudget(self.max_iterations)
+        reset_tool_failure_counts()
+
+        try:
+            from metrics import MetricsCollector
+            MetricsCollector.get_instance().start_session(
+                session_id=self.session_id or "none",
+                model=self.model,
+                provider=self.provider or "",
+                platform=getattr(self, "platform", "") or "",
+            )
+        except Exception:
+            pass
 
         # Log conversation turn start for debugging/observability
         _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
@@ -7182,6 +7249,23 @@ class AIAgent:
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
+
+        # Error learning: detect user corrections
+        _correction_detected = None
+        if len(messages) >= 2 and messages[-2].get("role") == "assistant":
+            try:
+                from agent.error_learning import detect_correction, log_error
+                _correction_detected = detect_correction(user_message, messages[-2].get("content", ""))
+                if _correction_detected and _correction_detected.get("confidence", 0) >= 0.5:
+                    log_error(
+                        error_type="correction",
+                        context=_correction_detected.get("assistant_message", "")[:200],
+                        what_was_wrong=_correction_detected.get("assistant_message", "")[:200],
+                        what_should_be=_correction_detected.get("user_message", "")[:200],
+                        task_context=user_message[:150],
+                    )
+            except Exception:
+                pass
         
         if not self.quiet_mode:
             self._safe_print(f"[CHAT] Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
@@ -7213,7 +7297,7 @@ class AIAgent:
                 self._cached_system_prompt = stored_prompt
             else:
                 # First turn of a new session ?build from scratch.
-                self._cached_system_prompt = self._build_system_prompt(system_message)
+                self._cached_system_prompt = self._build_system_prompt(system_message, user_message)
                 # Plugin hook: on_session_start
                 # Fired once when a brand-new session is created (not on
                 # continuation).  Plugins can use this to initialise
@@ -7333,12 +7417,11 @@ class AIAgent:
 
         # Main conversation loop
         api_call_count = 0
+        self._compression_attempts = 0
         final_response = None
         interrupted = False
         codex_ack_continuations = 0
-        length_continue_retries = 0
         truncated_response_prefix = ""
-        compression_attempts = 0
         
         # Clear any stale interrupt state at start
         self.clear_interrupt()
@@ -7855,7 +7938,7 @@ class AIAgent:
                         if self.api_mode == "chat_completions":
                             assistant_message = response.choices[0].message
                             if not assistant_message.tool_calls:
-                                length_continue_retries += 1
+                                self._length_continue_retries += 1
                                 interim_msg = self._build_assistant_message(assistant_message, finish_reason)
                                 messages.append(interim_msg)
                                 if assistant_message.content:
@@ -7864,7 +7947,7 @@ class AIAgent:
                                 if length_continue_retries < 3:
                                     self._vprint(
                                         f"{self.log_prefix}?Requesting continuation "
-                                        f"({length_continue_retries}/3)..."
+                                        f"({self._length_continue_retries}/3)..."
                                     )
                                     continue_msg = {
                                         "role": "user",
@@ -7982,6 +8065,23 @@ class AIAgent:
                         self.session_cost_status = cost_result.status
                         self.session_cost_source = cost_result.source
 
+                        try:
+                            from metrics import MetricsCollector, LLMCallRecord
+                            MetricsCollector.get_instance().record_llm_call(LLMCallRecord(
+                                model=self.model,
+                                provider=self.provider or "unknown",
+                                input_tokens=canonical_usage.input_tokens,
+                                output_tokens=canonical_usage.output_tokens,
+                                cache_read_tokens=canonical_usage.cache_read_tokens,
+                                cache_write_tokens=canonical_usage.cache_write_tokens,
+                                reasoning_tokens=canonical_usage.reasoning_tokens,
+                                latency_ms=api_duration * 1000,
+                                estimated_cost_usd=float(cost_result.amount_usd) if cost_result.amount_usd else 0.0,
+                                stop_reason=stop_reason,
+                            ))
+                        except Exception:
+                            pass
+
                         # Persist token counts to session DB for /insights.
                         # Do this for every platform with a session_id so non-CLI
                         # sessions (gateway, cron, delegated runs) cannot lose
@@ -8031,6 +8131,7 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
                     has_retried_429 = False  # Reset on success
+                    self._consecutive_429_count = 0
                     self._touch_activity(f"API call #{api_call_count} completed")
                     break  # Success, exit retry loop
 
@@ -8243,8 +8344,8 @@ class AIAgent:
                                 force=True,
                             )
 
-                        compression_attempts += 1
-                        if compression_attempts <= max_compression_attempts:
+                        self._compression_attempts += 1
+                        if self._compression_attempts <= max_compression_attempts:
                             original_len = len(messages)
                             messages, active_system_prompt = self._compress_context(
                                 messages, system_message,
@@ -8295,8 +8396,8 @@ class AIAgent:
                     )
 
                     if is_payload_too_large:
-                        compression_attempts += 1
-                        if compression_attempts > max_compression_attempts:
+                        self._compression_attempts += 1
+                        if self._compression_attempts > max_compression_attempts:
                             self._vprint(f"{self.log_prefix}?Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
                             self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
@@ -8308,7 +8409,7 @@ class AIAgent:
                                 "error": f"Request payload too large: max compression attempts ({max_compression_attempts}) reached.",
                                 "partial": True
                             }
-                        self._emit_status(f"[!]  Request payload too large (413) ?compression attempt {compression_attempts}/{max_compression_attempts}...")
+                        self._emit_status(f"[!]  Request payload too large (413) ?compression attempt {self._compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -8423,8 +8524,8 @@ class AIAgent:
                         else:
                             self._vprint(f"{self.log_prefix}[!]  Context length exceeded at minimum tier ?attempting compression...", force=True)
 
-                        compression_attempts += 1
-                        if compression_attempts > max_compression_attempts:
+                        self._compression_attempts += 1
+                        if self._compression_attempts > max_compression_attempts:
                             self._vprint(f"{self.log_prefix}?Max compression attempts ({max_compression_attempts}) reached.", force=True)
                             self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
@@ -8436,7 +8537,7 @@ class AIAgent:
                                 "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
                                 "partial": True
                             }
-                        self._emit_status(f"🗜?Context too large (~{approx_tokens:,} tokens) ?compressing ({compression_attempts}/{max_compression_attempts})...")
+                        self._emit_status(f"🗜?Context too large (~{approx_tokens:,} tokens) ?compressing ({self._compression_attempts}/{max_compression_attempts})...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -9177,7 +9278,7 @@ class AIAgent:
                         # giving up, append the assistant message as-is and
                         # continue ?the model will see its own reasoning
                         # on the next turn and produce the text portion.
-                        # Inspired by clawdbot's "incomplete-text" recovery.
+                        # Incomplete-text recovery for structured output.
                         _has_structured = bool(
                             getattr(assistant_message, "reasoning", None)
                             or getattr(assistant_message, "reasoning_content", None)
@@ -9252,7 +9353,7 @@ class AIAgent:
                     if truncated_response_prefix:
                         final_response = truncated_response_prefix + final_response
                         truncated_response_prefix = ""
-                        length_continue_retries = 0
+                        self._length_continue_retries = 0
                     
                     # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
                     final_response = self._strip_think_blocks(final_response).strip()
@@ -9342,10 +9443,22 @@ class AIAgent:
         self._save_trajectory(messages, user_message, completed)
 
         # Clean up VM and browser for this task after conversation completes
-        self._cleanup_task_resources(effective_task_id)
+        try:
+            self._cleanup_task_resources(effective_task_id)
+        except Exception:
+            pass
 
         # Persist session to both JSON log and SQLite
-        self._persist_session(messages, conversation_history)
+        try:
+            self._persist_session(messages, conversation_history)
+        except Exception:
+            pass
+
+        try:
+            from metrics import MetricsCollector
+            MetricsCollector.get_instance().end_session()
+        except Exception:
+            pass
 
 
         # Plugin hook: post_llm_call

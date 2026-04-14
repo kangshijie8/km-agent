@@ -151,7 +151,7 @@ def _check_all_guards(command: str, env_type: str) -> dict:
 # Allowlist: characters that can legitimately appear in directory paths.
 # Covers alphanumeric, path separators, tilde, dot, hyphen, underscore, space,
 # plus, at, equals, and comma.  Everything else is rejected.
-_WORKDIR_SAFE_RE = re.compile(r'^[A-Za-z0-9/_\-.~ +@=,]+$')
+_WORKDIR_SAFE_RE = re.compile(r'^[A-Za-z0-9/\\_\-.~ +@=,:]+$')
 
 
 def _validate_workdir(workdir: str) -> str | None:
@@ -460,6 +460,7 @@ _cleanup_running = False
 # This is never exposed to the model -- only infrastructure code calls it.
 # Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
+_task_env_lock = threading.Lock()
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -478,7 +479,8 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         task_id: The rollout's unique task identifier
         overrides: Dict of config keys to override
     """
-    _task_env_overrides[task_id] = overrides
+    with _task_env_lock:
+        _task_env_overrides[task_id] = overrides
 
 
 def clear_task_env_overrides(task_id: str):
@@ -487,7 +489,8 @@ def clear_task_env_overrides(task_id: str):
 
     Called during cleanup to avoid stale entries accumulating.
     """
-    _task_env_overrides.pop(task_id, None)
+    with _task_env_lock:
+        _task_env_overrides.pop(task_id, None)
 
 # Configuration from environment variables
 
@@ -732,9 +735,10 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # background processes (their _last_activity gets refreshed to keep them alive).
     try:
         from tools.process_registry import process_registry
-        for task_id in list(_last_activity.keys()):
-            if process_registry.has_active_processes(task_id):
-                _last_activity[task_id] = current_time  # Keep sandbox alive
+        with _env_lock:
+            for task_id in list(_last_activity.keys()):
+                if process_registry.has_active_processes(task_id):
+                    _last_activity[task_id] = current_time
     except ImportError:
         pass
 
@@ -821,6 +825,106 @@ def _stop_cleanup_thread():
             _cleanup_thread.join(timeout=5)
         except (SystemExit, KeyboardInterrupt):
             pass
+
+
+def get_or_create_environment(task_id: str = None):
+    """Get or create an environment for the given task.
+
+    Shared by file_tools and code_execution_tool to avoid duplicating the
+    environment-creation logic.  Returns ``(env, env_type)`` tuple.
+
+    Thread-safe: uses the same per-task creation locks as the terminal tool
+    to prevent duplicate sandbox creation from concurrent tool calls.
+    """
+    effective_task_id = task_id or "default"
+
+    # Fast path: environment already exists
+    with _env_lock:
+        if effective_task_id in _active_environments:
+            _last_activity[effective_task_id] = time.time()
+            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+
+    # Slow path: create environment under per-task lock
+    with _creation_locks_lock:
+        if effective_task_id not in _creation_locks:
+            _creation_locks[effective_task_id] = threading.Lock()
+        task_lock = _creation_locks[effective_task_id]
+
+    with task_lock:
+        # Double-check after acquiring the per-task lock
+        with _env_lock:
+            if effective_task_id in _active_environments:
+                _last_activity[effective_task_id] = time.time()
+                return _active_environments[effective_task_id], _get_env_config()["env_type"]
+
+        config = _get_env_config()
+        env_type = config["env_type"]
+        overrides = _task_env_overrides.get(effective_task_id, {})
+
+        if env_type == "docker":
+            image = overrides.get("docker_image") or config["docker_image"]
+        elif env_type == "singularity":
+            image = overrides.get("singularity_image") or config["singularity_image"]
+        elif env_type == "modal":
+            image = overrides.get("modal_image") or config["modal_image"]
+        elif env_type == "daytona":
+            image = overrides.get("daytona_image") or config["daytona_image"]
+        else:
+            image = ""
+
+        cwd = overrides.get("cwd") or config["cwd"]
+
+        container_config = None
+        if env_type in ("docker", "singularity", "modal", "daytona"):
+            container_config = {
+                "container_cpu": config.get("container_cpu", 1),
+                "container_memory": config.get("container_memory", 5120),
+                "container_disk": config.get("container_disk", 51200),
+                "container_persistent": config.get("container_persistent", True),
+                "modal_mode": config.get("modal_mode", "auto"),
+                "docker_volumes": config.get("docker_volumes", []),
+                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+            }
+
+        ssh_config = None
+        if env_type == "ssh":
+            ssh_config = {
+                "host": config.get("ssh_host", ""),
+                "user": config.get("ssh_user", ""),
+                "port": config.get("ssh_port", 22),
+                "key": config.get("ssh_key", ""),
+                "persistent": config.get("ssh_persistent", False),
+            }
+
+        local_config = None
+        if env_type == "local":
+            local_config = {
+                "persistent": config.get("local_persistent", False),
+            }
+
+        if env_type == "singularity":
+            _check_disk_usage_warning()
+
+        logger.info("Creating new %s environment for task %s...", env_type, effective_task_id[:8])
+        env = _create_environment(
+            env_type=env_type,
+            image=image,
+            cwd=cwd,
+            timeout=config["timeout"],
+            ssh_config=ssh_config,
+            container_config=container_config,
+            local_config=local_config,
+            task_id=effective_task_id,
+            host_cwd=config.get("host_cwd"),
+        )
+
+        with _env_lock:
+            _active_environments[effective_task_id] = env
+            _last_activity[effective_task_id] = time.time()
+
+        _start_cleanup_thread()
+        logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
+        return env, env_type
 
 
 def get_active_env(task_id: str):

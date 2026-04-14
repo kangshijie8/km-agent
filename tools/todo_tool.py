@@ -16,6 +16,7 @@ Design:
 
 import json
 from typing import Dict, Any, List, Optional
+from kunming_constants import get_kunming_home
 
 
 # Valid status values for todo items
@@ -34,6 +35,8 @@ class TodoStore:
 
     def __init__(self):
         self._items: List[Dict[str, str]] = []
+        self._persist_path = get_kunming_home() / "todo_state.json"
+        self._load_from_disk()
 
     def write(self, todos: List[Dict[str, Any]], merge: bool = False) -> List[Dict[str, str]]:
         """
@@ -77,6 +80,7 @@ class TodoStore:
                     rebuilt.append(current)
                     seen.add(current["id"])
             self._items = rebuilt
+        self._save_to_disk()
         return self.read()
 
     def read(self) -> List[Dict[str, str]]:
@@ -142,6 +146,23 @@ class TodoStore:
             status = "pending"
 
         return {"id": item_id, "content": content, "status": status}
+
+    def _load_from_disk(self):
+        try:
+            if self._persist_path.exists():
+                with open(self._persist_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self._items = data
+        except Exception:
+            pass
+
+    def _save_to_disk(self):
+        try:
+            from utils import atomic_json_write
+            atomic_json_write(str(self._persist_path), self._items)
+        except Exception:
+            pass
 
 
 def todo_tool(
@@ -265,4 +286,5 @@ registry.register(
         todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
     check_fn=check_todo_requirements,
     emoji="📋",
+    is_agent_tool=True,
 )

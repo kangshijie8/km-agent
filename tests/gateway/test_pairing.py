@@ -2,9 +2,12 @@
 
 import json
 import os
+import platform
 import time
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from gateway.pairing import (
     PairingStore,
@@ -37,6 +40,7 @@ class TestSecureWrite:
         assert target.exists()
         assert json.loads(target.read_text()) == {"hello": "world"}
 
+    @pytest.mark.skipif(platform.system() == "Windows", reason="Unix file permissions not supported on Windows")
     def test_sets_file_permissions(self, tmp_path):
         target = tmp_path / "secret.json"
         _secure_write(target, "data")

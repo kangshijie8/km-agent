@@ -1,3 +1,4 @@
+import sys
 """Tests for git worktree isolation (CLI --worktree / -w flag).
 
 Verifies worktree creation, cleanup, .worktreeinclude handling,
@@ -125,6 +126,7 @@ def _cleanup_worktree(info):
 # Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Git repo detection differs on Windows")
 class TestGitRepoDetection:
     """Test git repo root detection."""
 
@@ -666,18 +668,15 @@ class TestCLIFlagLogic:
 class TestTerminalCWDIntegration:
     """Test that TERMINAL_CWD is correctly set to the worktree path."""
 
-    def test_terminal_cwd_set(self, git_repo):
+    def test_terminal_cwd_set(self, git_repo, monkeypatch):
         """After worktree setup, TERMINAL_CWD should point to the worktree."""
         info = _setup_worktree(str(git_repo))
         assert info is not None
 
         # This is what main() does:
-        os.environ["TERMINAL_CWD"] = info["path"]
+        monkeypatch.setenv("TERMINAL_CWD", info["path"])
         assert os.environ["TERMINAL_CWD"] == info["path"]
         assert Path(os.environ["TERMINAL_CWD"]).exists()
-
-        # Clean up env
-        del os.environ["TERMINAL_CWD"]
 
     def test_terminal_cwd_is_valid_git_repo(self, git_repo):
         """The TERMINAL_CWD worktree should be a valid git working tree."""

@@ -9,10 +9,10 @@ from model_tools import (
     handle_function_call,
     get_all_tool_names,
     get_toolset_for_tool,
-    _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
 )
+from tools.registry import registry
 
 
 # =========================================================================
@@ -21,10 +21,11 @@ from model_tools import (
 
 class TestHandleFunctionCall:
     def test_agent_loop_tool_returns_error(self):
-        for tool_name in _AGENT_LOOP_TOOLS:
+        agent_tool_names = registry.get_agent_tool_names()
+        for tool_name in agent_tool_names:
             result = json.loads(handle_function_call(tool_name, {}))
             assert "error" in result
-            assert "agent loop" in result["error"].lower()
+            assert "agent-level state" in result["error"].lower()
 
     def test_unknown_tool_returns_error(self):
         result = json.loads(handle_function_call("totally_fake_tool_xyz", {}))
@@ -38,7 +39,7 @@ class TestHandleFunctionCall:
         assert isinstance(parsed, dict)
         assert "error" in parsed
         assert len(parsed["error"]) > 0
-        assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
+        assert "error" in parsed["error"].lower() or "not available" in parsed["error"].lower() or "failed" in parsed["error"].lower()
 
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
@@ -81,14 +82,16 @@ class TestHandleFunctionCall:
 
 class TestAgentLoopTools:
     def test_expected_tools_in_set(self):
-        assert "todo" in _AGENT_LOOP_TOOLS
-        assert "memory" in _AGENT_LOOP_TOOLS
-        assert "session_search" in _AGENT_LOOP_TOOLS
-        assert "delegate_task" in _AGENT_LOOP_TOOLS
+        agent_tool_names = set(registry.get_agent_tool_names())
+        assert "todo" in agent_tool_names
+        assert "memory" in agent_tool_names
+        assert "session_search" in agent_tool_names
+        assert "delegate_task" in agent_tool_names
 
     def test_no_regular_tools_in_set(self):
-        assert "web_search" not in _AGENT_LOOP_TOOLS
-        assert "terminal" not in _AGENT_LOOP_TOOLS
+        agent_tool_names = set(registry.get_agent_tool_names())
+        assert "web_search" not in agent_tool_names
+        assert "terminal" not in agent_tool_names
 
 
 # =========================================================================

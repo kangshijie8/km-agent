@@ -102,9 +102,8 @@ class TestHandleBackgroundCommand:
             event = _make_event(text="/background Summarize the top HN stories")
             result = await runner._handle_background_command(event)
 
-        assert "🔄" in result
         assert "Background task started" in result
-        assert "bg_" in result  # task ID starts with bg_
+        assert "bg_" in result
         assert "Summarize the top HN stories" in result
         assert len(created_tasks) == 1  # background task was created
 

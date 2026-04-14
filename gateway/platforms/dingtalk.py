@@ -105,6 +105,26 @@ class DingTalkAdapter(BasePlatformAdapter):
             logger.warning("[%s] DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET required", self.name)
             return False
 
+        # Scoped lock: prevent multiple gateways from using the same DingTalk client
+        from gateway.status import acquire_scoped_lock
+
+        self._lock_identity = self._client_id
+        acquired, existing = acquire_scoped_lock(
+            "dingtalk-client-id",
+            self._lock_identity,
+            metadata={"platform": self.platform.value},
+        )
+        if not acquired:
+            owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+            message = (
+                "Another local Kunming gateway is already using this DingTalk client ID"
+                + (f" (PID {owner_pid})." if owner_pid else ".")
+                + " Stop the other gateway before starting a second DingTalk adapter."
+            )
+            logger.error("[%s] %s", self.name, message)
+            self._set_fatal_error("dingtalk_client_lock", message, retryable=False)
+            return False
+
         try:
             self._http_client = httpx.AsyncClient(timeout=30.0)
 
@@ -169,6 +189,14 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._session_webhooks.clear()
         self._seen_messages.clear()
         logger.info("[%s] Disconnected", self.name)
+
+        if getattr(self, "_lock_identity", None):
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("dingtalk-client-id", self._lock_identity)
+            except Exception as e:
+                logger.warning("[%s] Error releasing DingTalk client lock: %s", self.name, e, exc_info=True)
+            self._lock_identity = None
 
     # -- Inbound message processing -----------------------------------------
 

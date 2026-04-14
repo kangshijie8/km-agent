@@ -45,7 +45,7 @@ def _make_real_cli(**kwargs):
         with patch.object(cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
             cli_mod.__dict__, {"CLI_CONFIG": clean_config}
         ):
-            return cli_mod.kunmingCLI(**kwargs)
+            return cli_mod.KunmingCLI(**kwargs)
 
 
 class _DummyCLI:

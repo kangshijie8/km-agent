@@ -17,6 +17,15 @@ def get_kunming_home() -> Path:
     return Path(os.getenv("KUNMING_HOME", Path.home() / ".kunming"))
 
 
+def _get_default_kunming_home() -> Path:
+    """Return the default (pre-profile) KUNMING_HOME path.
+
+    Always ``~/.kunming`` — anchored to the user's home,
+    NOT to the current KUNMING_HOME (which may itself be a profile).
+    """
+    return Path.home() / ".kunming"
+
+
 def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 

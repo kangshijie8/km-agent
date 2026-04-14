@@ -18,7 +18,7 @@ from tools.checkpoint_manager import (
     _dir_file_count,
     format_checkpoint_list,
     DEFAULT_EXCLUDES,
-    CHECKPOINT_BASE,
+    _get_checkpoint_base,
 )
 
 
@@ -31,8 +31,8 @@ def work_dir(tmp_path):
     """Temporary working directory."""
     d = tmp_path / "project"
     d.mkdir()
-    (d / "main.py").write_text("print('hello')\\n")
-    (d / "README.md").write_text("# Project\\n")
+    (d / "main.py").write_text("print('hello')\n")
+    (d / "README.md").write_text("# Project\n")
     return d
 
 
@@ -45,14 +45,14 @@ def checkpoint_base(tmp_path):
 @pytest.fixture()
 def mgr(work_dir, checkpoint_base, monkeypatch):
     """CheckpointManager with redirected checkpoint base."""
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+    monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
     return CheckpointManager(enabled=True, max_snapshots=50)
 
 
 @pytest.fixture()
 def disabled_mgr(checkpoint_base, monkeypatch):
     """Disabled CheckpointManager."""
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+    monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
     return CheckpointManager(enabled=False)
 
 
@@ -62,19 +62,19 @@ def disabled_mgr(checkpoint_base, monkeypatch):
 
 class TestShadowRepoPath:
     def test_deterministic(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
         p1 = _shadow_repo_path(str(work_dir))
         p2 = _shadow_repo_path(str(work_dir))
         assert p1 == p2
 
     def test_different_dirs_different_paths(self, tmp_path, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
         p1 = _shadow_repo_path(str(tmp_path / "a"))
         p2 = _shadow_repo_path(str(tmp_path / "b"))
         assert p1 != p2
 
     def test_under_checkpoint_base(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
         p = _shadow_repo_path(str(work_dir))
         assert str(p).startswith(str(checkpoint_base))
 
@@ -85,20 +85,20 @@ class TestShadowRepoPath:
 
 class TestShadowRepoInit:
     def test_creates_git_repo(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         err = _init_shadow_repo(shadow, str(work_dir))
         assert err is None
         assert (shadow / "HEAD").exists()
 
     def test_no_git_in_project_dir(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         _init_shadow_repo(shadow, str(work_dir))
         assert not (work_dir / ".git").exists()
 
     def test_has_exclude_file(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         _init_shadow_repo(shadow, str(work_dir))
         exclude = shadow / "info" / "exclude"
@@ -108,7 +108,7 @@ class TestShadowRepoInit:
         assert ".env" in content
 
     def test_has_workdir_file(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         _init_shadow_repo(shadow, str(work_dir))
         workdir_file = shadow / "KUNMING_WORKDIR"
@@ -116,7 +116,7 @@ class TestShadowRepoInit:
         assert str(work_dir.resolve()) in workdir_file.read_text()
 
     def test_idempotent(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
         shadow = _shadow_repo_path(str(work_dir))
         err1 = _init_shadow_repo(shadow, str(work_dir))
         err2 = _init_shadow_repo(shadow, str(work_dir))
@@ -164,7 +164,7 @@ class TestTakeCheckpoint:
         mgr.new_turn()
 
         # Modify a file so there's something to commit
-        (work_dir / "main.py").write_text("print('modified')\\n")
+        (work_dir / "main.py").write_text("print('modified')\n")
         r2 = mgr.ensure_checkpoint(str(work_dir), "turn 2")
         assert r2 is True
 
@@ -208,11 +208,11 @@ class TestListCheckpoints:
         mgr.ensure_checkpoint(str(work_dir), "first")
         mgr.new_turn()
 
-        (work_dir / "main.py").write_text("v2\\n")
+        (work_dir / "main.py").write_text("v2\n")
         mgr.ensure_checkpoint(str(work_dir), "second")
         mgr.new_turn()
 
-        (work_dir / "main.py").write_text("v3\\n")
+        (work_dir / "main.py").write_text("v3\n")
         mgr.ensure_checkpoint(str(work_dir), "third")
 
         result = mgr.list_checkpoints(str(work_dir))
@@ -229,12 +229,12 @@ class TestListCheckpoints:
 class TestRestore:
     def test_restore_to_previous(self, mgr, work_dir):
         # Write original content
-        (work_dir / "main.py").write_text("original\\n")
+        (work_dir / "main.py").write_text("original\n")
         mgr.ensure_checkpoint(str(work_dir), "original state")
         mgr.new_turn()
 
         # Modify the file
-        (work_dir / "main.py").write_text("modified\\n")
+        (work_dir / "main.py").write_text("modified\n")
 
         # Get the checkpoint hash
         checkpoints = mgr.list_checkpoints(str(work_dir))
@@ -245,7 +245,7 @@ class TestRestore:
         assert result["success"] is True
 
         # File should be back to original
-        assert (work_dir / "main.py").read_text() == "original\\n"
+        assert (work_dir / "main.py").read_text() == "original\n"
 
     def test_restore_invalid_hash(self, mgr, work_dir):
         mgr.ensure_checkpoint(str(work_dir), "initial")
@@ -257,11 +257,11 @@ class TestRestore:
         assert result["success"] is False
 
     def test_restore_creates_pre_rollback_snapshot(self, mgr, work_dir):
-        (work_dir / "main.py").write_text("v1\\n")
+        (work_dir / "main.py").write_text("v1\n")
         mgr.ensure_checkpoint(str(work_dir), "v1")
         mgr.new_turn()
 
-        (work_dir / "main.py").write_text("v2\\n")
+        (work_dir / "main.py").write_text("v2\n")
 
         checkpoints = mgr.list_checkpoints(str(work_dir))
         mgr.restore(str(work_dir), checkpoints[0]["hash"])
@@ -285,7 +285,7 @@ class TestWorkingDirResolution:
         subdir = project / "src"
         subdir.mkdir()
         filepath = subdir / "main.py"
-        filepath.write_text("x\\n")
+        filepath.write_text("x\n")
 
         result = mgr.get_working_dir_for_path(str(filepath))
         assert result == str(project)
@@ -294,7 +294,7 @@ class TestWorkingDirResolution:
         mgr = CheckpointManager(enabled=True)
         project = tmp_path / "pyproj"
         project.mkdir()
-        (project / "pyproject.toml").write_text("[project]\\n")
+        (project / "pyproject.toml").write_text("[project]\n")
         subdir = project / "src"
         subdir.mkdir()
 
@@ -305,7 +305,7 @@ class TestWorkingDirResolution:
         mgr = CheckpointManager(enabled=True)
         filepath = tmp_path / "random" / "file.py"
         filepath.parent.mkdir(parents=True)
-        filepath.write_text("x\\n")
+        filepath.write_text("x\n")
 
         result = mgr.get_working_dir_for_path(str(filepath))
         assert result == str(filepath.parent)
@@ -375,7 +375,7 @@ class TestDirFileCount:
 
 class TestErrorResilience:
     def test_no_git_installed(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("tools.checkpoint_manager._get_checkpoint_base", lambda: checkpoint_base)
         mgr = CheckpointManager(enabled=True)
         # Mock git not found
         monkeypatch.setattr("shutil.which", lambda x: None)

@@ -75,6 +75,7 @@ import json
 import logging
 import math
 import os
+import platform
 import re
 import shutil
 import threading
@@ -728,6 +729,7 @@ class MCPServerTask:
         "name", "session", "tool_timeout",
         "_task", "_ready", "_shutdown_event", "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
+        "_degraded",
     )
 
     def __init__(self, name: str):
@@ -744,6 +746,7 @@ class MCPServerTask:
         self._registered_tool_names: list[str] = []
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
+        self._degraded: bool = False
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -1012,9 +1015,10 @@ class MCPServerTask:
                 if retries > _MAX_RECONNECT_RETRIES:
                     logger.warning(
                         "MCP server '%s' failed after %d reconnection attempts, "
-                        "giving up: %s",
+                        "marking as degraded (will retry on next tool call): %s",
                         self.name, _MAX_RECONNECT_RETRIES, exc,
                     )
+                    self._degraded = True
                     return
 
                 logger.warning(
@@ -1038,6 +1042,37 @@ class MCPServerTask:
         await self._ready.wait()
         if self._error:
             raise self._error
+
+    async def lazy_reconnect(self) -> bool:
+        """Attempt a single lazy reconnection for a degraded server.
+
+        Called from the main thread via ``_run_on_mcp_loop`` when a tool
+        invocation finds the server in degraded state.  Returns ``True``
+        if the server is usable afterwards, ``False`` otherwise.
+        """
+        if not self._degraded:
+            return True
+
+        logger.info(
+            "MCP server '%s': attempting lazy reconnection", self.name,
+        )
+        self._ready.clear()
+        self._error = None
+        self._task = asyncio.ensure_future(self.run(self._config))
+        await self._ready.wait()
+
+        if self._error is not None or self.session is None:
+            logger.warning(
+                "MCP server '%s': lazy reconnection failed: %s",
+                self.name, self._error,
+            )
+            return False
+
+        self._degraded = False
+        logger.info(
+            "MCP server '%s': lazy reconnection succeeded", self.name,
+        )
+        return True
 
     async def shutdown(self):
         """Signal the Task to exit and wait for clean resource teardown."""
@@ -1135,32 +1170,54 @@ def _ensure_mcp_loop():
         )
         _mcp_thread.start()
 
+        if not getattr(_ensure_mcp_loop, '_atexit_registered', False):
+            import atexit
+            atexit.register(shutdown_mcp_servers)
+            _ensure_mcp_loop._atexit_registered = True
 
-def _run_on_mcp_loop(coro, timeout: float = 30):
+
+def _run_on_mcp_loop(coro, timeout: float = 120):
     """Schedule a coroutine on the MCP event loop and block until done."""
     with _lock:
         loop = _mcp_loop
-    if loop is None or not loop.is_running():
-        raise RuntimeError("MCP event loop is not running")
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=timeout)
+        if loop is None or not loop.is_running():
+            raise RuntimeError("MCP event loop is not running")
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+    try:
+        return future.result(timeout=timeout)
+    except TimeoutError:
+        future.cancel()
+        raise TimeoutError(f"MCP tool call timed out after {timeout}s")
 
 
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
 
-def _interpolate_env_vars(value):
+def _interpolate_env_vars(value, depth=0, visited=None):
     """Recursively resolve ``${VAR}`` placeholders from ``os.environ``."""
+    if depth >= 5:
+        return value
+    if visited is None:
+        visited = set()
     if isinstance(value, str):
         import re
         def _replace(m):
-            return os.environ.get(m.group(1), m.group(0))
+            var_name = m.group(1)
+            if var_name in visited:
+                return m.group(0)
+            env_val = os.environ.get(var_name)
+            if env_val is None:
+                return m.group(0)
+            visited.add(var_name)
+            resolved = _interpolate_env_vars(env_val, depth=depth + 1, visited=visited)
+            visited.discard(var_name)
+            return resolved
         return re.sub(r"\$\{([^}]+)\}", _replace, value)
     if isinstance(value, dict):
-        return {k: _interpolate_env_vars(v) for k, v in value.items()}
+        return {k: _interpolate_env_vars(v, depth=depth + 1, visited=visited) for k, v in value.items()}
     if isinstance(value, list):
-        return [_interpolate_env_vars(v) for v in value]
+        return [_interpolate_env_vars(v, depth=depth + 1, visited=visited) for v in value]
     return value
 
 
@@ -1228,9 +1285,35 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
-            return json.dumps({
-                "error": f"MCP server '{server_name}' is not connected"
-            })
+            # If the server is degraded, attempt a lazy reconnection once
+            if server and server._degraded:
+                try:
+                    reconnected = _run_on_mcp_loop(
+                        server.lazy_reconnect(), timeout=30,
+                    )
+                    if reconnected and server.session:
+                        # Proceed with the tool call below
+                        pass
+                    else:
+                        return json.dumps({
+                            "error": f"MCP server '{server_name}' is degraded and reconnection failed. Please try again later."
+                        })
+                except Exception as exc:
+                    logger.error(
+                        "MCP server '%s' lazy reconnect error: %s",
+                        server_name, exc,
+                    )
+                    return json.dumps({
+                        "error": f"MCP server '{server_name}' lazy reconnect failed: {exc}"
+                    })
+            else:
+                time.sleep(2)
+                with _lock:
+                    server = _servers.get(server_name)
+                if not server or not server.session:
+                    return json.dumps({
+                        "error": f"MCP server '{server_name}' is not connected. Please try again later."
+                    })
 
         async def _call():
             result = await server.session.call_tool(tool_name, arguments=args)
@@ -1778,7 +1861,6 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             handler=_make_tool_handler(name, mcp_tool.name, server.tool_timeout),
             check_fn=_make_check_fn(name),
             is_async=False,
-            description=schema["description"],
         )
         registered_names.append(tool_name_prefixed)
 
@@ -1814,7 +1896,6 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             handler=handler,
             check_fn=check_fn,
             is_async=False,
-            description=schema["description"],
         )
         registered_names.append(util_name)
 
@@ -2153,7 +2234,8 @@ def _kill_orphaned_mcp_children() -> None:
 
     with _lock:
         pids = list(_stdio_pids)
-        _stdio_pids.clear()
+        # Don't clear — let individual server exits remove their own PIDs
+        # to avoid losing PIDs added by concurrent server starts.
 
     for pid in pids:
         try:

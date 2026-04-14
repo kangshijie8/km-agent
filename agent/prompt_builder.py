@@ -157,6 +157,13 @@ MEMORY_GUIDANCE = (
     "necessary later, save it as a skill with the skill tool."
 )
 
+EXPERIENCE_GUIDANCE = (
+    "Before planning tool usage for a task, consider searching past experiences "
+    "with experience_search to find relevant patterns and avoid repeating mistakes. "
+    "After successfully completing complex multi-step tasks, record the experience "
+    "with experience_record for future reference."
+)
+
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "
@@ -194,7 +201,6 @@ TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.
-# Inspired by patterns from OpenAI's GPT-5.4 prompting guide.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
@@ -255,7 +261,7 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "</missing_context>"
 )
 
-# Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
+# Gemini/Gemma-specific operational guidance.
 # Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
 GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "# Google model operational directives\n"
@@ -758,13 +764,13 @@ def build_skills_system_prompt(
 def build_kunming_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
     """Build a compact Kunming subscription capability block for the system prompt."""
     try:
-        from kunming_cli.kunming_subscription import get_kunming_subscription_features
-        from tools.tool_backend_helpers import managed_kunming_tools_enabled
+        from kunming_cli.nous_subscription import get_nous_subscription_features
+        from tools.tool_backend_helpers import managed_nous_tools_enabled
     except Exception as exc:
         logger.debug("Failed to import Kunming subscription helper: %s", exc)
         return ""
 
-    if not managed_kunming_tools_enabled():
+    if not managed_nous_tools_enabled():
         return ""
 
     valid_names = set(valid_tool_names or set())

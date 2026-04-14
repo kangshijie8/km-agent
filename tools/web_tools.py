@@ -45,6 +45,8 @@ import logging
 import os
 import re
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import List, Dict, Any, Optional
 import httpx
 
@@ -69,6 +71,26 @@ from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
+
+_WEB_TOOLS_TIMEOUT = 60  # seconds
+
+
+def _call_with_timeout(fn, *args, timeout=_WEB_TOOLS_TIMEOUT, **kwargs):
+    """Call *fn* with a wall-clock timeout.
+
+    SDKs like Exa, Firecrawl, and Parallel do not expose a ``timeout``
+    parameter, so we wrap the call in a ``ThreadPoolExecutor`` and raise
+    ``TimeoutError`` if it exceeds *timeout* seconds.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(fn, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError:
+            raise TimeoutError(
+                f"{fn.__qualname__ if hasattr(fn, '__qualname__') else fn.__name__} "
+                f"timed out after {timeout}s"
+            )
 
 
 # --- Backend Selection --------------------------------------------------------
@@ -248,6 +270,7 @@ def _get_firecrawl_client():
 
 _parallel_client = None
 _async_parallel_client = None
+_web_client_lock = threading.Lock()
 
 def _get_parallel_client():
     """Get or create the Parallel sync client (lazy initialization).
@@ -257,13 +280,15 @@ def _get_parallel_client():
     from parallel import Parallel
     global _parallel_client
     if _parallel_client is None:
-        api_key = os.getenv("PARALLEL_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "PARALLEL_API_KEY environment variable not set. "
-                "Get your API key at https://parallel.ai"
-            )
-        _parallel_client = Parallel(api_key=api_key)
+        with _web_client_lock:
+            if _parallel_client is None:
+                api_key = os.getenv("PARALLEL_API_KEY")
+                if not api_key:
+                    raise ValueError(
+                        "PARALLEL_API_KEY environment variable not set. "
+                        "Get your API key at https://parallel.ai"
+                    )
+                _parallel_client = Parallel(api_key=api_key)
     return _parallel_client
 
 
@@ -907,7 +932,8 @@ def _exa_search(query: str, limit: int = 10) -> dict:
         return {"error": "Interrupted", "success": False}
 
     logger.info("Exa search: '%s' (limit=%d)", query, limit)
-    response = _get_exa_client().search(
+    response = _call_with_timeout(
+        _get_exa_client().search,
         query,
         num_results=limit,
         contents={
@@ -939,7 +965,8 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
         return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
 
     logger.info("Exa extract: %d URL(s)", len(urls))
-    response = _get_exa_client().get_contents(
+    response = _call_with_timeout(
+        _get_exa_client().get_contents,
         urls,
         text=True,
     )
@@ -973,7 +1000,8 @@ def _parallel_search(query: str, limit: int = 5) -> dict:
         mode = "agentic"
 
     logger.info("Parallel search: '%s' (mode=%s, limit=%d)", query, mode, limit)
-    response = _get_parallel_client().beta.search(
+    response = _call_with_timeout(
+        _get_parallel_client().beta.search,
         search_queries=[query],
         objective=query,
         mode=mode,
@@ -1004,9 +1032,12 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
         return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
 
     logger.info("Parallel extract: %d URL(s)", len(urls))
-    response = await _get_async_parallel_client().beta.extract(
-        urls=urls,
-        full_content=True,
+    response = await asyncio.wait_for(
+        _get_async_parallel_client().beta.extract(
+            urls=urls,
+            full_content=True,
+        ),
+        timeout=_WEB_TOOLS_TIMEOUT,
     )
 
     results = []
@@ -1124,7 +1155,8 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
-        response = _get_firecrawl_client().search(
+        response = _call_with_timeout(
+            _get_firecrawl_client().search,
             query=query,
             limit=limit
         )
@@ -1679,7 +1711,8 @@ async def web_crawl_tool(
             return tool_error("Interrupted", success=False)
 
         try:
-            crawl_result = _get_firecrawl_client().crawl(
+            crawl_result = _call_with_timeout(
+                _get_firecrawl_client().crawl,
                 url=url,
                 **crawl_params
             )
@@ -2097,7 +2130,8 @@ registry.register(
     toolset="web",
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        format=args.get("format")),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     is_async=True,

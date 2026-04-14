@@ -197,6 +197,26 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.error("Matrix: homeserver URL not configured")
             return False
 
+        # Scoped lock: prevent multiple gateways from using the same Matrix identity
+        from gateway.status import acquire_scoped_lock
+
+        self._lock_identity = f"{self._homeserver}:{self._user_id or 'default'}"
+        acquired, existing = acquire_scoped_lock(
+            "matrix-identity",
+            self._lock_identity,
+            metadata={"platform": self.platform.value},
+        )
+        if not acquired:
+            owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+            message = (
+                "Another local Kunming gateway is already using this Matrix identity"
+                + (f" (PID {owner_pid})." if owner_pid else ".")
+                + " Stop the other gateway before starting a second Matrix adapter."
+            )
+            logger.error("Matrix: %s", message)
+            self._set_fatal_error("matrix_identity_lock", message, retryable=False)
+            return False
+
         # Determine store path and ensure it exists.
         store_path = str(_STORE_DIR)
         _STORE_DIR.mkdir(parents=True, exist_ok=True)
@@ -415,6 +435,14 @@ class MatrixAdapter(BasePlatformAdapter):
         if self._client:
             await self._client.close()
             self._client = None
+
+        if getattr(self, "_lock_identity", None):
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("matrix-identity", self._lock_identity)
+            except Exception as e:
+                logger.warning("Matrix: Error releasing identity lock: %s", e, exc_info=True)
+            self._lock_identity = None
 
         logger.info("Matrix: disconnected")
 

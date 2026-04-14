@@ -462,7 +462,7 @@ def test_load_pool_removes_stale_file_backed_singleton_entry(tmp_path, monkeypat
     )
 
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_KUNMING_oauth_credentials",
+        "agent.anthropic_adapter.read_kunming_oauth_credentials",
         lambda: None,
     )
     monkeypatch.setattr(
@@ -542,7 +542,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
                         "label": "manual-pkce",
                         "auth_type": "oauth",
                         "priority": 0,
-                        "source": "manual:KUNMING_pkce",
+                        "source": "manual:kunming_pkce",
                         "access_token": "manual-token",
                         "refresh_token": "manual-refresh",
                         "expires_at_ms": 1711234567000,
@@ -553,7 +553,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
     )
 
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_KUNMING_oauth_credentials",
+        "agent.anthropic_adapter.read_kunming_oauth_credentials",
         lambda: {
             "accessToken": "seeded-token",
             "refreshToken": "seeded-refresh",
@@ -571,7 +571,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
     entries = pool.entries()
 
     assert len(entries) == 2
-    assert {entry.source for entry in entries} == {"manual:KUNMING_pkce", "KUNMING_pkce"}
+    assert {entry.source for entry in entries} == {"manual:kunming_pkce", "kunming_pkce"}
 
 
 def test_load_pool_prefers_anthropic_env_token_over_file_backed_oauth(tmp_path, monkeypatch):
@@ -582,7 +582,7 @@ def test_load_pool_prefers_anthropic_env_token_over_file_backed_oauth(tmp_path, 
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
 
     monkeypatch.setattr(
-        "agent.anthropic_adapter.read_KUNMING_oauth_credentials",
+        "agent.anthropic_adapter.read_kunming_oauth_credentials",
         lambda: {
             "accessToken": "file-backed-token",
             "refreshToken": "refresh-token",

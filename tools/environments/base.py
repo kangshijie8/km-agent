@@ -6,6 +6,7 @@ re-sourced before each command. CWD persists via in-band stdout markers (remote)
 or a temp file (local).
 """
 
+import glob
 import json
 import logging
 import os
@@ -45,6 +46,44 @@ def get_sandbox_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 _SYNC_INTERVAL_SECONDS = 5.0
+
+# Maximum age (in hours) for orphaned temp files before cleanup
+_MAX_TEMP_FILE_AGE_HOURS = 24
+
+
+def _cleanup_orphaned_temp_files():
+    """Clean up orphaned kunming temp files older than _MAX_TEMP_FILE_AGE_HOURS.
+    
+    This runs once per process to prevent accumulation of temp files from
+    crashed or improperly terminated sessions.
+    """
+    try:
+        tmp_dir = tempfile.gettempdir()
+        current_time = time.time()
+        max_age_seconds = _MAX_TEMP_FILE_AGE_HOURS * 3600
+        
+        patterns = ["kunming-snap-*.sh", "kunming-cwd-*.txt"]
+        cleaned = 0
+        
+        for pattern in patterns:
+            for filepath in glob.glob(os.path.join(tmp_dir, pattern)):
+                try:
+                    mtime = os.path.getmtime(filepath)
+                    if current_time - mtime > max_age_seconds:
+                        os.unlink(filepath)
+                        cleaned += 1
+                        logger.debug("Cleaned up orphaned temp file: %s", filepath)
+                except OSError:
+                    pass
+        
+        if cleaned > 0:
+            logger.info("Cleaned up %d orphaned temp files", cleaned)
+    except Exception as e:
+        logger.debug("Error during temp file cleanup: %s", e)
+
+
+# Run cleanup once at module load
+_cleanup_orphaned_temp_files()
 
 
 def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
@@ -328,9 +367,18 @@ class BaseEnvironment(ABC):
         )
         parts.append(f"cd {quoted_cwd} || exit 126")
 
+        parts.append('_KUNMING_SAVE_PATH="$PATH"')
+        parts.append('_KUNMING_SAVE_HOME="$HOME"')
+        parts.append('_KUNMING_SAVE_USER="$USER"')
+
         # Run the actual command
         parts.append(f"eval '{escaped}'")
         parts.append("__kunming_ec=$?")
+
+        parts.append('[ -z "$PATH" ] && PATH="$_KUNMING_SAVE_PATH"')
+        parts.append('[ -z "$HOME" ] && HOME="$_KUNMING_SAVE_HOME"')
+        parts.append('[ -z "$USER" ] && USER="$_KUNMING_SAVE_USER"')
+        parts.append('export PATH HOME USER 2>/dev/null || true')
 
         # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
         if self._snapshot_ready:

@@ -1,4 +1,4 @@
-"""BuiltinMemoryProvider — wraps MEMORY.md / USER.md as a MemoryProvider.
+"""BuiltinMemoryProvider — wraps three-layer memory as a MemoryProvider.
 
 Always registered as the first provider. Cannot be disabled or removed.
 This is the existing Kunming memory system exposed through the provider
@@ -7,6 +7,12 @@ interface for compatibility with the MemoryManager.
 The actual storage logic lives in tools/memory_tool.py (MemoryStore).
 This provider is a thin adapter that delegates to MemoryStore and
 exposes the memory tool schema.
+
+Three-layer architecture:
+  - FACTS.md: environment knowledge, tool quirks, project conventions
+  - EXPERIENCES.md: problem-solving records, operation outcomes
+  - MODELS.md: learned rules, patterns, decision strategies
+  - USER.md: user profile information
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class BuiltinMemoryProvider(MemoryProvider):
-    """Built-in file-backed memory (MEMORY.md + USER.md).
+    """Built-in file-backed memory (FACTS.md + EXPERIENCES.md + MODELS.md + USER.md).
 
     Always active, never disabled by other providers. The `memory` tool
     is handled by run_agent.py's agent-level tool interception (not through
@@ -54,7 +60,7 @@ class BuiltinMemoryProvider(MemoryProvider):
             self._store.load_from_disk()
 
     def system_prompt_block(self) -> str:
-        """Return MEMORY.md and USER.md content for the system prompt.
+        """Return all memory layer content for the system prompt.
 
         Uses the frozen snapshot captured at load time. This ensures the
         system prompt stays stable throughout a session (preserving the
@@ -65,9 +71,10 @@ class BuiltinMemoryProvider(MemoryProvider):
 
         parts = []
         if self._memory_enabled:
-            mem_block = self._store.format_for_system_prompt("memory")
-            if mem_block:
-                parts.append(mem_block)
+            for target in ("facts", "experiences", "models"):
+                block = self._store.format_for_system_prompt(target)
+                if block:
+                    parts.append(block)
         if self._user_profile_enabled:
             user_block = self._store.format_for_system_prompt("user")
             if user_block:
@@ -76,8 +83,16 @@ class BuiltinMemoryProvider(MemoryProvider):
         return "\n\n".join(parts)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Built-in memory doesn't do query-based recall — it's injected via system_prompt_block."""
-        return ""
+        """Recall relevant memories using the built-in hybrid search."""
+        if not self._store or not query.strip():
+            return ""
+        result = self._store.recall(query)
+        if not result.get("success") or not result.get("results"):
+            return ""
+        lines = ["[Recalled from memory:]"]
+        for r in result["results"][:3]:
+            lines.append(f"  [{r['target']}] {r['content'][:200]}")
+        return "\n".join(lines)
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Built-in memory doesn't auto-sync turns — writes happen via the memory tool."""

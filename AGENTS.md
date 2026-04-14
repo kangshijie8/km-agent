@@ -18,15 +18,20 @@ kunming-agent/
 ├── cli.py                # KunmingCLI class �?interactive CLI orchestrator
 ├── kunming_state.py       # SessionDB �?SQLite session store (FTS5 search)
 ├── agent/                # Agent internals
-�?  ├── prompt_builder.py     # System prompt assembly
-�?  ├── context_compressor.py # Auto context compression
-�?  ├── prompt_caching.py     # Anthropic prompt caching
-�?  ├── auxiliary_client.py   # Auxiliary LLM client (vision, summarization)
-�?  ├── model_metadata.py     # Model context lengths, token estimation
-�?  ├── models_dev.py         # models.dev registry integration (provider-aware context)
-�?  ├── display.py            # KawaiiSpinner, tool preview formatting
-�?  ├── skill_commands.py     # Skill slash commands (shared CLI/gateway)
-�?  └── trajectory.py         # Trajectory saving helpers
+│   ├── prompt_builder.py     # System prompt assembly
+│   ├── context_compressor.py # Auto context compression
+│   ├── prompt_caching.py     # Anthropic prompt caching
+│   ├── auxiliary_client.py   # Auxiliary LLM client (vision, summarization, LLM-assisted distillation)
+│   ├── model_metadata.py     # Model context lengths, token estimation
+│   ├── models_dev.py         # models.dev registry integration (provider-aware context)
+│   ├── display.py            # KawaiiSpinner, tool preview formatting
+│   ├── skill_commands.py     # Skill slash commands (shared CLI/gateway)
+│   ├── trajectory.py         # Trajectory saving helpers
+│   ├── memory_provider.py    # Abstract MemoryProvider base class (pluggable backends)
+│   ├── memory_manager.py     # MemoryManager — orchestrates builtin + external providers
+│   ├── builtin_memory_provider.py  # BuiltinMemoryProvider — three-layer file-backed memory
+│   ├── memory_distillation.py      # Offline memory consolidation (Light→REM→Deep→Decay)
+│   └── error_learning.py     # Error learning — correction detection, error log, experience retrieval
 ├── kunming_cli/           # CLI subcommands and setup
 �?  ├── main.py           # Entry point �?all `km` subcommands
 �?  ├── config.py         # DEFAULT_CONFIG, OPTIONAL_ENV_VARS, migration
@@ -220,6 +225,162 @@ The registry handles schema collection, dispatch, availability checking, and err
 **State files**: If a tool stores persistent state (caches, logs, checkpoints), use `get_kunming_home()` for the base directory �?never `Path.home() / ".kunming"`. This ensures each profile gets its own state.
 
 **Agent-level tools** (todo, memory): intercepted by `run_agent.py` before `handle_function_call()`. See `todo_tool.py` for the pattern.
+
+***
+
+## Memory & Learning System
+
+kunming-agent has a built-in three-layer memory architecture with hybrid search,
+Ebbinghaus forgetting, offline distillation, and error learning — all **zero external
+dependencies** (no vector DB, no embedding API, no MCP tools required).
+
+### Three-Layer Memory Architecture
+
+Inspired by biomimetic memory research (Hindsight, MemOS), memories are organized
+into three semantic layers plus a user profile:
+
+| Layer | File | Purpose | Char Limit |
+|-------|------|---------|------------|
+| **Facts** | `FACTS.md` | Stable knowledge: environment, tools, project conventions | 3000 |
+| **Experiences** | `EXPERIENCES.md` | Episodic records: problem-solving, operation outcomes | 4000 |
+| **Models** | `MODELS.md` | Abstracted patterns: learned rules, decision strategies | 2000 |
+| **User** | `USER.md` | User profile: name, preferences, communication style | 1375 |
+
+**Backward compatibility**: The old `MEMORY.md` is auto-migrated to `FACTS.md` on
+first load. The `memory` target in tool calls is an alias for `facts`.
+
+**Frozen snapshot pattern**: Memory is loaded into the system prompt once at session
+start. Mid-session writes update files on disk immediately (durable) but do NOT
+change the system prompt — this preserves the Anthropic prefix cache for the entire
+session. The snapshot refreshes on the next session start.
+
+### Memory Tool (`tools/memory_tool.py`)
+
+Single `memory` tool with four actions:
+
+- **add**: Create a new entry in the specified layer
+- **replace**: Update an existing entry (identified by `old_text` substring match)
+- **remove**: Delete an entry (identified by `old_text` substring match)
+- **recall**: Hybrid search across all layers (FTS5 keyword + simhash vector)
+
+```python
+# Tool call examples:
+memory(action="add", target="facts", content="Project uses FastAPI for backend")
+memory(action="add", target="experiences", content="Deploy failed — missing .env file")
+memory(action="add", target="models", content="Always check .env exists before deploying")
+memory(action="recall", target="facts", query="deploy environment")
+```
+
+### Hybrid Search (Zero-Dependency)
+
+The `recall` action uses a built-in hybrid scoring system — no external vector DB
+or embedding API needed:
+
+- **FTS5 keyword matching** (35% weight): word overlap, coverage, exact substring bonus
+- **SimHash vector similarity** (65% weight): hash-based fingerprint comparison using
+  `hashlib.md5` — similar texts produce similar fingerprints
+
+Scoring: `hybrid = 0.35 * fts_score + 0.65 * vector_score`. Returns top-8 results
+across all layers, ranked by relevance.
+
+### Ebbinghaus Forgetting Curve
+
+Every memory entry has metadata tracked automatically:
+
+```python
+{
+    "created_at": timestamp,
+    "last_accessed": timestamp,
+    "access_count": int,
+    "importance": float,  # 0.0-1.0, default 0.5
+}
+```
+
+Retention decays exponentially: `retention = exp(-0.693 * age_days / (half_life * access_boost * importance_factor))`
+
+- **Half-life**: 14 days (configurable via `_EBINGHAUS_HALF_LIFE_DAYS`)
+- **Access boost**: `1 + log(1 + access_count) * 0.3` — each recall refreshes retention
+- **Importance factor**: `0.5 + importance` — high-importance memories decay slower
+- **Protection**: entries containing "preference", "always", "never", "must" are never decayed
+- **Threshold**: entries below 15% retention are pruned during distillation
+
+### Memory Distillation (`agent/memory_distillation.py`)
+
+Offline consolidation runs on a cron schedule (default: 3 AM daily). Four phases:
+
+1. **Light phase**: Ingest recent session transcripts as signals
+2. **REM phase**: Extract recurring themes + **LLM-assisted pattern extraction**
+   (calls `auxiliary_client.call_llm()` to identify deeper rules from candidates)
+3. **Deep phase**: Score candidates with 6-dimensional formula, promote top entries
+   to `EXPERIENCES.md`
+4. **Decay phase**: Run Ebbinghaus forgetting curve to prune stale memories
+
+**LLM-assisted REM**: When `llm_assisted_rem` is enabled (default: True), the REM
+phase calls a lightweight LLM to extract 1-3 reusable rules from candidates and
+writes them to `MODELS.md`. Falls back to heuristic-only if LLM is unavailable.
+
+**Default config** (enabled by default):
+
+```python
+{
+    "enabled": True,
+    "schedule": "0 3 * * *",
+    "min_score": 0.65,
+    "max_promotions_per_run": 8,
+    "llm_assisted_rem": True,
+    "decay_on_distill": True,
+}
+```
+
+### Error Learning (`agent/error_learning.py`)
+
+Detects user corrections, logs errors with context, and retrieves relevant past
+errors to avoid repeating mistakes.
+
+**Correction detection**: Matches user messages against 5 patterns:
+- Explicit rejection ("no", "wrong", "错了", "不对")
+- Redirect ("instead", "actually", "应该是")
+- Reference to previous ("I said", "我之前说过")
+- Fix request ("fix", "修改", "改正")
+- Correct approach ("the right way is", "正确做法是")
+
+**Error log**: Persisted to `~/.kunming/memories/error_log.json` with deduplication
+by content hash. Tracks occurrence count, first/last seen dates, and promotion status.
+
+**Auto-promotion**: Errors occurring ≥3 times are automatically promoted to `MODELS.md`
+as rules (e.g., "AVOID: X → INSTEAD: Y").
+
+**Session integration**: At session start, relevant past errors are injected into the
+system prompt as `[PAST ERRORS TO AVOID:]` warnings. During conversation, user
+corrections are detected and logged in real-time.
+
+### Memory Provider Architecture
+
+The memory system uses a provider pattern for extensibility:
+
+```
+MemoryProvider (abstract base class)
+├── BuiltinMemoryProvider  — always active, three-layer file-backed memory
+└── External providers     — optional, one at a time alongside builtin
+```
+
+`MemoryManager` orchestrates providers: `builtin_memory_provider.py` wraps the
+`MemoryStore` and exposes it through the `MemoryProvider` interface. External
+providers (e.g., ruflo, custom backends) can be added via `memory_provider.py`.
+
+### Memory Files Location
+
+All memory files are stored under `~/.kunming/memories/` (or the profile-specific
+`KUNMING_HOME/memories/`):
+
+```
+~/.kunming/memories/
+├── FACTS.md           # Environment knowledge
+├── EXPERIENCES.md     # Problem-solving records
+├── MODELS.md          # Learned rules and patterns
+├── USER.md            # User profile
+└── error_log.json     # Error learning log
+```
 
 ***
 

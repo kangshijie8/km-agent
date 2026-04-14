@@ -66,16 +66,20 @@ def run_async(coro) -> Any:
         loop = None
 
     if loop and loop.is_running():
-        # Inside an async context - run in a fresh thread
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
             return future.result(timeout=300)
 
-    # If we're on a worker thread, use a per-thread persistent loop
     if threading.current_thread() is not threading.main_thread():
         worker_loop = _get_worker_loop()
         return worker_loop.run_until_complete(coro)
 
     tool_loop = _get_tool_loop()
+    if tool_loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, coro)
+            return future.result(timeout=300)
+
     return tool_loop.run_until_complete(coro)

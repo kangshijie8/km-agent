@@ -118,7 +118,7 @@ class TestMemoryStoreAdd:
         store.add("memory", "fact A")
         result = store.add("memory", "fact A")
         assert result["success"] is True  # No error, just a note
-        assert len(store.memory_entries) == 1  # Not duplicated
+        assert len(store._entries["facts"]) == 1
 
     def test_add_exceeding_limit_rejected(self, store):
         # Fill up to near limit
@@ -173,7 +173,7 @@ class TestMemoryStoreRemove:
         store.add("memory", "temporary note")
         result = store.remove("memory", "temporary")
         assert result["success"] is True
-        assert len(store.memory_entries) == 0
+        assert len(store._entries["facts"]) == 0
 
     def test_remove_no_match(self, store):
         result = store.remove("memory", "nonexistent")
@@ -196,8 +196,8 @@ class TestMemoryStorePersistence:
 
         store2 = MemoryStore()
         store2.load_from_disk()
-        assert "persistent fact" in store2.memory_entries
-        assert "Alice, developer" in store2.user_entries
+        assert "persistent fact" in store2._entries["facts"]
+        assert "Alice, developer" in store2._entries["user"]
 
     def test_deduplication_on_load(self, tmp_path, monkeypatch):
         monkeypatch.setattr("tools.memory_tool.MEMORY_DIR", tmp_path)
@@ -208,7 +208,7 @@ class TestMemoryStorePersistence:
 
         store = MemoryStore()
         store.load_from_disk()
-        assert len(store.memory_entries) == 2
+        assert len(store._entries["facts"]) == 2
 
 
 class TestMemoryStoreSnapshot:
@@ -221,7 +221,7 @@ class TestMemoryStoreSnapshot:
 
         snapshot = store.format_for_system_prompt("memory")
         assert isinstance(snapshot, str)
-        assert "MEMORY" in snapshot
+        assert "FACTS" in snapshot
         assert "loaded at start" in snapshot
         assert "added later" not in snapshot
 

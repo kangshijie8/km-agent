@@ -6,8 +6,6 @@ Vulnerabilities) API to check if the package has any known malware advisories
 
 The API is free, public, and maintained by Google.  Typical latency is ~300ms.
 Fail-open: network errors allow the package to proceed.
-
-Inspired by Block/goose's extension malware check.
 """
 
 import json

@@ -44,7 +44,7 @@ def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
 
     import gateway.run as gateway_run
 
-    monkeypatch.setattr(gateway_run, "_KUNMING_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_kunming_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
@@ -100,7 +100,7 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     """An internal event should skip _is_user_authorized entirely."""
     import gateway.run as gateway_run
 
-    monkeypatch.setattr(gateway_run, "_KUNMING_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_kunming_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     runner = GatewayRunner(GatewayConfig())
@@ -145,7 +145,7 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
     """An internal event with no user_id must not generate a pairing code."""
     import gateway.run as gateway_run
 
-    monkeypatch.setattr(gateway_run, "_KUNMING_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_kunming_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     runner = GatewayRunner(GatewayConfig())
@@ -190,7 +190,7 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     """Verify the normal (non-internal) path still triggers pairing for unknown users."""
     import gateway.run as gateway_run
 
-    monkeypatch.setattr(gateway_run, "_KUNMING_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_kunming_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     # Clear env vars that could let all users through (loaded by

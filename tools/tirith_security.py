@@ -105,14 +105,9 @@ _install_thread: threading.Thread | None = None
 _MARKER_TTL = 86400  # 24 hours
 
 
-def _get_kunming_home() -> str:
-    """Return the Kunming home directory, respecting KUNMING_HOME env var."""
-    return str(get_kunming_home())
-
-
 def _failure_marker_path() -> str:
     """Return the path to the install-failure marker file."""
-    return os.path.join(_get_kunming_home(), ".tirith-install-failed")
+    return os.path.join(str(get_kunming_home()), ".tirith-install-failed")
 
 
 def _read_failure_reason() -> str | None:
@@ -176,7 +171,7 @@ def _clear_install_failed():
 
 def _kunming_bin_dir() -> str:
     """Return $KUNMING_HOME/bin, creating it if needed."""
-    d = os.path.join(_get_kunming_home(), "bin")
+    d = os.path.join(str(get_kunming_home()), "bin")
     os.makedirs(d, exist_ok=True)
     return d
 

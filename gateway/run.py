@@ -79,7 +79,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Kunming home directory (respects KUNMING_HOME override)
 from kunming_constants import get_kunming_home
-from utils import atomic_yaml_write
 _kunming_home = get_kunming_home()
 
 # Load environment variables from ~/.kunming/.env first.
@@ -843,21 +842,13 @@ class GatewayRunner:
             await self.stop()
         elif not self.adapters and self._failed_platforms:
             # All platforms are down and queued for background reconnection.
-            # If the error is retryable, exit with failure so systemd Restart=on-failure
-            # can restart the process. Otherwise stay alive and keep retrying in background.
-            if adapter.fatal_error_retryable:
-                self._exit_reason = adapter.fatal_error_message or "All messaging platforms failed with retryable errors"
-                self._exit_with_failure = True
-                logger.error(
-                    "All messaging platforms failed with retryable errors. "
-                    "Shutting down gateway for service restart (systemd will retry)."
-                )
-                await self.stop()
-            else:
-                logger.warning(
-                    "No connected messaging platforms remain, but %d platform(s) queued for reconnection",
-                    len(self._failed_platforms),
-                )
+            # Stay alive and keep retrying in background - the reconnection watcher
+            # will handle retries with exponential backoff.
+            logger.warning(
+                "No connected messaging platforms remain, but %d platform(s) queued for reconnection. "
+                "Gateway staying alive in degraded mode.",
+                len(self._failed_platforms),
+            )
 
     def _request_clean_exit(self, reason: str) -> None:
         self._exit_cleanly = True
@@ -1202,14 +1193,20 @@ class GatewayRunner:
                 self._request_clean_exit(reason)
                 return True
             if enabled_platform_count > 0:
+                # All platforms failed to connect, but we still have failed_platforms
+                # to retry. Enter degraded mode instead of exiting.
                 reason = "; ".join(startup_retryable_errors) or "all configured messaging platforms failed to connect"
-                logger.error("Gateway failed to connect any configured messaging platform: %s", reason)
+                logger.warning(
+                    "Gateway starting in degraded mode: %s. "
+                    "Will retry failed platforms in background.",
+                    reason
+                )
                 try:
                     from gateway.status import write_runtime_status
-                    write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+                    write_runtime_status(gateway_state="degraded", exit_reason=reason)
                 except Exception:
                     pass
-                return False
+                # Continue to start background watchers instead of returning False
             logger.info("No messaging platforms enabled — running in cron-only mode.")
             logger.info("Gateway will continue running for cron job execution.")
         
@@ -2363,15 +2360,9 @@ class GatewayRunner:
         # Set environment variables for tools
         self._set_session_env(context)
         
-        # Read privacy.redact_pii from config (re-read per message)
-        _redact_pii = False
-        try:
-            import yaml as _pii_yaml
-            with open(_config_path, encoding="utf-8") as _pf:
-                _pcfg = _pii_yaml.safe_load(_pf) or {}
-            _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
-        except Exception:
-            pass
+        # Read privacy.redact_pii from config
+        _pcfg = _load_gateway_config()
+        _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
@@ -3208,24 +3199,17 @@ class GatewayRunner:
         base_url = None
         api_key = None
 
-        try:
-            cfg_path = _kunming_home / "config.yaml"
-            if cfg_path.exists():
-                import yaml as _info_yaml
-                with open(cfg_path, encoding="utf-8") as f:
-                    data = _info_yaml.safe_load(f) or {}
-                model_cfg = data.get("model", {})
-                if isinstance(model_cfg, dict):
-                    raw_ctx = model_cfg.get("context_length")
-                    if raw_ctx is not None:
-                        try:
-                            config_context_length = int(raw_ctx)
-                        except (TypeError, ValueError):
-                            pass
-                    provider = model_cfg.get("provider") or None
-                    base_url = model_cfg.get("base_url") or None
-        except Exception:
-            pass
+        data = _load_gateway_config()
+        model_cfg = data.get("model", {})
+        if isinstance(model_cfg, dict):
+            raw_ctx = model_cfg.get("context_length")
+            if raw_ctx is not None:
+                try:
+                    config_context_length = int(raw_ctx)
+                except (TypeError, ValueError):
+                    pass
+            provider = model_cfg.get("provider") or None
+            base_url = model_cfg.get("base_url") or None
 
         # Resolve runtime credentials for probing
         try:
@@ -3364,14 +3348,13 @@ class GatewayRunner:
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile -show active profile name and home directory."""
         from kunming_constants import get_kunming_home, display_kunming_home
-        from pathlib import Path
+        from kunming_cli.profiles import _get_profiles_root
 
         home = get_kunming_home()
         display = display_kunming_home()
 
         # Detect profile name from KUNMING_HOME path
-        # Profile paths look like: ~/.kunming/profiles/<name>
-        profiles_parent = Path.home() / ".kunming" / "profiles"
+        profiles_parent = _get_profiles_root()
         try:
             rel = home.relative_to(profiles_parent)
             profile_name = str(rel).split("/")[0]
@@ -3844,7 +3827,6 @@ class GatewayRunner:
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
-        import yaml
         from kunming_cli.models import (
             list_available_providers,
             normalize_provider,
@@ -3853,16 +3835,10 @@ class GatewayRunner:
 
         # Resolve current provider from config
         current_provider = "openrouter"
-        config_path = _kunming_home / 'config.yaml'
-        try:
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-                model_cfg = cfg.get("model", {})
-                if isinstance(model_cfg, dict):
-                    current_provider = model_cfg.get("provider", current_provider)
-        except Exception:
-            pass
+        cfg = _load_gateway_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            current_provider = model_cfg.get("provider", current_provider)
 
         current_provider = normalize_provider(current_provider)
         if current_provider == "auto":
@@ -3900,22 +3876,10 @@ class GatewayRunner:
     
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
-        import yaml
-
         args = event.get_command_args().strip().lower()
-        config_path = _kunming_home / 'config.yaml'
 
-        try:
-            if config_path.exists():
-                with open(config_path, 'r', encoding="utf-8") as f:
-                    config = yaml.safe_load(f) or {}
-                personalities = config.get("agent", {}).get("personalities", {})
-            else:
-                config = {}
-                personalities = {}
-        except Exception:
-            config = {}
-            personalities = {}
+        config = _load_gateway_config()
+        personalities = config.get("agent", {}).get("personalities", {})
 
         if not personalities:
             return "No personalities configured in `~/.kunming/config.yaml`"
@@ -3932,35 +3896,21 @@ class GatewayRunner:
             lines.append("\nUsage: `/personality <name>`")
             return "\n".join(lines)
 
-        def _resolve_prompt(value):
-            if isinstance(value, dict):
-                parts = [value.get("system_prompt", "")]
-                if value.get("tone"):
-                    parts.append(f'Tone: {value["tone"]}')
-                if value.get("style"):
-                    parts.append(f'Style: {value["style"]}')
-                return "\n".join(p for p in parts if p)
-            return str(value)
-
         if args in ("none", "default", "neutral"):
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = ""
-                atomic_yaml_write(config_path, config)
+                from kunming_cli.config import save_config_value
+                save_config_value("agent.system_prompt", "")
             except Exception as e:
                 return f"â ï¸ Failed to save personality change: {e}"
             self._ephemeral_system_prompt = ""
             return "ð­ Personality cleared -using base agent behavior.\n_(takes effect on next message)_"
         elif args in personalities:
-            new_prompt = _resolve_prompt(personalities[args])
+            from kunming_cli.config import resolve_personality_prompt
+            new_prompt = resolve_personality_prompt(personalities[args])
 
-            # Write to config.yaml, same pattern as CLI save_config_value.
             try:
-                if "agent" not in config or not isinstance(config.get("agent"), dict):
-                    config["agent"] = {}
-                config["agent"]["system_prompt"] = new_prompt
-                atomic_yaml_write(config_path, config)
+                from kunming_cli.config import save_config_value
+                save_config_value("agent.system_prompt", new_prompt)
             except Exception as e:
                 return f"â ï¸ Failed to save personality change: {e}"
 
@@ -4043,14 +3993,8 @@ class GatewayRunner:
         
         # Save to config.yaml
         try:
-            import yaml
-            config_path = _kunming_home / 'config.yaml'
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-            user_config[env_key] = chat_id
-            atomic_yaml_write(config_path, user_config)
+            from kunming_cli.config import save_config_value
+            save_config_value(env_key, chat_id)
             # Also set in the current environment so it takes effect immediately
             os.environ[env_key] = str(chat_id)
         except Exception as e:
@@ -4858,32 +4802,11 @@ class GatewayRunner:
             /reasoning show|on      Show model reasoning in responses
             /reasoning hide|off     Hide model reasoning from responses
         """
-        import yaml
+        from kunming_cli.config import save_config_value
 
         args = event.get_command_args().strip().lower()
-        config_path = _kunming_home / "config.yaml"
         self._reasoning_config = self._load_reasoning_config()
         self._show_reasoning = self._load_show_reasoning()
-
-        def _save_config_key(key_path: str, value):
-            """Save a dot-separated key to config.yaml."""
-            try:
-                user_config = {}
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        user_config = yaml.safe_load(f) or {}
-                keys = key_path.split(".")
-                current = user_config
-                for k in keys[:-1]:
-                    if k not in current or not isinstance(current[k], dict):
-                        current[k] = {}
-                    current = current[k]
-                current[keys[-1]] = value
-                atomic_yaml_write(config_path, user_config)
-                return True
-            except Exception as e:
-                logger.error("Failed to save config key %s: %s", key_path, e)
-                return False
 
         if not args:
             # Show current state
@@ -4905,12 +4828,12 @@ class GatewayRunner:
         # Display toggle
         if args in ("show", "on"):
             self._show_reasoning = True
-            _save_config_key("display.show_reasoning", True)
+            save_config_value("display.show_reasoning", True)
             return "ð§  [OK]Reasoning display: **ON**\nModel thinking will be shown before each response."
 
         if args in ("hide", "off"):
             self._show_reasoning = False
-            _save_config_key("display.show_reasoning", False)
+            save_config_value("display.show_reasoning", False)
             return "ð§  [OK]Reasoning display: **OFF**"
 
         # Effort level change
@@ -4927,7 +4850,7 @@ class GatewayRunner:
             )
 
         self._reasoning_config = parsed
-        if _save_config_key("agent.reasoning_effort", effort):
+        if save_config_value("agent.reasoning_effort", effort):
             return f"ð§  [OK]Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
         else:
             return f"ð§  [OK]Reasoning effort set to `{effort}` (this session only)"
@@ -4948,19 +4871,9 @@ class GatewayRunner:
         Gated by ``display.tool_progress_command`` in config.yaml (default off).
         When enabled, cycles the tool progress mode through off ->new ->all ->        verbose ->off, same as the CLI.
         """
-        import yaml
-
-        config_path = _kunming_home / "config.yaml"
-
         # --- check config gate ------------------------------------------------
-        try:
-            user_config = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    user_config = yaml.safe_load(f) or {}
-            gate_enabled = user_config.get("display", {}).get("tool_progress_command", False)
-        except Exception:
-            gate_enabled = False
+        user_config = _load_gateway_config()
+        gate_enabled = user_config.get("display", {}).get("tool_progress_command", False)
 
         if not gate_enabled:
             return (
@@ -4992,15 +4905,11 @@ class GatewayRunner:
         new_mode = cycle[idx]
 
         # Save to config.yaml
-        try:
-            if "display" not in user_config or not isinstance(user_config.get("display"), dict):
-                user_config["display"] = {}
-            user_config["display"]["tool_progress"] = new_mode
-            atomic_yaml_write(config_path, user_config)
+        from kunming_cli.config import save_config_value
+        if save_config_value("display.tool_progress", new_mode):
             return f"{descriptions[new_mode]}\n_(saved to config -takes effect on next message)_"
-        except Exception as e:
-            logger.warning("Failed to save tool_progress mode: %s", e)
-            return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
+        else:
+            return f"{descriptions[new_mode]}\n_(could not save to config)_"
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context."""
@@ -5201,7 +5110,6 @@ class GatewayRunner:
 
         Copies conversation history to a new session so the user can explore
         a different approach without losing the original.
-        Inspired by Claude Code's /branch command.
         """
         import uuid as _uuid
 
@@ -7432,25 +7340,26 @@ class GatewayRunner:
         return response
 
 
-def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
+def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 180):
     """
     Background thread that ticks the cron scheduler at a regular interval.
-    
+
     Runs inside the gateway process so cronjobs fire automatically without
     needing a separate `km cron daemon` or system cron entry.
 
     When ``adapters`` and ``loop`` are provided, passes them through to the
     cron delivery path so live adapters can be used for E2EE rooms.
 
-    Also refreshes the channel directory every 5 minutes and prunes the
+    Also refreshes the channel directory every 15 minutes and prunes the
     image/audio/document cache once per hour.
     """
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
 
-    IMAGE_CACHE_EVERY = 60   # ticks -once per hour at default 60s interval
-    CHANNEL_DIR_EVERY = 5    # ticks -every 5 minutes
-    DISTILL_EVERY = 60       # ticks -once per hour
+    # At 180s (3 min) interval: 20 ticks = 1 hour
+    IMAGE_CACHE_EVERY = 20   # ticks -once per hour
+    CHANNEL_DIR_EVERY = 5    # ticks -every 15 minutes
+    DISTILL_EVERY = 20       # ticks -once per hour
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -7659,12 +7568,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Start background cron ticker so scheduled jobs fire automatically.
     # Pass the event loop so cron delivery can use live adapters (E2EE support).
-    try:
-        from cron.scheduler import ensure_heartbeat_job
-        if ensure_heartbeat_job():
-            logger.info("Created default heartbeat cron job")
-    except Exception:
-        pass
     cron_stop = threading.Event()
     cron_thread = threading.Thread(
         target=_start_cron_ticker,

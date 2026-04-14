@@ -414,7 +414,7 @@ class TestBuiltinMemoryProvider:
             user_profile_enabled=True,
         )
         block = p.system_prompt_block()
-        assert "BLOCK_memory" in block
+        assert "BLOCK_facts" in block
         assert "BLOCK_user" in block
 
     def test_system_prompt_memory_disabled(self):

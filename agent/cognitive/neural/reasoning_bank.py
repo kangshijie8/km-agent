@@ -7,6 +7,7 @@ semantic search. Stores agent reasoning trajectories for learning and replay.
 Based on: @claude-flow/neural/src/index.ts
 """
 
+import atexit
 import json
 import sqlite3
 from typing import Dict, List, Optional, Any, Callable
@@ -102,6 +103,8 @@ class ReasoningBank:
         
         # Statistics
         self._metrics = LearningMetrics()
+
+        atexit.register(self._atexit_shutdown)
     
     async def initialize(self) -> None:
         """Initialize the ReasoningBank"""
@@ -159,6 +162,14 @@ class ReasoningBank:
             self._conn = None
         
         self._initialized = False
+
+    def _atexit_shutdown(self) -> None:
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
     
     async def _load_from_persistence(self) -> None:
         """Load trajectories from database"""
@@ -313,27 +324,25 @@ class ReasoningBank:
         """Persist trajectory to database"""
         if not self._conn:
             return
-        
-        self._conn.execute(
-            """INSERT OR REPLACE INTO trajectories VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            )""",
-            self._trajectory_to_row(trajectory)
-        )
-        
-        # Update tags
-        self._conn.execute(
-            "DELETE FROM trajectory_tags WHERE trajectory_id = ?",
-            (trajectory.id,)
-        )
-        
-        for tag in trajectory.tags:
+
+        with self._conn:
             self._conn.execute(
-                "INSERT INTO trajectory_tags VALUES (?, ?)",
-                (trajectory.id, tag)
+                """INSERT OR REPLACE INTO trajectories VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )""",
+                self._trajectory_to_row(trajectory)
             )
-        
-        self._conn.commit()
+
+            self._conn.execute(
+                "DELETE FROM trajectory_tags WHERE trajectory_id = ?",
+                (trajectory.id,)
+            )
+
+            for tag in trajectory.tags:
+                self._conn.execute(
+                    "INSERT INTO trajectory_tags VALUES (?, ?)",
+                    (trajectory.id, tag)
+                )
     
     async def get(self, trajectory_id: str) -> Optional[ReasoningTrajectory]:
         """

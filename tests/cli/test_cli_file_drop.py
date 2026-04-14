@@ -1,3 +1,4 @@
+import sys
 """Tests for _detect_file_drop — file path detection that prevents
 dragged/pasted absolute paths from being mistaken for slash commands."""
 
@@ -73,6 +74,7 @@ class TestNonFileInputs:
 # Tests: image file detection
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(sys.platform == "win32", reason="File drop detection uses Unix paths")
 class TestImageFileDrop:
     def test_simple_image_path(self, tmp_image):
         result = _detect_file_drop(str(tmp_image))
@@ -110,6 +112,7 @@ class TestImageFileDrop:
 # Tests: non-image file detection
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(sys.platform == "win32", reason="File drop detection uses Unix paths")
 class TestNonImageFileDrop:
     def test_python_file(self, tmp_text):
         result = _detect_file_drop(str(tmp_text))
@@ -130,6 +133,7 @@ class TestNonImageFileDrop:
 # Tests: backslash-escaped spaces (macOS drag-and-drop)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(sys.platform == "win32", reason="File drop detection uses Unix paths")
 class TestEscapedSpaces:
     def test_escaped_spaces_in_path(self, tmp_image_with_spaces):
         r"""macOS drags produce paths like /path/to/my\ file.png"""
@@ -152,6 +156,7 @@ class TestEscapedSpaces:
 # Tests: edge cases
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(sys.platform == "win32", reason="File drop detection uses Unix paths")
 class TestEdgeCases:
     def test_path_with_no_extension(self, tmp_path):
         f = tmp_path / "Makefile"

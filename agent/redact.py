@@ -54,10 +54,11 @@ _PREFIX_PATTERNS = [
     r"hsk-[A-Za-z0-9]{10,}",            # Hindsight API key
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
+    r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",  # JWT tokens (three base64url segments)
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
-_SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+_SECRET_ENV_NAMES = r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH_TOKEN|AUTH_KEY|AUTH_SECRET|AUTHORIZATION)"
 _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
@@ -90,6 +91,12 @@ _PRIVATE_KEY_RE = re.compile(
 # Catches postgres, mysql, mongodb, redis, amqp URLs and redacts the password
 _DB_CONNSTR_RE = re.compile(
     r"((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:]+:)([^@]+)(@)",
+    re.IGNORECASE,
+)
+
+# Azure connection string AccountKey
+_AZURE_CONNSTR_RE = re.compile(
+    r"(AccountKey=)([A-Za-z0-9+/=]{20,})",
     re.IGNORECASE,
 )
 
@@ -158,6 +165,9 @@ def redact_sensitive_text(text: str) -> str:
 
     # Database connection string passwords
     text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+
+    # Azure connection string AccountKey
+    text = _AZURE_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***", text)
 
     # E.164 phone numbers (Signal, WhatsApp)
     def _redact_phone(m):

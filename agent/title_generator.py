@@ -89,7 +89,7 @@ def auto_title_session(
         session_db.set_session_title(session_id, title)
         logger.debug("Auto-generated session title: %s", title)
     except Exception as e:
-        logger.debug("Failed to set auto-generated title: %s", e)
+        logger.warning("Failed to set auto-generated title: %s", e)
 
 
 def maybe_auto_title(

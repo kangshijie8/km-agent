@@ -157,6 +157,18 @@ def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
 
+
+def resolve_personality_prompt(value) -> str:
+    """Accept string or dict personality value; return system prompt string."""
+    if isinstance(value, dict):
+        parts = [value.get("system_prompt", "")]
+        if value.get("tone"):
+            parts.append(f'Tone: {value["tone"]}')
+        if value.get("style"):
+            parts.append(f'Style: {value["style"]}')
+        return "\n".join(p for p in parts if p)
+    return str(value)
+
 def _secure_dir(path):
     """Set directory to owner-only access (0700). No-op on Windows.
 
@@ -185,6 +197,51 @@ def _secure_file(path):
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
+
+
+def save_config_value(key_path: str, value) -> bool:
+    """Save a value to config.yaml at the specified dot-separated key path.
+
+    Respects the same lookup order as load_cli_config():
+    1. ~/.kunming/config.yaml (user config - preferred, used if it exists)
+    2. ./cli-config.yaml (project config - fallback)
+
+    Args:
+        key_path: Dot-separated path like "agent.system_prompt"
+        value: Value to save
+
+    Returns:
+        True if successful, False otherwise
+    """
+    user_config_path = get_kunming_home() / 'config.yaml'
+    project_config_path = Path(__file__).parent.parent / 'cli-config.yaml'
+    config_path = user_config_path if user_config_path.exists() else project_config_path
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if config_path.exists():
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = yaml.safe_load(f) or {}
+        else:
+            config = {}
+
+        keys = key_path.split('.')
+        current = config
+        for key in keys[:-1]:
+            if key not in current or not isinstance(current[key], dict):
+                current[key] = {}
+            current = current[key]
+        current[keys[-1]] = value
+
+        from utils import atomic_yaml_write
+        atomic_yaml_write(config_path, config)
+
+        _secure_file(config_path)
+
+        return True
+    except Exception:
+        return False
 
 
 def _ensure_default_soul_md(home: Path) -> None:
@@ -400,6 +457,8 @@ DEFAULT_CONFIG = {
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "tool_progress": True,
+        "background_process_notifications": "all",
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # Per-platform overrides: {"signal": "off", "telegram": "all"}
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
@@ -583,6 +642,8 @@ DEFAULT_CONFIG = {
         "max_size_mb": 5,      # Max size per log file before rotation
         "backup_count": 3,     # Number of rotated backup files to keep
     },
+
+    "gateway": {},
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 12,
@@ -1387,10 +1448,15 @@ def check_config_version() -> Tuple[int, int]:
 
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
-    "_config_version", "model", "providers", "fallback_model",
+    "_config_version", "model", "providers",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "memory", "gateway",
+    "auxiliary", "memory", "gateway", "browser", "checkpoints",
+    "file_read_max_chars", "tts", "stt", "voice", "human_delay",
+    "privacy", "approvals", "command_allowlist", "quick_commands",
+    "personalities", "security", "cron", "logging", "honcho",
+    "timezone", "discord", "whatsapp", "skills", "smart_model_routing",
+    "prefill_messages_file",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -1555,6 +1621,31 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
         lines.append(f"  {marker} {ci.message}")
     lines.append("  \033[2mRun 'km doctor' for fix suggestions.\033[0m")
     sys.stderr.write("\n".join(lines) + "\n\n")
+
+
+def validate_critical_config(config: dict) -> list:
+    """Validate critical configuration values. Returns list of warning messages."""
+    warnings = []
+
+    model = config.get("model", "")
+    if isinstance(model, dict):
+        model = model.get("default", "") or model.get("provider", "")
+    if not model:
+        warnings.append("Model name is empty. Set 'model' in config or KUNMING_MODEL env var.")
+    elif "/" not in str(model) and not str(model).startswith("gpt") and not str(model).startswith("claude"):
+        warnings.append(f"Model name '{model}' may be invalid. Expected format: 'provider/model' (e.g. 'anthropic/claude-sonnet-4-20250514').")
+
+    max_iter = config.get("max_iterations", 0)
+    if isinstance(max_iter, (int, float)) and max_iter <= 0:
+        warnings.append(f"max_iterations is {max_iter}, should be positive.")
+
+    model_str = str(model).lower()
+    if "anthropic" in model_str and not os.getenv("ANTHROPIC_API_KEY"):
+        warnings.append("ANTHROPIC_API_KEY not set but model is Anthropic.")
+    elif "openai" in model_str and not os.getenv("OPENAI_API_KEY"):
+        warnings.append("OPENAI_API_KEY not set but model is OpenAI.")
+
+    return warnings
 
 
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
@@ -1990,6 +2081,29 @@ def load_config() -> Dict[str, Any]:
             print(f"Warning: Failed to load config: {e}")
     
     return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
+
+
+def get_config_section(section_name: str) -> Dict[str, Any]:
+    """Get a specific section from the configuration.
+    
+    This is a unified helper function for loading specific config sections
+    across different entry points (CLI, gateway, tools). It handles the
+    complexity of config loading and returns the requested section.
+    
+    Args:
+        section_name: The name of the config section to retrieve (e.g., "delegation", "code_execution")
+    
+    Returns:
+        The configuration section as a dict, or empty dict if not found or on error.
+        The returned dict is a copy to prevent accidental mutation of config state.
+    """
+    try:
+        config = load_config()
+        section = config.get(section_name, {})
+        # Return a copy to prevent mutation of the original config
+        return dict(section) if section else {}
+    except Exception:
+        return {}
 
 
 _SECURITY_COMMENT = """
@@ -2644,8 +2758,8 @@ def set_config_value(key: str, value: str):
     
     # Write only user config back (not the full merged defaults)
     ensure_kunming_home()
-    with open(config_path, 'w', encoding="utf-8") as f:
-        yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+    from utils import atomic_yaml_write
+    atomic_yaml_write(config_path, user_config, default_flow_style=False, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

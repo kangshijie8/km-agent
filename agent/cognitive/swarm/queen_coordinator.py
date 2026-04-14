@@ -665,6 +665,25 @@ class QueenCoordinator:
     
     # ===== Hive Mind Decision Making =====
     
+    @staticmethod
+    def _cast_vote(agent_type: str, options: List[str]) -> str:
+        """Cast a vote based on agent type/expertise matching against options.
+        
+        Agents vote for options that semantically match their role.
+        If no match is found, a random choice is made (not round-robin).
+        """
+        import random
+        
+        role_lower = (agent_type or "").lower()
+        role_keywords = set(role_lower.replace("-", " ").replace("_", " ").split())
+        
+        for option in options:
+            option_lower = option.lower()
+            if any(kw in option_lower for kw in role_keywords):
+                return option
+        
+        return random.choice(options)
+    
     async def hive_mind_decide(
         self,
         question: str,
@@ -694,12 +713,9 @@ class QueenCoordinator:
         votes: Dict[str, str] = {}
         
         for agent_id in participating:
-            # In real implementation, this would query each agent
-            # For now, use a simple heuristic
             agent = self._agents.get(agent_id)
             if agent:
-                # Simple round-robin voting for demo
-                vote = options[len(votes) % len(options)]
+                vote = self._cast_vote(agent.agent_type, options)
                 votes[agent_id] = vote
         
         # Count votes

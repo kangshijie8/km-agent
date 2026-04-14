@@ -12,6 +12,25 @@ from tools.registry import registry
 
 logger = logging.getLogger(__name__)
 
+_agent_factory = None
+_queen_coordinator = None
+
+
+def _get_agent_factory():
+    global _agent_factory
+    if _agent_factory is None:
+        from ..experts.agent_factory import AgentFactory
+        _agent_factory = AgentFactory()
+    return _agent_factory
+
+
+def _get_queen_coordinator():
+    global _queen_coordinator
+    if _queen_coordinator is None:
+        from ..swarm.queen_coordinator import QueenCoordinator
+        _queen_coordinator = QueenCoordinator()
+    return _queen_coordinator
+
 
 def _run_async(coro):
     """
@@ -156,7 +175,7 @@ def cognitive_memory_search(
         
         # 确保初始化
         if not provider._initialized:
-            _run_async(provider.initialize())
+            provider.initialize()
         
         # 执行搜索
         results = _run_async(provider.search(query, k=k_val, use_hybrid=use_hybrid_val))
@@ -231,7 +250,7 @@ def cognitive_memory_store(
         provider = get_hybrid_memory_provider()
         
         if not provider._initialized:
-            _run_async(provider.initialize())
+            provider.initialize()
         
         memory_id = _run_async(provider.store(
             content=content,
@@ -354,10 +373,9 @@ def cognitive_core_spawn_expert(
         })
     
     try:
-        from ..experts.agent_factory import AgentFactory
         from ..experts.types import AgentConfig, AgentType
         
-        factory = AgentFactory()
+        factory = _get_agent_factory()
         _run_async(factory.initialize())
         
         # 解析代理类型
@@ -426,10 +444,9 @@ def cognitive_core_swarm_allocate(
         return json.dumps({"success": False, "error": error_msg})
     
     try:
-        from ..swarm.queen_coordinator import QueenCoordinator
         from ..swarm.types import SwarmTopology
         
-        queen = QueenCoordinator()
+        queen = _get_queen_coordinator()
         _run_async(queen.initialize())
         
         # 解析拓扑
@@ -499,9 +516,7 @@ def cognitive_core_hive_mind_decide(
         opts = ["yes", "no"]
     
     try:
-        from ..swarm.queen_coordinator import QueenCoordinator
-        
-        queen = QueenCoordinator()
+        queen = _get_queen_coordinator()
         _run_async(queen.initialize())
         
         decision = _run_async(queen.hive_mind_decide(question, opts))

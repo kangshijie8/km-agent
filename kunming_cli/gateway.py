@@ -22,6 +22,7 @@ from kunming_cli.setup import (
     prompt, prompt_choice, prompt_yes_no,
 )
 from kunming_cli.colors import Colors, color
+from utils import is_process_running
 
 
 # =============================================================================
@@ -227,11 +228,9 @@ def stop_profile_gateway() -> bool:
     # Wait briefly for it to exit
     import time as _time
     for _ in range(20):
-        try:
-            os.kill(pid, 0)
-            _time.sleep(0.5)
-        except (ProcessLookupError, PermissionError):
+        if not is_process_running(pid):
             break
+        _time.sleep(0.5)
 
     remove_pid_file()
     return True

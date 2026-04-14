@@ -65,15 +65,17 @@ W_CON = 0.10
 W_CPT = 0.06
 
 DEFAULT_CONFIG = {
-    "enabled": False,
+    "enabled": True,
     "schedule": "0 3 * * *",
-    "min_score": 0.75,
-    "min_signal_count": 3,
-    "min_unique_days": 2,
+    "min_score": 0.65,
+    "min_signal_count": 2,
+    "min_unique_days": 1,
     "max_age_days": 30,
     "recency_half_life_days": 14,
-    "max_promotions_per_run": 5,
+    "max_promotions_per_run": 8,
     "lookback_days": 7,
+    "llm_assisted_rem": True,
+    "decay_on_distill": True,
 }
 
 
@@ -99,14 +101,26 @@ def _json_lock(path: Path):
             fcntl.flock(fd, fcntl.LOCK_EX)
         else:
             import msvcrt
-            msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+            _deadline = time.monotonic() + 30
+            while time.monotonic() < _deadline:
+                try:
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                fd.close()
+                raise TimeoutError("Failed to acquire lock within 30s")
         yield
     finally:
         if fcntl is not None:
             fcntl.flock(fd, fcntl.LOCK_UN)
         else:
-            import msvcrt
-            msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+            try:
+                import msvcrt
+                msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
         fd.close()
 
 
@@ -224,7 +238,7 @@ def record_signal(
         signals = _load_json(signals_path, {"version": 1, "entries": {}})
         entries = signals.setdefault("entries", {})
 
-        key = f"sig:{hash(snippet) & 0xFFFFFFFF:08x}"
+        key = f"sig:{hashlib.sha256(snippet.encode()).hexdigest()[:16]}"
         today = _today_str()
 
         if key in entries:
@@ -238,7 +252,7 @@ def record_signal(
             entry["seen_days"] = sorted(days)[-16:]
             if query:
                 qhashes = entry.get("query_hashes", [])
-                qh = f"{hash(query) & 0xFFFFFFFF:08x}"
+                qh = hashlib.sha256(query.encode()).hexdigest()[:16]
                 if qh not in qhashes:
                     qhashes.append(qh)
                 entry["query_hashes"] = qhashes[-32:]
@@ -255,7 +269,7 @@ def record_signal(
                 "first_seen": _now_iso(),
                 "last_seen": _now_iso(),
                 "seen_days": [today],
-                "query_hashes": [f"{hash(query) & 0xFFFFFFFF:08x}"] if query else [],
+                "query_hashes": [hashlib.sha256(query.encode()).hexdigest()[:16]] if query else [],
                 "concept_tags": _extract_concept_tags(snippet),
                 "sources": [source],
             }
@@ -404,14 +418,14 @@ def _promote_to_memory(
     candidates: List[Dict],
     config: Dict[str, Any],
 ) -> List[Dict]:
-    """Write promoted entries into MEMORY.md using the existing MemoryStore format.
+    """Write promoted entries into EXPERIENCES.md using the existing MemoryStore format.
 
     Uses atomic write to avoid disrupting concurrent sessions. Each promoted
     entry is marked with a comment so re-promotion is idempotent.
     """
     from tools.memory_tool import MemoryStore, ENTRY_DELIMITER
 
-    max_promotions = config.get("max_promotions_per_run", 5)
+    max_promotions = config.get("max_promotions_per_run", 8)
     to_promote = candidates[:max_promotions]
     if not to_promote:
         return []
@@ -424,7 +438,7 @@ def _promote_to_memory(
 
     for c in to_promote:
         snippet = c["snippet"]
-        existing = store.memory_entries
+        existing = store._entries.get("experiences", [])
         is_dup = any(
             _jaccard_similarity(snippet, e) >= 0.88
             for e in existing
@@ -440,24 +454,24 @@ def _promote_to_memory(
         current_chars = len(ENTRY_DELIMITER.join(existing)) if existing else 0
         new_chars = current_chars + len(ENTRY_DELIMITER) + len(entry_text)
 
-        if new_chars > store.memory_char_limit:
-            oldest_idx = 0
-            for i, e in enumerate(existing):
-                if "[distilled:" not in e:
-                    oldest_idx = i
-                    break
-            else:
-                oldest_idx = 0
+        if new_chars > store._char_limits.get("experiences", 4000):
+            candidates_for_eviction = [(i, e) for i, e in enumerate(existing) if "[distilled:" not in e]
+            if not candidates_for_eviction:
+                candidates_for_eviction = [(i, e) for i, e in enumerate(existing)]
 
-            if current_chars > 0:
-                existing.pop(oldest_idx)
+            _PROTECTED_KEYWORDS = ("preference", "always", "never", "must", "required", "important")
 
-        existing.append(entry_text)
-        promoted.append(c)
+            def _eviction_score(entry):
+                content = entry.lower()
+                has_protected = any(kw in content for kw in _PROTECTED_KEYWORDS)
+                return (0 if has_protected else 1, len(entry))
 
-    if promoted:
-        store.memory_entries = list(dict.fromkeys(existing))
-        store.save_to_disk("memory")
+            candidates_for_eviction.sort(key=lambda x: _eviction_score(x[1]))
+            store._entries["experiences"].pop(candidates_for_eviction[0][0])
+
+        result = store.add("experiences", entry_text)
+        if result.get("success"):
+            promoted.append(c)
 
     return promoted
 
@@ -494,20 +508,21 @@ def _ingest_session_transcripts(lookback_days: int = 7) -> int:
 
     try:
         db = SessionDB()
-        try:
-            rows = db.search("", limit=200, return_dict=True)
-        except TypeError:
-            rows = db.search("", limit=200)
+        sessions = db.list_sessions_rich(limit=20)
+        rows = []
+        for s in sessions:
+            started = s.get("started_at", "")
+            if started and started < cutoff_ts:
+                continue
+            msgs = db.get_messages(s["id"])
+            rows.extend(msgs)
     except Exception:
         return 0
 
     for row in rows:
-        if isinstance(row, dict):
-            ts = row.get("timestamp", "")
-            content = row.get("content", "")
-            role = row.get("role", "")
-        else:
-            continue
+        ts = row.get("timestamp", "")
+        content = row.get("content", "")
+        role = row.get("role", "")
 
         if role != "assistant" or not content:
             continue
@@ -524,27 +539,95 @@ def _ingest_session_transcripts(lookback_days: int = 7) -> int:
     return count
 
 
+def _llm_extract_patterns(candidates: List[Dict], themes: List[Dict]) -> List[Dict]:
+    """REM phase with LLM: extract deeper patterns from candidates and themes.
+
+    Uses auxiliary_client to call a lightweight LLM for pattern extraction.
+    Falls back to heuristic-only if LLM is unavailable.
+    """
+    if not candidates and not themes:
+        return []
+
+    try:
+        from agent.auxiliary_client import call_llm
+    except ImportError:
+        return []
+
+    snippets = [c["snippet"][:120] for c in candidates[:10]]
+    theme_str = ", ".join(t["theme"] for t in themes[:5]) if themes else "none"
+
+    prompt = (
+        "Analyze these memory entries and extract 1-3 reusable rules or patterns.\n"
+        "Each rule should be a concise, actionable insight.\n\n"
+        f"Themes found: {theme_str}\n\n"
+        f"Entries:\n" + "\n".join(f"- {s}" for s in snippets) + "\n\n"
+        "Output format: one rule per line, no numbering, no explanation. "
+        "If no clear pattern emerges, output nothing."
+    )
+
+    try:
+        response = call_llm(prompt, max_tokens=200, temperature=0.3)
+        if not response or not response.strip():
+            return []
+        rules = [r.strip() for r in response.strip().split("\n") if r.strip() and len(r.strip()) > 10]
+        return [{"rule": r, "source": "llm_rem"} for r in rules[:3]]
+    except Exception as e:
+        logger.debug("LLM-assisted REM failed: %s", e)
+        return []
+
+
+def _write_models_to_store(rules: List[Dict]) -> int:
+    """Write LLM-extracted rules to the MODELS.md layer."""
+    if not rules:
+        return 0
+    from tools.memory_tool import MemoryStore
+    store = MemoryStore()
+    store.load_from_disk()
+    written = 0
+    for r in rules:
+        rule_text = f"[model] {r['rule']}"
+        result = store.add("models", rule_text)
+        if result.get("success"):
+            written += 1
+    return written
+
+
+def _run_ebbinghaus_decay() -> Dict[str, int]:
+    """Run Ebbinghaus decay on all memory targets."""
+    from tools.memory_tool import MemoryStore
+    store = MemoryStore()
+    store.load_from_disk()
+    results = {}
+    for target in ("facts", "experiences", "models"):
+        removed = store.decay_memories(target)
+        if removed > 0:
+            results[target] = removed
+    return results
+
+
 def run_distillation(config: Optional[Dict[str, Any]] = None, verbose: bool = False) -> Dict[str, Any]:
-    """Execute a full distillation cycle: Light → REM → Deep.
+    """Execute a full distillation cycle: Light → REM → Deep → Decay.
 
     Light: ingest recent session transcripts as signals.
-    REM:   extract recurring themes from scored candidates.
-    Deep:  score candidates, promote high-confidence entries to MEMORY.md.
+    REM:   extract recurring themes from scored candidates (with optional LLM).
+    Deep:  score candidates, promote high-confidence entries to EXPERIENCES.md.
+    Decay: run Ebbinghaus forgetting curve to prune stale memories.
 
     Returns a summary dict with statistics and any themes discovered.
     """
     if config is None:
         config = DEFAULT_CONFIG.copy()
 
-    if not config.get("enabled", False):
+    if not config.get("enabled", True):
         return {"status": "disabled", "message": "Memory distillation is not enabled."}
 
     start = time.monotonic()
     result = {
         "status": "ok",
         "light": {"signals_ingested": 0},
-        "rem": {"themes": []},
+        "rem": {"themes": [], "llm_rules": []},
         "deep": {"candidates_scored": 0, "promoted": 0, "promotions": []},
+        "decay": {},
     }
 
     _distill_dir().mkdir(parents=True, exist_ok=True)
@@ -567,6 +650,13 @@ def run_distillation(config: Optional[Dict[str, Any]] = None, verbose: bool = Fa
     themes = _extract_themes(candidates)
     result["rem"]["themes"] = themes
 
+    if config.get("llm_assisted_rem", True):
+        llm_rules = _llm_extract_patterns(candidates, themes)
+        result["rem"]["llm_rules"] = llm_rules
+        if llm_rules:
+            written = _write_models_to_store(llm_rules)
+            result["rem"]["models_written"] = written
+
     candidates = _deduplicate_candidates(candidates)
 
     promoted = _promote_to_memory(candidates, config)
@@ -578,6 +668,10 @@ def run_distillation(config: Optional[Dict[str, Any]] = None, verbose: bool = Fa
 
     if promoted:
         _mark_promoted([p["key"] for p in promoted])
+
+    if config.get("decay_on_distill", True):
+        decay_results = _run_ebbinghaus_decay()
+        result["decay"] = decay_results
 
     state_path = _state_path()
     with _json_lock(state_path):

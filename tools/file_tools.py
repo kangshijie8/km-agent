@@ -5,6 +5,7 @@ import errno
 import json
 import logging
 import os
+import sys
 import threading
 from pathlib import Path
 from tools.binary_extensions import has_binary_extension
@@ -94,6 +95,12 @@ def _is_blocked_device(filepath: str) -> bool:
 # Paths that file tools should refuse to write to without going through the
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = ("/etc/", "/boot/", "/usr/lib/systemd/")
+if sys.platform == "win32":
+    _SENSITIVE_PATH_PREFIXES += (
+        os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32") + "\\",
+        os.environ.get("ProgramFiles", r"C:\Program Files") + "\\",
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)") + "\\",
+    )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 
@@ -158,12 +165,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     Thread-safe: uses the same per-task creation locks as terminal_tool to
     prevent duplicate sandbox creation from concurrent tool calls.
     """
-    from tools.terminal_tool import (
-        _active_environments, _env_lock, _create_environment,
-        _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks,
-        _creation_locks_lock,
-    )
+    from tools.terminal_tool import get_or_create_environment, _active_environments, _env_lock, _last_activity
     import time
 
     # Fast path: check cache -- but also verify the underlying environment
@@ -180,87 +182,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 with _file_ops_lock:
                     _file_ops_cache.pop(task_id, None)
 
-    # Need to ensure the environment exists before building file_ops.
-    # Acquire per-task lock so only one thread creates the sandbox.
-    with _creation_locks_lock:
-        if task_id not in _creation_locks:
-            _creation_locks[task_id] = threading.Lock()
-        task_lock = _creation_locks[task_id]
-
-    with task_lock:
-        # Double-check: another thread may have created it while we waited
-        with _env_lock:
-            if task_id in _active_environments:
-                _last_activity[task_id] = time.time()
-                terminal_env = _active_environments[task_id]
-            else:
-                terminal_env = None
-
-        if terminal_env is None:
-            from tools.terminal_tool import _task_env_overrides
-
-            config = _get_env_config()
-            env_type = config["env_type"]
-            overrides = _task_env_overrides.get(task_id, {})
-
-            if env_type == "docker":
-                image = overrides.get("docker_image") or config["docker_image"]
-            elif env_type == "singularity":
-                image = overrides.get("singularity_image") or config["singularity_image"]
-            elif env_type == "modal":
-                image = overrides.get("modal_image") or config["modal_image"]
-            elif env_type == "daytona":
-                image = overrides.get("daytona_image") or config["daytona_image"]
-            else:
-                image = ""
-
-            cwd = overrides.get("cwd") or config["cwd"]
-            logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
-
-            container_config = None
-            if env_type in ("docker", "singularity", "modal", "daytona"):
-                container_config = {
-                    "container_cpu": config.get("container_cpu", 1),
-                    "container_memory": config.get("container_memory", 5120),
-                    "container_disk": config.get("container_disk", 51200),
-                    "container_persistent": config.get("container_persistent", True),
-                    "docker_volumes": config.get("docker_volumes", []),
-                }
-
-            ssh_config = None
-            if env_type == "ssh":
-                ssh_config = {
-                    "host": config.get("ssh_host", ""),
-                    "user": config.get("ssh_user", ""),
-                    "port": config.get("ssh_port", 22),
-                    "key": config.get("ssh_key", ""),
-                    "persistent": config.get("ssh_persistent", False),
-                }
-
-            local_config = None
-            if env_type == "local":
-                local_config = {
-                    "persistent": config.get("local_persistent", False),
-                }
-
-            terminal_env = _create_environment(
-                env_type=env_type,
-                image=image,
-                cwd=cwd,
-                timeout=config["timeout"],
-                ssh_config=ssh_config,
-                container_config=container_config,
-                local_config=local_config,
-                task_id=task_id,
-                host_cwd=config.get("host_cwd"),
-            )
-
-            with _env_lock:
-                _active_environments[task_id] = terminal_env
-                _last_activity[task_id] = time.time()
-
-            _start_cleanup_thread()
-            logger.info("%s environment ready for task %s", env_type, task_id[:8])
+    # Delegate environment creation to the shared function
+    terminal_env, _ = get_or_create_environment(task_id)
 
     # Build file_ops from the (guaranteed live) environment and cache it
     file_ops = ShellFileOperations(terminal_env)
@@ -670,7 +593,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         )
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
-                "last_key": None, "consecutive": 0, "read_history": set(),
+                "last_key": None, "consecutive": 0, "read_history": set(), "dedup": {},
             })
             if task_data["last_key"] == search_key:
                 task_data["consecutive"] += 1

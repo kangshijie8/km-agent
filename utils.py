@@ -124,3 +124,48 @@ def atomic_yaml_write(
         except OSError:
             pass
         raise
+
+
+# Windows process detection helper
+_IS_WINDOWS = os.name == "nt"
+
+
+def is_process_running(pid: int) -> bool:
+    """Check if a process with the given PID is currently running.
+
+    Uses Windows-native API on Windows (via ctypes) to avoid SystemError
+    from os.kill(pid, 0). Uses os.kill on Unix-like systems.
+
+    Args:
+        pid: Process ID to check.
+
+    Returns:
+        True if process exists and is running, False otherwise.
+    """
+    if _IS_WINDOWS:
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.windll.kernel32
+            OpenProcess = kernel32.OpenProcess
+            OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            OpenProcess.restype = wintypes.HANDLE
+            CloseHandle = kernel32.CloseHandle
+            CloseHandle.argtypes = [wintypes.HANDLE]
+            CloseHandle.restype = wintypes.BOOL
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not hProcess:
+                return False
+            CloseHandle(hProcess)
+            return True
+        except Exception:
+            return False
+    else:
+        try:
+            os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
+            return True
+        except (ProcessLookupError, PermissionError, OSError):
+            return False

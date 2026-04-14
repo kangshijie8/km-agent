@@ -1,8 +1,8 @@
-﻿"""
+"""
 Cron job scheduler - executes due jobs.
 
 Provides tick() which checks for due jobs and runs them. The gateway
-calls this every 60 seconds from a background thread.
+and CLI call this every 180 seconds (3 minutes) from a background thread.
 
 Uses a file-based lock (~/.kunming/cron/.tick.lock) so only one tick
 runs at a time if multiple processes overlap.
@@ -60,6 +60,44 @@ _kunming_home = get_kunming_home()
 # File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _kunming_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+
+def _acquire_tick_lock():
+    """Acquire the cross-platform tick lock. Returns (lock_fd, acquired)."""
+    lock_dir = get_kunming_home() / "cron"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_dir / ".tick.lock"
+    lock_fd = None
+    try:
+        lock_fd = open(lock_file, "w")
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt:
+            lock_fd.write(".")
+            lock_fd.flush()
+            lock_fd.seek(0)
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+        return lock_fd, True
+    except (OSError, IOError):
+        logger.debug("Tick skipped -another instance holds the lock")
+        if lock_fd is not None:
+            lock_fd.close()
+        return None, False
+
+
+def _release_tick_lock(lock_fd):
+    """Release the tick lock."""
+    try:
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        elif msvcrt:
+            try:
+                lock_fd.seek(0)
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+            except (OSError, IOError):
+                pass
+    finally:
+        lock_fd.close()
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -255,6 +293,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,
     }
+    # "cli" is handled via the special branch below; don't treat it as unknown
+    if platform_name.lower() == "cli":
+        return  # fall through to CLI-specific handling
     platform = platform_map.get(platform_name.lower())
     if not platform:
         msg = f"unknown platform '{platform_name}'"
@@ -841,20 +882,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
-    _LOCK_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
-    lock_fd = None
-    try:
-        lock_fd = open(_LOCK_FILE, "w")
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        elif msvcrt:
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
-    except (OSError, IOError):
-        logger.debug("Tick skipped -another instance holds the lock")
-        if lock_fd is not None:
-            lock_fd.close()
+    lock_fd, acquired = _acquire_tick_lock()
+    if not acquired:
         return 0
 
     try:
@@ -908,58 +937,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         return executed
     finally:
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
-        lock_fd.close()
-
-
-_HEARTBEAT_JOB_NAME = "km-heartbeat"
-
-
-def ensure_heartbeat_job() -> bool:
-    """Create a default heartbeat cron job if none exists.
-
-    The heartbeat job runs every 5 minutes. It serves two purposes:
-    1. Keeps the cron delivery pipeline active so the inbox mechanism
-       stays functional even without user-defined jobs.
-    2. Provides periodic system health awareness for long-running sessions.
-
-    Delivery routing: uses deliver=origin when a session context exists
-    (CLI or gateway with an active chat), otherwise deliver=local so the
-    job still runs and output is saved for audit.
-
-    Returns True if a heartbeat job was created, False if one already exists.
-    """
-    from cron.jobs import list_jobs, create_job
-    try:
-        existing = list_jobs(include_disabled=True)
-        for job in existing:
-            if job.get("name") == _HEARTBEAT_JOB_NAME:
-                return False
-        origin = None
-        deliver = "local"
-        platform = os.environ.get("KUNMING_SESSION_PLATFORM", "")
-        chat_id = os.environ.get("KUNMING_SESSION_CHAT_ID", "")
-        if platform and chat_id:
-            origin = {"platform": platform, "chat_id": chat_id}
-            deliver = "origin"
-        create_job(
-            prompt="Report current system status: uptime, memory usage, and active sessions. Keep it brief.",
-            schedule="every 5m",
-            name=_HEARTBEAT_JOB_NAME,
-            deliver=deliver,
-            origin=origin,
-        )
-        logger.info("Created default heartbeat job '%s' (deliver=%s)", _HEARTBEAT_JOB_NAME, deliver)
-        return True
-    except Exception as e:
-        logger.debug("Heartbeat job creation skipped: %s", e)
-        return False
+        _release_tick_lock(lock_fd)
 
 
 if __name__ == "__main__":

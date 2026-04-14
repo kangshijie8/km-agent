@@ -63,10 +63,13 @@ SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_LEAST_USED,
 }
 
-# Cooldown before retrying an exhausted credential.
-# 429 (rate-limited) cools down faster since quotas reset frequently.
-# 402 (billing/quota) and other codes use a longer default.
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
+# Cooldown before retrying an exhausted credential (circuit breaker).
+# 429 (rate-limited): short cooldown since quotas reset frequently.
+# 402 (billing): medium cooldown for quota/billing issues.
+# 401 (auth): longer cooldown for authentication failures.
+EXHAUSTED_TTL_429_SECONDS = 60               # 1 minute
+EXHAUSTED_TTL_402_SECONDS = 300              # 5 minutes
+EXHAUSTED_TTL_401_SECONDS = 600              # 10 minutes
 EXHAUSTED_TTL_DEFAULT_SECONDS = 24 * 60 * 60 # 24 hours
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
@@ -99,6 +102,7 @@ class PooledCredential:
     last_error_reason: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_reset_at: Optional[float] = None
+    error_count: int = 0
     base_url: Optional[str] = None
     expires_at: Optional[str] = None
     expires_at_ms: Optional[int] = None
@@ -188,6 +192,10 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
     """Return cooldown seconds based on the HTTP status that caused exhaustion."""
     if error_code == 429:
         return EXHAUSTED_TTL_429_SECONDS
+    if error_code == 402:
+        return EXHAUSTED_TTL_402_SECONDS
+    if error_code == 401:
+        return EXHAUSTED_TTL_401_SECONDS
     return EXHAUSTED_TTL_DEFAULT_SECONDS
 
 
@@ -402,6 +410,7 @@ class CredentialPool:
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
             last_error_reset_at=normalized_error.get("reset_at"),
+            error_count=entry.error_count + 1,
         )
         self._replace_entry(entry, updated)
         self._persist()
@@ -555,7 +564,7 @@ class CredentialPool:
             else:
                 return entry
         except Exception as exc:
-            logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
+            logger.warning("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
             # For anthropic claude_code entries: the refresh token may have been
             # consumed by another process. Check if ~/.claude/.credentials.json
             # has a newer token pair and retry once.
@@ -644,6 +653,17 @@ class CredentialPool:
 
     def select(self) -> Optional[PooledCredential]:
         with self._lock:
+            needs_refresh = [e for e in self._entries if e.last_status != STATUS_EXHAUSTED and self._entry_needs_refresh(e)]
+        for entry in needs_refresh:
+            try:
+                refreshed = self._refresh_entry(entry, force=False)
+                if refreshed is not None:
+                    with self._lock:
+                        self._replace_entry(entry, refreshed)
+                        self._persist()
+            except Exception:
+                logger.debug("credential pool: refresh failed for %s", entry.id)
+        with self._lock:
             return self._select_unlocked()
 
     def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
@@ -704,7 +724,7 @@ class CredentialPool:
         return available
 
     def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._available_entries(clear_expired=True, refresh=True)
+        available = self._available_entries(clear_expired=True, refresh=False)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")

@@ -202,6 +202,26 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("Mattermost: URL or token not configured")
             return False
 
+        # Scoped lock: prevent multiple gateways from using the same Mattermost identity
+        from gateway.status import acquire_scoped_lock
+
+        self._lock_identity = f"{self._base_url}:{self._token[:8]}"
+        acquired, existing = acquire_scoped_lock(
+            "mattermost-identity",
+            self._lock_identity,
+            metadata={"platform": self.platform.value},
+        )
+        if not acquired:
+            owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+            message = (
+                "Another local Kunming gateway is already using this Mattermost identity"
+                + (f" (PID {owner_pid})." if owner_pid else ".")
+                + " Stop the other gateway before starting a second Mattermost adapter."
+            )
+            logger.error("Mattermost: %s", message)
+            self._set_fatal_error("mattermost_identity_lock", message, retryable=False)
+            return False
+
         self._session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30)
         )
@@ -248,6 +268,14 @@ class MattermostAdapter(BasePlatformAdapter):
 
         if self._session and not self._session.closed:
             await self._session.close()
+
+        if getattr(self, "_lock_identity", None):
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("mattermost-identity", self._lock_identity)
+            except Exception as e:
+                logger.warning("Mattermost: Error releasing identity lock: %s", e, exc_info=True)
+            self._lock_identity = None
 
         logger.info("Mattermost: disconnected")
 

@@ -356,6 +356,7 @@ class MemoryManager:
         """
         if "kunming_home" not in kwargs:
             from kunming_constants import get_kunming_home
+            kwargs = dict(kwargs)
             kwargs["kunming_home"] = str(get_kunming_home())
         for provider in self._providers:
             try:

@@ -70,7 +70,7 @@ from kunming_constants import get_kunming_home
 try:
     from tools.website_policy import check_website_access
 except Exception:
-    check_website_access = lambda url: None  # noqa: E731 -fail-open if policy module unavailable
+    check_website_access = lambda url: None  # noqa: E731 - fail-closed: None means no block
 
 try:
     from tools.url_safety import is_safe_url as _is_safe_url
@@ -1995,9 +1995,10 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
                         daemon_pid = int(Path(pid_file).read_text().strip())
                         if sys.platform == "win32":
                             import ctypes
-                            ctypes.windll.kernel32.TerminateProcess(
-                                ctypes.windll.kernel32.OpenProcess(0x0001, False, daemon_pid), 1
-                            )
+                            handle = ctypes.windll.kernel32.OpenProcess(0x0001, False, daemon_pid)
+                            if handle:
+                                ctypes.windll.kernel32.TerminateProcess(handle, 1)
+                                ctypes.windll.kernel32.CloseHandle(handle)
                         else:
                             os.kill(daemon_pid, signal.SIGTERM)
                         logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
@@ -2185,4 +2186,12 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥",
+)
+registry.register(
+    name="browser_close",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_close"],
+    handler=lambda args, **kw: (cleanup_browser(task_id=kw.get("task_id")), json.dumps({"success": True, "message": "Browser session closed"}))[1],
+    check_fn=check_browser_requirements,
+    emoji="✖",
 )

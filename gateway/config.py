@@ -863,13 +863,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             name=os.getenv("SMS_HOME_CHANNEL_NAME", "Home"),
         )
 
-    # API Server
-    api_server_enabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("true", "1", "yes")
+    # API Server - Core infrastructure, always enabled by default
+    # This ensures the gateway can run as a persistent AI service without
+    # requiring messaging platforms to be configured.
+    api_server_explicitly_disabled = os.getenv("API_SERVER_ENABLED", "").lower() in ("false", "0", "no")
     api_server_key = os.getenv("API_SERVER_KEY", "")
     api_server_cors_origins = os.getenv("API_SERVER_CORS_ORIGINS", "")
     api_server_port = os.getenv("API_SERVER_PORT")
     api_server_host = os.getenv("API_SERVER_HOST")
-    if api_server_enabled or api_server_key:
+    if not api_server_explicitly_disabled:
         if Platform.API_SERVER not in config.platforms:
             config.platforms[Platform.API_SERVER] = PlatformConfig()
         config.platforms[Platform.API_SERVER].enabled = True

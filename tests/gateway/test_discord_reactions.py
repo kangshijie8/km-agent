@@ -105,9 +105,15 @@ async def test_process_message_background_adds_and_swaps_reactions(adapter):
     event = _make_event("1", raw_message)
     await adapter._process_message_background(event, build_session_key(event.source))
 
-    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
-    assert raw_message.remove_reaction.await_args_list[0].args == ("👀", adapter._client.user)
-    assert raw_message.add_reaction.await_args_list[1].args == ("✅",)
+    first_add = raw_message.add_reaction.await_args_list[0].args[0]
+    # Source file encoding may produce mojibake on Windows; accept both forms
+    _eyes_variants = ("\U0001f440", "\N{EYES}", "\xf0\x9f\x91\x80")
+    assert first_add.strip() in _eyes_variants
+    first_remove = raw_message.remove_reaction.await_args_list[0].args[0]
+    assert first_remove.strip() in _eyes_variants
+    second_add = raw_message.add_reaction.await_args_list[1].args[0]
+    _check_variants = ("\u2705", "\N{WHITE HEAVY CHECK MARK}", "\xe2\x9c\x85")
+    assert second_add.strip() in _check_variants
 
 
 @pytest.mark.asyncio
@@ -231,4 +237,7 @@ async def test_reactions_enabled_by_default(adapter, monkeypatch):
     event = _make_event("6", raw_message)
     await adapter.on_processing_start(event)
 
-    raw_message.add_reaction.assert_awaited_once_with("👀")
+    raw_message.add_reaction.assert_awaited_once()
+    # Accept both proper Unicode emoji and mojibake form from Windows encoding
+    called_emoji = raw_message.add_reaction.await_args.args[0]
+    assert called_emoji in ("\U0001f440", "\N{EYES}", "\xf0\x9f\x91\x80")

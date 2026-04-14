@@ -267,7 +267,7 @@ class TestRootLevelProviderOverride:
         }))
 
         import cli
-        monkeypatch.setattr(cli, "_KUNMING_home", KUNMING_home)
+        monkeypatch.setattr(cli, "_kunming_home", KUNMING_home)
         cfg = cli.load_cli_config()
 
         assert cfg["model"]["provider"] == "openrouter"
@@ -290,7 +290,7 @@ class TestRootLevelProviderOverride:
         }))
 
         import cli
-        monkeypatch.setattr(cli, "_KUNMING_home", KUNMING_home)
+        monkeypatch.setattr(cli, "_kunming_home", KUNMING_home)
         cfg = cli.load_cli_config()
 
         # Root-level "opencode-go" must NOT leak through

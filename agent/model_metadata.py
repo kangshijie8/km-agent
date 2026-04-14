@@ -5,8 +5,10 @@ and run_agent.py for pre-flight context checks.
 """
 
 import logging
+import json
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -68,6 +70,7 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
+_metadata_cache_lock = threading.Lock()
 
 # Descending tiers for context length probing when the model is unknown.
 # We start at 128K (a safe default for most modern models) and step down
@@ -235,6 +238,8 @@ def is_local_endpoint(base_url: str) -> bool:
         return False
     if host in _LOCAL_HOSTS:
         return True
+    if host in ("host.docker.internal", "gateway.docker.internal"):
+        return True
     # RFC-1918 private ranges and link-local
     import ipaddress
     try:
@@ -395,8 +400,10 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
 
-    if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
-        return _model_metadata_cache
+    if not force_refresh:
+        with _metadata_cache_lock:
+            if _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
+                return _model_metadata_cache
 
     try:
         response = requests.get(OPENROUTER_MODELS_URL, timeout=10)
@@ -417,14 +424,16 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
             if canonical and canonical != model_id:
                 _add_model_aliases(cache, canonical, entry)
 
-        _model_metadata_cache = cache
-        _model_metadata_cache_time = time.time()
+        with _metadata_cache_lock:
+            _model_metadata_cache = cache
+            _model_metadata_cache_time = time.time()
         logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
         return cache
 
     except Exception as e:
         logging.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
-        return _model_metadata_cache or {}
+        with _metadata_cache_lock:
+            return _model_metadata_cache or {}
 
 
 def fetch_endpoint_model_metadata(
@@ -442,10 +451,11 @@ def fetch_endpoint_model_metadata(
         return {}
 
     if not force_refresh:
-        cached = _endpoint_model_metadata_cache.get(normalized)
-        cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
-        if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
-            return cached
+        with _metadata_cache_lock:
+            cached = _endpoint_model_metadata_cache.get(normalized)
+            cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
+            if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
+                return cached
 
     candidates = [normalized]
     if normalized.endswith("/v1"):
@@ -505,16 +515,18 @@ def fetch_endpoint_model_metadata(
                 except Exception:
                     pass
 
-            _endpoint_model_metadata_cache[normalized] = cache
-            _endpoint_model_metadata_cache_time[normalized] = time.time()
+            with _metadata_cache_lock:
+                _endpoint_model_metadata_cache[normalized] = cache
+                _endpoint_model_metadata_cache_time[normalized] = time.time()
             return cache
         except Exception as exc:
             last_error = exc
 
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
-    _endpoint_model_metadata_cache[normalized] = {}
-    _endpoint_model_metadata_cache_time[normalized] = time.time()
+    with _metadata_cache_lock:
+        _endpoint_model_metadata_cache[normalized] = {}
+        _endpoint_model_metadata_cache_time[normalized] = time.time()
     return {}
 
 
@@ -969,15 +981,34 @@ def get_model_context_length(
 
 
 def estimate_tokens_rough(text: str) -> int:
-    """Rough token estimate (~4 chars/token) for pre-flight checks."""
+    """Rough token estimate for pre-flight checks. CJK-aware."""
     if not text:
         return 0
-    return len(text) // 4
+    cjk_count = len(re.findall(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', text))
+    non_cjk_len = len(text) - cjk_count
+    cjk_tokens = cjk_count * 2
+    non_cjk_tokens = non_cjk_len // 4 + 10
+    return cjk_tokens + non_cjk_tokens
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
-    total_chars = sum(len(str(msg)) for msg in messages)
+    total_chars = 0
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    total_chars += len(block.get("text", "")) + len(str(block.get("tool_use_id", "")))
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                fn = tc.get("function", {})
+                total_chars += len(fn.get("name", "")) + len(fn.get("arguments", ""))
+        reasoning = msg.get("reasoning") or msg.get("reasoning_content")
+        if reasoning:
+            total_chars += len(reasoning) if isinstance(reasoning, str) else len(str(reasoning))
     return total_chars // 4
 
 

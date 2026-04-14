@@ -45,7 +45,7 @@ class TestCLIQuickCommands:
         cli.process_command("/empty")
         cli.console.print.assert_called_once()
         args = cli.console.print.call_args[0][0]
-        assert "no output" in args.lower()
+        assert "no output" in args.plain.lower()
 
     def test_alias_command_routes_to_target(self):
         """Alias quick commands rewrite to the target command."""
@@ -67,21 +67,21 @@ class TestCLIQuickCommands:
         cli.process_command("/broken")
         cli.console.print.assert_called_once()
         args = cli.console.print.call_args[0][0]
-        assert "no target defined" in args.lower()
+        assert "no target defined" in args.plain.lower()
 
     def test_unsupported_type_shows_error(self):
         cli = self._make_cli({"bad": {"type": "prompt", "command": "echo hi"}})
         cli.process_command("/bad")
         cli.console.print.assert_called_once()
         args = cli.console.print.call_args[0][0]
-        assert "unsupported type" in args.lower()
+        assert "unsupported type" in args.plain.lower()
 
     def test_missing_command_field_shows_error(self):
         cli = self._make_cli({"oops": {"type": "exec"}})
         cli.process_command("/oops")
         cli.console.print.assert_called_once()
         args = cli.console.print.call_args[0][0]
-        assert "no command defined" in args.lower()
+        assert "no command defined" in args.plain.lower()
 
     def test_quick_command_takes_priority_over_skill_commands(self):
         """Quick commands must be checked before skill slash commands."""
@@ -98,7 +98,7 @@ class TestCLIQuickCommands:
             cli.process_command("/nonexistent")
             mock_cprint.assert_called()
             printed = " ".join(str(c) for c in mock_cprint.call_args_list)
-            assert "unknown command" in printed.lower()
+            assert "unknown command" in printed.plain.lower()
 
     def test_timeout_shows_error(self):
         cli = self._make_cli({"slow": {"type": "exec", "command": "sleep 100"}})
@@ -106,7 +106,7 @@ class TestCLIQuickCommands:
             cli.process_command("/slow")
         cli.console.print.assert_called_once()
         args = cli.console.print.call_args[0][0]
-        assert "timed out" in args.lower()
+        assert "timed out" in args.plain.lower()
 
 
 # -- Gateway tests ----------------------------------------------------------
@@ -152,7 +152,7 @@ class TestGatewayQuickCommands:
         event = self._make_event("bad")
         result = await runner._handle_message(event)
         assert result is not None
-        assert "unsupported type" in result.lower()
+        assert "unsupported type" in result.plain.lower()
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):
@@ -168,7 +168,7 @@ class TestGatewayQuickCommands:
         with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
             result = await runner._handle_message(event)
         assert result is not None
-        assert "timed out" in result.lower()
+        assert "timed out" in result.plain.lower()
 
     @pytest.mark.asyncio
     async def test_gateway_config_object_supports_quick_commands(self):

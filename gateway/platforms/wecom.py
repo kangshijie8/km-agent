@@ -194,6 +194,26 @@ class WeComAdapter(BasePlatformAdapter):
             logger.warning("[%s] %s", self.name, message)
             return False
 
+        # Scoped lock: prevent multiple gateways from using the same WeCom bot
+        from gateway.status import acquire_scoped_lock
+
+        self._lock_identity = self._bot_id
+        acquired, existing = acquire_scoped_lock(
+            "wecom-bot-id",
+            self._lock_identity,
+            metadata={"platform": self.platform.value},
+        )
+        if not acquired:
+            owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+            message = (
+                "Another local Kunming gateway is already using this WeCom bot ID"
+                + (f" (PID {owner_pid})." if owner_pid else ".")
+                + " Stop the other gateway before starting a second WeCom adapter."
+            )
+            logger.error("[%s] %s", self.name, message)
+            self._set_fatal_error("wecom_bot_lock", message, retryable=False)
+            return False
+
         try:
             self._http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
             await self._open_connection()
@@ -242,6 +262,14 @@ class WeComAdapter(BasePlatformAdapter):
 
         self._seen_messages.clear()
         logger.info("[%s] Disconnected", self.name)
+
+        if getattr(self, "_lock_identity", None):
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("wecom-bot-id", self._lock_identity)
+            except Exception as e:
+                logger.warning("[%s] Error releasing WeCom bot lock: %s", self.name, e, exc_info=True)
+            self._lock_identity = None
 
     async def _cleanup_ws(self) -> None:
         """Close the live websocket/session, if any."""

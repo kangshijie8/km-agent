@@ -1670,7 +1670,7 @@ class TestSessionIdHeader:
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
-                 patch("KUNMING_state.SessionDB", side_effect=Exception("DB unavailable")):
+                 patch("kunming_state.SessionDB", side_effect=Exception("DB unavailable")):
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 
                 resp = await cli.post(

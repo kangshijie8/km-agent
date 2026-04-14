@@ -24,6 +24,7 @@ import json
 import asyncio
 import logging
 import threading
+import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
@@ -31,38 +32,16 @@ from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
+_tool_failure_counts: Dict[str, int] = {}
+_tool_failure_lock = threading.Lock()
+_MAX_CONSECUTIVE_FAILURES = 3
+
 
 # =============================================================================
 # Async Bridging  (delegated to tools.async_bridge for single source of truth)
 # =============================================================================
 
-# Import the canonical async bridge implementation to avoid duplication
-from tools.async_bridge import run_async as _run_async, _get_tool_loop
-
-# Keep backward compatibility for existing imports
-_worker_thread_local = threading.local()
-
-
-def _get_worker_loop():
-    """Return a persistent event loop for the current worker thread.
-
-    Each worker thread (e.g., delegate_task's ThreadPoolExecutor threads)
-    gets its own long-lived loop stored in thread-local storage.  This
-    prevents the "Event loop is closed" errors that occurred when
-    asyncio.run() was used per-call: asyncio.run() creates a loop, runs
-    the coroutine, then *closes* the loop — but cached httpx/AsyncOpenAI
-    clients remain bound to that now-dead loop and raise RuntimeError
-    during garbage collection or subsequent use.
-
-    By keeping the loop alive for the thread's lifetime, cached clients
-    stay valid and their cleanup runs on a live loop.
-    """
-    loop = getattr(_worker_thread_local, 'loop', None)
-    if loop is None or loop.is_closed():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        _worker_thread_local.loop = loop
-    return loop
+from tools.async_bridge import run_async as _run_async
 
 
 # =============================================================================
@@ -97,6 +76,10 @@ def _discover_tools():
         "tools.process_registry",
         "tools.send_message_tool",
         "tools.homeassistant_tool",
+        "tools.video_tool",
+        "tools.experience_tool",
+        "tools.analytics_tool",
+        "tools.tier_tool",
     ]
 
     _registration_errors: List[Tuple[str, str]] = []
@@ -162,10 +145,6 @@ def _set_resolved_tool_names(names: List[str]) -> None:
     _tool_names_local.names = names
 
 
-# Backward compatibility: module-level property for single-threaded access
-_last_resolved_tool_names: List[str] = property(_get_resolved_tool_names, _set_resolved_tool_names)
-
-
 # =============================================================================
 # Legacy toolset name mapping  (old _tools-suffixed names -> tool name lists)
 # =============================================================================
@@ -193,6 +172,13 @@ _LEGACY_TOOLSET_MAP = {
     ],
     "file_tools": ["read_file", "write_file", "patch", "search_files"],
     "tts_tools": ["text_to_speech"],
+    "media_tools": ["video_assemble", "srt_generate", "cover_generate", "video_trim", "video_merge", "audio_mix", "content_pipeline"],
+    "learning_tools": ["experience_record", "experience_search", "experience_feedback", "experience_stats"],
+    "analytics_tools": ["usage_record", "usage_stats", "usage_trends", "usage_export"],
+    "monetization_tools": ["tier_check", "tier_set", "tier_compare", "tier_upgrade_prompt"],
+    "messaging_tools": ["send_message"],
+    "homeassistant_tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+    "process_tools": ["process"],
 }
 
 
@@ -325,11 +311,10 @@ def get_tool_definitions(
 # handle_function_call  (the main dispatcher)
 # =============================================================================
 
-# Tools whose execution is intercepted by the agent loop (run_agent.py)
-# because they need agent-level state (TodoStore, MemoryStore, etc.).
-# The registry still holds their schemas; dispatch just returns a stub error
-# so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+# Tools that require agent-level state (TodoStore, MemoryStore, callbacks, etc.)
+# These must be handled by the agent's _invoke_tool method, not dispatched directly.
+# Dynamic check via registry.is_agent_tool() replaces the old static set so that
+# MCP/plugin-registered agent tools are also intercepted correctly.
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
@@ -404,7 +389,7 @@ def _coerce_number(value: str, integer_only: bool = False):
         return value
     # Guard against inf/nan before int() conversion
     if f != f or f == float("inf") or f == float("-inf"):
-        return f
+        return value
     # If it looks like an integer (no fractional part), return int
     if f == int(f):
         return int(f)
@@ -444,7 +429,7 @@ def handle_function_call(
         enabled_tools: Tool names enabled for this session.  When provided,
                        execute_code uses this list to determine which sandbox
                        tools to generate.  Falls back to the process-global
-                       ``_last_resolved_tool_names`` for backward compat.
+                       ``_get_resolved_tool_names()`` for backward compat.
 
     Returns:
         Function result as a JSON string.
@@ -461,8 +446,14 @@ def handle_function_call(
         except Exception:
             pass  # file_tools may not be loaded yet
 
-    if function_name in _AGENT_LOOP_TOOLS:
-        return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+    # Dynamic check: any tool marked is_agent_tool in the registry must go
+    # through the agent's _invoke_tool path (which injects stores/callbacks).
+    # This catches MCP/plugin-registered agent tools too, not just built-ins.
+    tool_meta = registry.get_tool(function_name)
+    if tool_meta and tool_meta.is_agent_tool:
+        return json.dumps({
+            "error": f"{function_name} requires agent-level state and must be called through the agent's tool invocation path"
+        })
 
     try:
         from kunming_cli.plugins import invoke_hook
@@ -477,11 +468,19 @@ def handle_function_call(
     except (ImportError, AttributeError):
         pass
 
+    with _tool_failure_lock:
+        if _tool_failure_counts.get(function_name, 0) >= _MAX_CONSECUTIVE_FAILURES:
+            return json.dumps({
+                "error": f"Tool '{function_name}' has failed {_MAX_CONSECUTIVE_FAILURES} consecutive times. "
+                         f"Please use a different approach or tool instead of retrying."
+            }, ensure_ascii=False)
+
     try:
+        _tool_start = time.monotonic()
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
-            sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+            sandbox_enabled = enabled_tools if enabled_tools is not None else _get_resolved_tool_names()
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
@@ -493,6 +492,20 @@ def handle_function_call(
                 task_id=task_id,
                 user_task=user_task,
             )
+
+        with _tool_failure_lock:
+            _tool_failure_counts.pop(function_name, None)
+
+        _tool_latency_ms = (time.monotonic() - _tool_start) * 1000
+        try:
+            from metrics import MetricsCollector, ToolCallRecord
+            MetricsCollector.get_instance().record_tool_call(ToolCallRecord(
+                tool_name=function_name,
+                success=True,
+                latency_ms=_tool_latency_ms,
+            ))
+        except Exception:
+            pass
 
         try:
             from kunming_cli.plugins import invoke_hook
@@ -511,13 +524,43 @@ def handle_function_call(
         return result
 
     except (KeyError, ValueError, TypeError) as e:
-        error_msg = f"Error executing {function_name}: {str(e)}"
-        logger.error(error_msg)
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        logger.error(f"Error executing {function_name}: {e}")
+        with _tool_failure_lock:
+            _tool_failure_counts[function_name] = _tool_failure_counts.get(function_name, 0) + 1
+        _record_tool_failure(function_name, "value_error", _tool_start)
+        return json.dumps({"error": f"{function_name}: {str(e)}"}, ensure_ascii=False)
     except RuntimeError as e:
-        error_msg = f"Runtime error in {function_name}: {str(e)}"
-        logger.error(error_msg)
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        logger.error(f"Runtime error in {function_name}: {e}")
+        with _tool_failure_lock:
+            _tool_failure_counts[function_name] = _tool_failure_counts.get(function_name, 0) + 1
+        _record_tool_failure(function_name, "runtime_error", _tool_start)
+        return json.dumps({"error": f"{function_name}: {str(e)}"}, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Unexpected error in {function_name}: {e}", exc_info=True)
+        with _tool_failure_lock:
+            _tool_failure_counts[function_name] = _tool_failure_counts.get(function_name, 0) + 1
+        _record_tool_failure(function_name, "unexpected", _tool_start)
+        return json.dumps({"error": f"{function_name}: {str(e)}"}, ensure_ascii=False)
+
+
+def _record_tool_failure(tool_name: str, error_type: str, start_time: float = 0):
+    try:
+        _latency = (time.monotonic() - start_time) * 1000 if start_time else 0
+        from metrics import MetricsCollector, ToolCallRecord
+        MetricsCollector.get_instance().record_tool_call(ToolCallRecord(
+            tool_name=tool_name,
+            success=False,
+            latency_ms=_latency,
+            error_type=error_type,
+        ))
+    except Exception:
+        pass
+
+
+def reset_tool_failure_counts():
+    """Reset all tool failure counters. Called at start of each conversation turn."""
+    with _tool_failure_lock:
+        _tool_failure_counts.clear()
 
 
 # =============================================================================

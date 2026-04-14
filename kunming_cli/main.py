@@ -77,9 +77,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # The flag is stripped from sys.argv so argparse never sees it.
 # Falls back to ~/.kunming/active_profile for sticky default.
 # ---------------------------------------------------------------------------
-def _get_default_kunming_home() -> Path:
-    """Get default KUNMING_HOME without importing kunming modules."""
-    return Path.home() / ".kunming"
+from kunming_constants import _get_default_kunming_home
 
 
 def _apply_profile_override() -> None:
@@ -1975,7 +1973,7 @@ def _model_flow_copilot(config, current_model=""):
         source = creds.get("source", "")
     else:
         if source in ("GITHUB_TOKEN", "GH_TOKEN"):
-            print(f"  GitHub token: {api_key[:8]}... ({source})")
+            print(f"  GitHub token: ***configured*** ({source})")
         elif source == "gh auth token":
             print("  GitHub token: (from `gh auth token`)")
         else:

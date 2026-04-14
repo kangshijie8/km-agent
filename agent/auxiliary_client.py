@@ -121,7 +121,23 @@ _OR_HEADERS = {
 NOUS_EXTRA_BODY = {"tags": ["product=kunming-agent"]}
 
 # Set at resolve time True if the auxiliary client points to Nous Portal
-auxiliary_is_nous: bool = False
+# Thread-safe: uses threading.local() to avoid cross-session contamination in gateway mode
+import threading as _threading_for_nous
+_auxiliary_nous_state = _threading_for_nous.local()
+
+def _is_auxiliary_nous() -> bool:
+    return getattr(_auxiliary_nous_state, 'is_nous', False)
+
+def _set_auxiliary_nous(value: bool) -> None:
+    _auxiliary_nous_state.is_nous = value
+
+# Backward-compatible module-level attribute (read-only proxy)
+class _NousProxy:
+    def __bool__(self): return _is_auxiliary_nous()
+    def __repr__(self): return repr(_is_auxiliary_nous())
+    def __eq__(self, other): return _is_auxiliary_nous() == other
+    def __hash__(self): return hash(_is_auxiliary_nous())
+auxiliary_is_nous = _NousProxy()
 
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
@@ -130,7 +146,13 @@ _NOUS_FREE_TIER_VISION_MODEL = "xiaomi/mimo-v2-omni"
 _NOUS_FREE_TIER_AUX_MODEL = "xiaomi/mimo-v2-pro"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.kunming.dev/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
-_AUTH_JSON_PATH = get_kunming_home() / "auth.json"
+_AUTH_JSON_PATH = None
+
+def _get_auth_json_path() -> Path:
+    global _AUTH_JSON_PATH
+    if _AUTH_JSON_PATH is None:
+        _AUTH_JSON_PATH = get_kunming_home() / "auth.json"
+    return _AUTH_JSON_PATH
 
 # Codex fallback: uses the Responses API (the only endpoint the Codex
 # OAuth token can access) with a fast model for auxiliary tasks.
@@ -601,9 +623,10 @@ def _read_nous_auth() -> Optional[dict]:
         }
 
     try:
-        if not _AUTH_JSON_PATH.is_file():
+        auth_path = _get_auth_json_path()
+        if not auth_path.is_file():
             return None
-        data = json.loads(_AUTH_JSON_PATH.read_text())
+        data = json.loads(auth_path.read_text())
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})
@@ -772,8 +795,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     if not nous:
         return None, None
-    global auxiliary_is_nous
-    auxiliary_is_nous = True
+    _set_auxiliary_nous(True)
     logger.debug("Auxiliary client: Nous Portal")
     if nous.get("source") == "pool":
         model = "gemini-3-flash"
@@ -1089,8 +1111,7 @@ def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
          provider they already have credentials for no OpenRouter key needed.
       2. OpenRouter Nous custom Codex API-key providers (original chain).
     """
-    global auxiliary_is_nous
-    auxiliary_is_nous = False  # Reset _try_nous() will set True if it wins
+    _set_auxiliary_nous(False)  # Reset _try_nous() will set True if it wins
 
     # -- Step 1: non-aggregator main provider use main model directly --
     main_provider = _read_main_provider()
@@ -2209,10 +2230,10 @@ async def async_call_llm(
                     f"variable, or switch to a different provider with `km model`."
                 )
             if not resolved_base_url:
-                logger.warning("Provider %s unavailable, falling back to openrouter",
+                logger.warning("Provider %s unavailable, trying auto-detection chain",
                                resolved_provider)
                 client, final_model = _get_cached_client(
-                    "openrouter", resolved_model or _OPENROUTER_MODEL,
+                    "auto", resolved_model or None,
                     async_mode=True)
         if client is None:
             raise RuntimeError(

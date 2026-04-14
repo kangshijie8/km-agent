@@ -14,7 +14,9 @@ directories, matching ripgrep's default behavior.
 """
 
 import os
+import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -42,6 +44,7 @@ def searchable_tree(tmp_path):
     return tmp_path / "skills"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix find/grep commands not available on Windows")
 class TestFindExcludesHiddenDirs:
     """_search_files uses find, which should exclude hidden directories."""
 
@@ -72,6 +75,7 @@ class TestFindExcludesHiddenDirs:
         assert "SKILL.md" in result.stdout
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Unix find/grep commands not available on Windows")
 class TestGrepExcludesHiddenDirs:
     """_search_with_grep should exclude hidden directories."""
 
@@ -98,7 +102,7 @@ class TestRipgrepAlreadyExcludesHidden:
     """Verify ripgrep's default behavior is to skip hidden directories."""
 
     @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
+        not shutil.which("rg"),
         reason="ripgrep not installed",
     )
     def test_rg_skips_hub_by_default(self, searchable_tree):
@@ -111,7 +115,7 @@ class TestRipgrepAlreadyExcludesHidden:
         assert "catalog.json" not in result.stdout
 
     @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
+        not shutil.which("rg"),
         reason="ripgrep not installed",
     )
     def test_rg_finds_visible_content(self, searchable_tree):

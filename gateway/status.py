@@ -13,6 +13,7 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import logging
 import os
 import platform
 import subprocess
@@ -21,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from kunming_constants import get_kunming_home
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -114,6 +117,7 @@ def _get_process_start_time(pid: int) -> Optional[int]:
             finally:
                 CloseHandle(hProcess)
         except Exception:
+            logger.debug("Failed to get process start time on Windows for pid %s", pid, exc_info=True)
             return None
     else:
         # Linux: read from /proc/{pid}/stat
@@ -458,11 +462,38 @@ def get_running_pid() -> Optional[int]:
         remove_pid_file()
         return None
 
-    try:
-        os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
-    except (ProcessLookupError, PermissionError, OSError):
-        remove_pid_file()
-        return None
+    # Check if process exists
+    # On Windows, os.kill(pid, 0) can raise SystemError when process doesn't exist,
+    # so we use a Windows-specific check first
+    if _IS_WINDOWS:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            
+            kernel32 = ctypes.windll.kernel32
+            OpenProcess = kernel32.OpenProcess
+            OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            OpenProcess.restype = wintypes.HANDLE
+            CloseHandle = kernel32.CloseHandle
+            CloseHandle.argtypes = [wintypes.HANDLE]
+            CloseHandle.restype = wintypes.BOOL
+            
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not hProcess:
+                remove_pid_file()
+                return None
+            CloseHandle(hProcess)
+        except Exception:
+            logger.debug("Windows process check failed for pid %s", pid, exc_info=True)
+            remove_pid_file()
+            return None
+    else:
+        try:
+            os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
+        except (ProcessLookupError, PermissionError, OSError):
+            remove_pid_file()
+            return None
 
     recorded_start = record.get("start_time")
     current_start = _get_process_start_time(pid)

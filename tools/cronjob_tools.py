@@ -245,7 +245,7 @@ def cronjob(
             if script:
                 script_error = _validate_cron_script_path(script)
                 if script_error:
-                    return tool_error(script_error, success=False)
+                        return tool_error(script_error, success=False)
 
             job = create_job(
                 prompt=prompt or "",

@@ -294,6 +294,7 @@ class CopilotACPClient:
         except Exception:
             try:
                 proc.kill()
+                proc.wait(timeout=1)
             except Exception:
                 pass
 
@@ -517,6 +518,8 @@ class CopilotACPClient:
         params = msg.get("params") or {}
 
         if method == "session/request_permission":
+            logger.warning("ACP permission request auto-approved: %s params=%s",
+                           method, {k: v for k, v in params.items() if k != "content"})
             response = {
                 "jsonrpc": "2.0",
                 "id": message_id,
@@ -549,13 +552,19 @@ class CopilotACPClient:
         elif method == "fs/write_text_file":
             try:
                 path = _ensure_path_within_cwd(str(params.get("path") or ""), cwd)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(str(params.get("content") or ""))
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": message_id,
-                    "result": None,
-                }
+                content = str(params.get("content") or "")
+                _MAX_WRITE_SIZE = 1 * 1024 * 1024
+                if len(content.encode("utf-8", errors="replace")) > _MAX_WRITE_SIZE:
+                    response = _jsonrpc_error(message_id, -32602,
+                                             f"Content exceeds {_MAX_WRITE_SIZE // 1024}KB limit")
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(content)
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": message_id,
+                        "result": None,
+                    }
             except Exception as exc:
                 response = _jsonrpc_error(message_id, -32602, str(exc))
         else:
