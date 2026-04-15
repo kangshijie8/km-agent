@@ -594,9 +594,29 @@ class MemoryStore:
 
         Returns top-k results ranked by relevance, grouped by layer.
         Uses cached simhash values for performance optimization.
+        If query is empty, returns all entries across all layers.
         """
-        if not query.strip():
-            return {"success": False, "error": "Query cannot be empty."}
+        # Handle empty query - return all entries instead of error
+        if not query or not query.strip():
+            results = []
+            for target in VALID_TARGETS:
+                for entry in self._entries.get(target, []):
+                    results.append({
+                        "target": target,
+                        "content": entry,
+                        "score": 1.0,
+                        "fts_score": 1.0,
+                        "vector_score": 1.0,
+                    })
+            results.sort(key=lambda r: r["content"])
+            top = results[:8]
+            return {
+                "success": True,
+                "query": "",
+                "results": top,
+                "total_matches": len(results),
+                "note": "Empty query - showing all entries",
+            }
 
         query_lower = query.lower().strip()
         query_words = _extract_tokens(query_lower)
@@ -836,8 +856,20 @@ def memory_tool(
 
 
 def check_memory_requirements() -> bool:
-    """Memory tool has no external requirements -- always available."""
-    return True
+    """Check if memory is enabled in configuration.
+    
+    Memory tool requires memory_enabled or user_profile_enabled to be True
+    in the agent configuration. This prevents the tool from being registered
+    when memory is disabled, avoiding runtime errors.
+    """
+    try:
+        from kunming_cli.config import load_config
+        config = load_config()
+        mem_config = config.get("memory", {})
+        return mem_config.get("memory_enabled", False) or mem_config.get("user_profile_enabled", False)
+    except Exception:
+        # If we can't load config, assume memory is disabled to be safe
+        return False
 
 
 # =============================================================================
