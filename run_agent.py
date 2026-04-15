@@ -4569,7 +4569,6 @@ class AIAgent:
 
             _first_chunk_seen = False
             for chunk in stream:
-                last_chunk_time["t"] = time.time()
                 if not _first_chunk_seen:
                     _first_chunk_seen = True
                     self._touch_activity("receiving stream response")
@@ -4584,6 +4583,11 @@ class AIAgent:
                     if hasattr(chunk, "usage") and chunk.usage:
                         usage_obj = chunk.usage
                     continue
+
+                # Only real data chunks reset the stale detector.
+                # SSE keep-alive pings with empty choices must not
+                # mask a stalled model stream.
+                last_chunk_time["t"] = time.time()
 
                 delta = chunk.choices[0].delta
                 if hasattr(chunk, "model") and chunk.model:
