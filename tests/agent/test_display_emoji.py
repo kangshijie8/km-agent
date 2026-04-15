@@ -111,7 +111,8 @@ class TestSkinYamlToolEmojis:
         }
         skin_file.write_text(yaml.dump(skin_data))
         
-        with mock_patch("kunming_cli.config.get_kunming_home", return_value=tmp_path):
+        # 修复: get_kunming_home已迁移到kunming_constants导入 [M17]
+        with mock_patch("kunming_constants.get_kunming_home", return_value=tmp_path):
             skin = load_skin("test")
             assert skin.tool_emojis == {"terminal": "🖥️", "web_search": "🔍"}
 

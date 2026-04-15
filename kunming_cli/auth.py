@@ -37,8 +37,11 @@ from typing import Any, Dict, List, Optional
 import httpx
 import yaml
 
-from kunming_cli.config import get_kunming_home, get_config_path, read_raw_config
-from kunming_constants import OPENROUTER_BASE_URL
+from kunming_cli.config import get_config_path, read_raw_config
+# 优化: get_kunming_home从轻量kunming_constants导入，避免触发config.py重量级初始化 [M17]
+from kunming_constants import OPENROUTER_BASE_URL, PROVIDER_ALIASES, get_kunming_home  # 整合: 导入统一 PROVIDER_ALIASES [M3]
+# 使用原子写入防止崩溃导致配置文件损坏（与项目其他位置保持一致）
+from utils import atomic_yaml_write
 
 logger = logging.getLogger(__name__)
 
@@ -606,8 +609,21 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 
     try:
         raw = json.loads(auth_file.read_text())
-    except Exception:
-        return {"version": AUTH_STORE_VERSION, "providers": {}}
+    except Exception as exc:
+        # 不能静默丢弃所有认证状态：用户所有provider登录状态会无提示地消失，
+        # 且无任何错误提示。必须记录日志并尝试从备份恢复。
+        logger.warning("auth.json 解析失败，尝试从 .bak 备份恢复: %s", exc)
+        bak_path = auth_file.with_suffix(".json.bak")
+        if bak_path.exists():
+            try:
+                raw = json.loads(bak_path.read_text())
+                logger.warning("已从备份 %s 恢复认证状态", bak_path)
+            except Exception as bak_exc:
+                logger.error("备份文件 %s 也无法解析: %s，认证状态丢失", bak_path, bak_exc)
+                return {"version": AUTH_STORE_VERSION, "providers": {}}
+        else:
+            logger.error("无备份文件可恢复，所有认证状态丢失")
+            return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     if isinstance(raw, dict) and (
         isinstance(raw.get("providers"), dict)
@@ -661,6 +677,13 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
         auth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
+    # 每次成功写入后创建 .bak 备份，以便 _load_auth_store() 在主文件损坏时恢复。
+    # 使用 shutil.copy2 保留文件元数据，备份失败不影响主流程。
+    try:
+        bak_path = auth_file.with_suffix(".json.bak")
+        shutil.copy2(auth_file, bak_path)
+    except OSError:
+        logger.debug("创建 auth.json 备份失败，不影响主流程", exc_info=True)
     return auth_file
 
 
@@ -815,28 +838,8 @@ def resolve_provider(
     """
     normalized = (requested or "auto").strip().lower()
 
-    # Normalize provider aliases
-    _PROVIDER_ALIASES = {
-        "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
-        "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
-        "kimi": "kimi-coding", "moonshot": "kimi-coding",
-        "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
-        "claude": "anthropic", "claude-code": "anthropic",
-        "github": "copilot", "github-copilot": "copilot",
-        "github-models": "copilot", "github-model": "copilot",
-        "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
-        "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
-        "opencode": "opencode-zen", "zen": "opencode-zen",
-        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
-        "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
-        "go": "opencode-go", "opencode-go-sub": "opencode-go",
-        "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
-        # Local server aliases -route through the generic custom provider
-        "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
-        "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
-        "llama.cpp": "custom", "llama-cpp": "custom",
-    }
-    normalized = _PROVIDER_ALIASES.get(normalized, normalized)
+    # 整合: 删除函数内 _PROVIDER_ALIASES 局部定义，使用从 kunming_constants 导入的模块级 PROVIDER_ALIASES [M3]
+    normalized = PROVIDER_ALIASES.get(normalized, normalized)
 
     if normalized == "openrouter":
         return "openrouter"
@@ -2424,7 +2427,9 @@ def _update_config_for_provider(
 
     config["model"] = model_cfg
 
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    # 使用原子写入：write_text()在写入过程中崩溃会导致config.yaml被截断为空或部分写入，
+    # atomic_yaml_write通过临时文件+os.replace()确保目标文件永远不会处于半写状态
+    atomic_yaml_write(config_path, config, sort_keys=False)
     return config_path
 
 
@@ -2443,7 +2448,9 @@ def _reset_config_provider() -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    # 使用原子写入：write_text()在写入过程中崩溃会导致config.yaml被截断为空或部分写入，
+    # atomic_yaml_write通过临时文件+os.replace()确保目标文件永远不会处于半写状态
+    atomic_yaml_write(config_path, config, sort_keys=False)
     return config_path
 
 

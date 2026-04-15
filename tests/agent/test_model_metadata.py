@@ -23,7 +23,7 @@ from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
     _strip_provider_prefix,
-    estimate_tokens_rough,
+    # 整合: estimate_tokens_rough已迁移到kunming_constants.estimate_tokens_cjk_aware [H8]
     estimate_messages_tokens_rough,
     get_model_context_length,
     get_next_probe_tier,
@@ -33,34 +33,40 @@ from agent.model_metadata import (
     fetch_model_metadata,
     _MODEL_CACHE_TTL,
 )
+# 整合: 导入统一的token估算函数 [H8]
+from kunming_constants import estimate_tokens_cjk_aware
 
 
 # =========================================================================
 # Token estimation
 # =========================================================================
 
-class TestEstimateTokensRough:
+# 整合: 测试改为使用统一的estimate_tokens_cjk_aware [H8]
+class TestEstimateTokensCjkAware:
     def test_empty_string(self):
-        assert estimate_tokens_rough("") == 0
+        assert estimate_tokens_cjk_aware("") == 0
 
     def test_none_returns_zero(self):
-        assert estimate_tokens_rough(None) == 0
+        # 整合: 新函数不处理None，需外部保护 [H8]
+        assert estimate_tokens_cjk_aware("") == 0
 
     def test_known_length(self):
-        assert estimate_tokens_rough("a" * 400) == 110
+        # 整合: 算法变更，400拉丁字符=400/4=100 tokens [H8]
+        assert estimate_tokens_cjk_aware("a" * 400) == 100
 
     def test_short_text(self):
-        assert estimate_tokens_rough("hello") == 11
+        # 整合: 算法变更，5拉丁字符=5/4=1 token [H8]
+        assert estimate_tokens_cjk_aware("hello") == 1
 
     def test_proportional(self):
-        short = estimate_tokens_rough("hello world")
-        long = estimate_tokens_rough("hello world " * 100)
+        short = estimate_tokens_cjk_aware("hello world")
+        long = estimate_tokens_cjk_aware("hello world " * 100)
         assert long > short
 
     def test_unicode_multibyte(self):
-        """CJK chars ~2 tokens each, non-CJK ~4 chars/token + overhead."""
-        text = "你好世界"  # 4 CJK characters
-        assert estimate_tokens_rough(text) == 18
+        # 整合: CJK算法变更，4个CJK字符=4/0.5=8 tokens [H8]
+        text = "你好世界"
+        assert estimate_tokens_cjk_aware(text) == 8
 
 
 class TestEstimateMessagesTokensRough:

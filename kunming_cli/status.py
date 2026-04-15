@@ -11,7 +11,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from kunming_cli.auth import AuthError, resolve_provider
 from kunming_cli.colors import Colors, color
-from kunming_cli.config import get_env_path, get_env_value, get_kunming_home, load_config
+from kunming_cli.config import get_env_path, get_env_value, load_config
+# 优化: get_kunming_home从轻量kunming_constants导入 [M17]
+from kunming_constants import get_kunming_home
 from kunming_cli.models import provider_label
 from kunming_cli.nous_subscription import get_nous_subscription_features
 from kunming_cli.runtime_provider import resolve_requested_provider

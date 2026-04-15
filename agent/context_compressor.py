@@ -18,6 +18,9 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+# 整合: 从 kunming_constants 导入统一 token 估算函数，消除本地重复实现 [H8]
+from kunming_constants import estimate_tokens_cjk_aware
+
 from agent.auxiliary_client import call_llm
 from agent.model_metadata import (
     get_model_context_length,
@@ -50,18 +53,18 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 _PRUNE_DEFAULT_THRESHOLD = 800
 _PRUNE_IMPORTANT_THRESHOLD = 3000
-_IMPORTANT_RESULT_TOOLS = frozenset({"read_file", "search_files", "web_search", "web_extract"})
+# 修复：扩展重要工具集合，加入terminal、execute_code、browser_snapshot、delegate_task
+# 这些工具的输出包含命令执行结果、代码运行输出、浏览器状态等关键信息，
+# 使用默认的800字符裁剪阈值会丢失重要上下文
+_IMPORTANT_RESULT_TOOLS = frozenset({
+    "read_file", "search_files", "web_search", "web_extract",
+    "terminal", "execute_code", "browser_snapshot", "delegate_task",
+})
 
-# Chars per token rough estimate
-_CHARS_PER_TOKEN_LATIN = 4
-_CHARS_PER_TOKEN_CJK = 1.5
-_CJK_CHAR_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
+# 整合: 删除本地 _CHARS_PER_TOKEN_LATIN / _CHARS_PER_TOKEN_CJK / _CJK_CHAR_RE / _estimate_tokens，
+# 统一使用 kunming_constants.estimate_tokens_cjk_aware [H8]
+# 旧调用 _estimate_tokens(x) 现改为 estimate_tokens_cjk_aware(x)
 
-
-def _estimate_tokens(text: str) -> int:
-    cjk_count = len(_CJK_CHAR_RE.findall(text))
-    latin_count = len(text) - cjk_count
-    return int(latin_count / _CHARS_PER_TOKEN_LATIN + cjk_count / _CHARS_PER_TOKEN_CJK)
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 120
 
 
@@ -150,8 +153,17 @@ class ContextCompressor:
         return tokens >= self.threshold_tokens
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
-        """Quick pre-flight check using rough estimate (before API call)."""
+        """Quick pre-flight check using rough estimate (before API call).
+        
+        修复：为Windows系统增加安全边际，避免预判不准确导致上下文丢失
+        """
+        import sys
         rough_estimate = estimate_messages_tokens_rough(messages)
+        
+        # 修复：Windows环境下增加5%的安全边际，提高预判准确性
+        if sys.platform == "win32":
+            extra_margin = int(self.threshold_tokens * 0.05)
+            return rough_estimate >= (self.threshold_tokens - extra_margin)
         return rough_estimate >= self.threshold_tokens
 
     def get_status(self) -> Dict[str, Any]:
@@ -197,11 +209,11 @@ class ContextCompressor:
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 content_len = len(msg.get("content") or "")
-                msg_tokens = _estimate_tokens(msg.get("content") or "") + 10
+                msg_tokens = estimate_tokens_cjk_aware(msg.get("content") or "") + 10
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
                         args = tc.get("function", {}).get("arguments", "")
-                        msg_tokens += _estimate_tokens(args)
+                        msg_tokens += estimate_tokens_cjk_aware(args)
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -457,6 +469,29 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return None
 
+    def _generate_rule_based_summary(self, messages):
+        parts = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role", "")
+            if role == "user":
+                content = str(msg.get("content", ""))[:100]
+                parts.append(f"User asked: {content}")
+            elif role == "assistant":
+                content = str(msg.get("content", ""))[:100]
+                tc = msg.get("tool_calls", [])
+                if tc:
+                    tool_names = [t.get("function", {}).get("name", "?") for t in tc if isinstance(t, dict)]
+                    parts.append(f"Assistant called tools: {', '.join(tool_names)}")
+                elif content:
+                    parts.append(f"Assistant responded: {content}")
+            elif role == "tool":
+                name = msg.get("name", "unknown")
+                content = str(msg.get("content", ""))[:80]
+                parts.append(f"Tool {name} result: {content}")
+        return "[Auto summary - LLM unavailable] " + "; ".join(parts[:20])
+
     @staticmethod
     def _with_summary_prefix(summary: str) -> str:
         """Normalize summary text to the current compaction handoff format."""
@@ -607,12 +642,12 @@ Write only the summary body. Do not include any preamble or prefix."""
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
             content = msg.get("content") or ""
-            msg_tokens = _estimate_tokens(content) + 10  # +10 for role/metadata
+            msg_tokens = estimate_tokens_cjk_aware(content) + 10  # +10 for role/metadata
             # Include tool call arguments in estimate
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += _estimate_tokens(args)
+                    msg_tokens += estimate_tokens_cjk_aware(args)
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -631,6 +666,17 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         # Align to avoid splitting tool groups
         cut_idx = self._align_boundary_backward(messages, cut_idx)
+
+        if cut_idx > 0 and cut_idx < len(messages):
+            msg = messages[cut_idx]
+            if isinstance(msg, dict) and msg.get("role") == "tool":
+                scan = cut_idx - 1
+                while scan >= 0:
+                    prev = messages[scan]
+                    if isinstance(prev, dict) and prev.get("role") == "assistant" and prev.get("tool_calls"):
+                        cut_idx = scan
+                        break
+                    scan -= 1
 
         return max(cut_idx, head_end + 1)
 
@@ -708,11 +754,17 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize)
+        if summary is None:
+            summary = self._generate_rule_based_summary(turns_to_summarize)
 
         # Phase 4: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
             msg = messages[i].copy()
+            # 清理不需要的元数据字段，避免API调用错误
+            # 修复：移除finish_reason等API返回字段，确保消息格式兼容性
+            msg.pop("finish_reason", None)
+            msg.pop("logprobs", None)
             if i == 0 and msg.get("role") == "system" and self.compression_count == 0:
                 msg["content"] = (
                     (msg.get("content") or "")
@@ -761,10 +813,11 @@ Write only the summary body. Do not include any preamble or prefix."""
                         _tail_appended = True
                     compressed.append(msg)
                 if not _tail_appended:
-                    # No suitable tail message found — fall back to inserting
-                    # with the opposite role of the head.
-                    _flip_role = "assistant" if last_head_role == "user" else "user"
-                    compressed.append({"role": _flip_role, "content": _summary_text})
+                    # 修复：当user和assistant角色都与邻居冲突时，使用system角色插入摘要
+                    # 原逻辑使用_flip_role（head的对立角色），但此时该角色必定与tail冲突
+                    # （因为进入此分支的前提就是两种角色都冲突），导致API拒绝。
+                    # OpenAI和Anthropic API均允许在对话中间插入system消息，不会破坏角色交替规则。
+                    compressed.append({"role": "system", "content": _summary_text})
         else:
             if not self.quiet_mode:
                 logger.debug("No summary model available — middle turns dropped without summary")

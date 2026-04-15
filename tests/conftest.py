@@ -27,6 +27,8 @@ def _isolate_kunming_home(tmp_path, monkeypatch):
     (fake_home / "skills").mkdir()
     (fake_home / "config.yaml").write_text("")
     monkeypatch.setenv("KUNMING_HOME", str(fake_home))
+    # 修复: mock Path.home()确保_get_default_kunming_home()和_get_profiles_root()也在临时目录内 [H12]
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Reset plugin singleton so tests don't leak plugins from ~/.kunming/plugins/
     try:
         import kunming_cli.plugins as _plugins_mod

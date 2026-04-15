@@ -15,24 +15,8 @@ from typing import List, Optional, Set
 
 from kunming_cli.config import load_config, save_config
 from kunming_cli.colors import Colors, color
-
-PLATFORMS = {
-    "cli":      "🖥 CLI",
-    "telegram": "[MOBILE] Telegram",
-    "discord":  "[CHAT] Discord",
-    "slack":    "[WORK] Slack",
-    "whatsapp": "[MOBILE] WhatsApp",
-    "signal":   "[HOME] Signal",
-    "bluebubbles": "[CHAT] BlueBubbles",
-    "email":    "📧 Email",
-    "homeassistant": "🏠 Home Assistant",
-    "mattermost": "[CHAT] Mattermost",
-    "matrix":   "[CHAT] Matrix",
-    "dingtalk": "[CHAT] DingTalk",
-    "feishu": "🪽 Feishu",
-    "wecom": "[CHAT] WeCom",
-    "webhook": "🔗 Webhook",
-}
+# 整合: 从 kunming_constants 导入统一 PLATFORMS（dict 结构含 label/default_toolset），消除本地重复定义 [H4]
+from kunming_constants import PLATFORMS
 
 # --- Config Helpers -----------------------------------------------------------
 
@@ -79,7 +63,8 @@ def _get_categories(skills: List[dict]) -> List[str]:
 
 def _select_platform() -> Optional[str]:
     """Ask user which platform to configure, or global."""
-    options = [("global", "All platforms (global default)")] + list(PLATFORMS.items())
+    # 整合: PLATFORMS 结构从简单字符串改为 dict，需提取 label [H4]
+    options = [("global", "All platforms (global default)")] + [(k, v["label"]) for k, v in PLATFORMS.items()]
     print()
     print(color("  Configure skills for:", Colors.BOLD))
     for i, (key, label) in enumerate(options, 1):
@@ -147,7 +132,8 @@ def skills_command(args=None):
 
     # Step 1: Select platform
     platform = _select_platform()
-    platform_label = PLATFORMS.get(platform, "All platforms") if platform else "All platforms"
+    # 整合: PLATFORMS 结构改为 dict，需提取 label [H4]
+    platform_label = PLATFORMS.get(platform, {}).get("label", "All platforms") if platform else "All platforms"
 
     # Step 2: Select mode individual or by category
     print()

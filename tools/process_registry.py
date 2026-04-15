@@ -46,7 +46,8 @@ from utils import is_process_running
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from kunming_cli.config import get_kunming_home
+# 优化: 从轻量kunming_constants导入，避免触发config.py的重量级初始化 [M17]
+from kunming_constants import get_kunming_home
 
 logger = logging.getLogger(__name__)
 

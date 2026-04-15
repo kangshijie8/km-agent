@@ -488,46 +488,8 @@ _PROVIDER_LABELS = {
     "custom": "Custom endpoint",
 }
 
-_PROVIDER_ALIASES = {
-    "glm": "zai",
-    "z-ai": "zai",
-    "z.ai": "zai",
-    "zhipu": "zai",
-    "github": "copilot",
-    "github-copilot": "copilot",
-    "github-models": "copilot",
-    "github-model": "copilot",
-    "github-copilot-acp": "copilot-acp",
-    "copilot-acp-agent": "copilot-acp",
-    "google": "gemini",
-    "google-gemini": "gemini",
-    "google-ai-studio": "gemini",
-    "kimi": "kimi-coding",
-    "moonshot": "kimi-coding",
-    "minimax-china": "minimax-cn",
-    "minimax_cn": "minimax-cn",
-    "claude": "anthropic",
-    "claude-code": "anthropic",
-    "deep-seek": "deepseek",
-    "opencode": "opencode-zen",
-    "zen": "opencode-zen",
-    "go": "opencode-go",
-    "opencode-go-sub": "opencode-go",
-    "aigateway": "ai-gateway",
-    "vercel": "ai-gateway",
-    "vercel-ai-gateway": "ai-gateway",
-    "kilo": "kilocode",
-    "kilo-code": "kilocode",
-    "kilo-gateway": "kilocode",
-    "dashscope": "alibaba",
-    "aliyun": "alibaba",
-    "qwen": "alibaba",
-    "alibaba-cloud": "alibaba",
-    "qwen-portal": "qwen-oauth",
-    "hf": "huggingface",
-    "hugging-face": "huggingface",
-    "huggingface-hub": "huggingface",
-}
+# 整合: 删除本地 _PROVIDER_ALIASES，从 kunming_constants 导入统一版本 [M3]
+from kunming_constants import PROVIDER_ALIASES as _PROVIDER_ALIASES
 
 
 def model_ids() -> list[str]:

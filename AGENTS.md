@@ -643,3 +643,47 @@ python -m pytest tests/tools/ -q                 # Tool-level tests
 ```
 
 Always run the full suite before pushing changes.
+
+
+---
+
+## Complex Task Processing Protocol (User-defined)
+
+The following protocol MUST be applied to all future collaboration sessions on this project. It overrides any generic defaults when there is a conflict.
+
+### 1. Pre-work (Mandatory)
+
+Before starting **any** task, read these two files in the project root **completely**:
+
+- `工作日志.txt` — latest status, active issues, and recent decisions.
+- `AGENTS.md` — project architecture, conventions, and historical fixes.
+
+### 2. Task Planning
+
+For non-trivial or complex tasks:
+
+- **Use the subagent parallelization mechanism** (`Agent` tool) to break work into independent investigations or implementations.
+- Build a detailed task list with `SetTodoList`.
+- Assess dependencies and risks **before** writing code.
+- Prefer explicit planning (e.g., `EnterPlanMode`) for multi-file changes or architectural decisions.
+
+### 3. Communication Style
+
+- Be direct and efficient.
+- Fix problems immediately, then verify (run tests, inspect output).
+- Search the web or explain code when uncertain—**ask for clarification instead of guessing**.
+- State all assumptions explicitly before acting.
+
+### 4. Coding Principles
+
+- **Minimal code only**: no over-engineering, no speculative abstractions, and no unrequested configurability.
+- **Surgical changes**: touch only the lines necessary to achieve the goal.
+- **Match existing style**: formatting, naming, and idioms must blend with the surrounding codebase.
+- **Clean up after yourself**: remove unused imports, dead variables, or leftover debug code introduced by the change.
+- **Target-driven**: define success criteria as concrete, verifiable goals (e.g., *"write a repro test and make it pass"*).
+- **All modifications must be annotated with comments** explaining *why* the change was made, especially for bug fixes or non-obvious logic.
+
+### 5. Verification
+
+- After every code change, run relevant verification (tests, lint, type-check, or manual reproduction).
+- Do not declare success until the verification output proves it.

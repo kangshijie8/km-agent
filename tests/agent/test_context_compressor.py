@@ -559,13 +559,13 @@ class TestSummaryTargetRatio:
         """Tail token budget should be threshold_tokens * summary_target_ratio."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
-        # 200K * 0.50 threshold * 0.40 ratio = 40K
-        assert c.tail_token_budget == 40_000
+        # 修复: 默认threshold_percent=0.75，所以 200K * 0.75 * 0.40 = 60K
+        assert c.tail_token_budget == 60_000
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
-        # 1M * 0.50 threshold * 0.40 ratio = 200K
-        assert c.tail_token_budget == 200_000
+        # 修复: 1M * 0.75 * 0.40 = 300K
+        assert c.tail_token_budget == 300_000
 
     def test_summary_cap_scales_with_context(self):
         """Max summary tokens should be 5% of context, capped at 12K."""
@@ -587,12 +587,12 @@ class TestSummaryTargetRatio:
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.95)
         assert c.summary_target_ratio == 0.80
 
-    def test_default_threshold_is_50_percent(self):
-        """Default compression threshold should be 50%."""
+    def test_default_threshold_is_75_percent(self):
+        # 修复: 默认threshold_percent已从0.50改为0.75
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        assert c.threshold_percent == 0.50
-        assert c.threshold_tokens == 50_000
+        assert c.threshold_percent == 0.75
+        assert c.threshold_tokens == 75_000
 
     def test_default_protect_last_n_is_20(self):
         """Default protect_last_n should be 20."""

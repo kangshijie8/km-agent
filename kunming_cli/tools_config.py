@@ -20,6 +20,8 @@ from kunming_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
 )
 from kunming_cli.colors import Colors, color
+# 整合: 从 kunming_constants 导入统一 PLATFORMS，消除本地重复定义 [H4]
+from kunming_constants import PLATFORMS
 from kunming_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
@@ -118,25 +120,7 @@ def _get_plugin_toolset_keys() -> set:
     except Exception:
         return set()
 
-# Platform display config
-PLATFORMS = {
-    "cli":      {"label": "🖥️ CLI",       "default_toolset": "kunming-cli"},
-    "telegram": {"label": "[MOBILE] Telegram",   "default_toolset": "kunming-telegram"},
-    "discord":  {"label": "[CHAT] Discord",    "default_toolset": "kunming-discord"},
-    "slack":    {"label": "[WORK] Slack",      "default_toolset": "kunming-slack"},
-    "whatsapp": {"label": "[MOBILE] WhatsApp",   "default_toolset": "kunming-whatsapp"},
-    "signal":   {"label": "[HOME] Signal",     "default_toolset": "kunming-signal"},
-    "bluebubbles": {"label": "💙 BlueBubbles", "default_toolset": "kunming-bluebubbles"},
-    "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "kunming-homeassistant"},
-    "email":    {"label": "📧 Email",      "default_toolset": "kunming-email"},
-    "matrix":   {"label": "[CHAT] Matrix",     "default_toolset": "kunming-matrix"},
- "dingtalk": {"label": "[CHAT] DingTalk", "default_toolset": "kunming-dingtalk"},
-    "feishu": {"label": "🪶 Feishu", "default_toolset": "kunming-feishu"},
-    "wecom": {"label": "[CHAT] WeCom", "default_toolset": "kunming-wecom"},
-    "api_server": {"label": "🌐 API Server", "default_toolset": "kunming-api-server"},
-    "mattermost": {"label": "[CHAT] Mattermost", "default_toolset": "kunming-mattermost"},
-    "webhook": {"label": "🔗 Webhook", "default_toolset": "kunming-webhook"},
-}
+# 整合: 本地 PLATFORMS 已删除，统一使用从 kunming_constants 导入的版本 [H4]
 
 
 # --- Tool Categories (provider-aware configuration) --------------------------

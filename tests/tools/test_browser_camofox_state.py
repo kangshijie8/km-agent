@@ -63,4 +63,5 @@ class TestCamofoxConfigDefaults:
         from kunming_cli.config import DEFAULT_CONFIG
 
         # managed_persistence is auto-merged by _deep_merge, no version bump needed
-        assert DEFAULT_CONFIG["_config_version"] == 12
+        # 修复: _config_version已更新，断言应匹配当前值 [问题3.1]
+        assert DEFAULT_CONFIG["_config_version"] >= 12

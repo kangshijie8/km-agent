@@ -250,8 +250,11 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     preview = _oneline(str(value))
     if not preview:
         return None
+    # 修复：截断时附加长度提示，让用户知道被截掉了多少内容
     if max_len > 0 and len(preview) > max_len:
-        preview = preview[:max_len - 3] + "..."
+        omitted = len(preview) - max_len
+        suffix = f" [+{omitted} chars]"
+        preview = preview[:max_len - len(suffix)] + suffix
     return preview
 
 
@@ -650,8 +653,20 @@ class KawaiiSpinner:
         # Just log the start once and let stop() log the completion.
         if not self._is_tty:
             self._write(f"  [tool] {self.message}", flush=True)
+            # 修复：非TTY环境下每30秒打印一次经过时间和当前状态，
+            # 避免用户在Docker/CI中长时间无任何反馈
+            _nontty_last_progress = time.time()
+            _NONTTY_PROGRESS_INTERVAL = 30.0
             while self.running:
                 time.sleep(0.5)
+                now = time.time()
+                if now - _nontty_last_progress >= _NONTTY_PROGRESS_INTERVAL:
+                    elapsed = now - self.start_time if self.start_time else 0
+                    self._write(
+                        f"  [tool] {self.message} ({elapsed:.1f}s elapsed)",
+                        flush=True,
+                    )
+                    _nontty_last_progress = now
             return
 
         # When running inside prompt_toolkit's patch_stdout context the CLI
@@ -813,18 +828,34 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         except (json.JSONDecodeError, TypeError, AttributeError):
             logger.debug("Could not parse memory result as JSON for capacity check")
 
-    # Generic heuristic for non-terminal tools
-    lower = result[:500].lower()
+    # 修复：扩大检测范围到前2000字符，增加对常见错误模式的检测，
+    # 添加对MCP工具错误格式的专门处理
+    lower = result[:2000].lower()
     try:
         data = json.loads(result)
         if isinstance(data, dict):
             if data.get("success") is False:
                 return True, " [error]"
             if data.get("error") and data.get("success") is not True and data.get("success") is not None:
+                # 修复：对MCP工具错误格式提供更具体的标记
+                error_val = data.get("error")
+                if isinstance(error_val, str) and "timed out" in error_val.lower():
+                    return True, " [timeout]"
+                if isinstance(error_val, str) and "degraded" in error_val.lower():
+                    return True, " [degraded]"
+                return True, " [error]"
+            # 修复：检测MCP工具的isError字段
+            if data.get("isError") is True:
                 return True, " [error]"
     except (json.JSONDecodeError, TypeError):
-        if result.strip().lower().startswith("error"):
+        # 修复：扩展非JSON错误模式检测，覆盖timeout/failed/exception等常见模式
+        stripped = result.strip().lower()
+        if stripped.startswith("error"):
             return True, " [error]"
+        _ERROR_PATTERNS = ("timeout", "timed out", "failed", "exception", "traceback")
+        for pattern in _ERROR_PATTERNS:
+            if pattern in lower:
+                return True, f" [{pattern.split()[0]}]"
 
     return False, ""
 
@@ -1074,10 +1105,11 @@ def format_context_pressure(
 
     color = f"{_BOLD}{_YELLOW}"
     icon = "⚡"
+    # 修复：提供可操作的建议，而非仅描述状态
     if compression_enabled:
-        hint = "compaction approaching"
+        hint = "compaction approaching — type /compress to compact now or /new to start fresh"
     else:
-        hint = "no auto-compaction"
+        hint = "no auto-compaction — type /compress to compact now or /new to start fresh"
 
     return (
         f"  {color}{icon} context {bar} {pct_int}% to compaction{_ANSI_RESET}"
@@ -1102,9 +1134,10 @@ def format_context_pressure_gateway(
     threshold_pct_int = int(threshold_percent * 100)
 
     icon = "[!]"
+    # 修复：gateway版本也提供可操作建议
     if compression_enabled:
-        hint = f"Context compaction approaching (threshold: {threshold_pct_int}% of window)."
+        hint = f"Context compaction approaching (threshold: {threshold_pct_int}% of window). Send /compress to compact now or /new to start fresh."
     else:
-        hint = "Auto-compaction is disabled ✨context may be truncated."
+        hint = "Auto-compaction is disabled — context may be truncated. Send /compress to compact now or /new to start fresh."
 
     return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"

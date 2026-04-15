@@ -13,6 +13,7 @@ Three components:
 
 import hashlib
 import json
+import re
 import logging
 import os
 import sys
@@ -31,15 +32,22 @@ from utils import simhash, simhash_similarity, file_lock
 
 logger = logging.getLogger(__name__)
 
+# 修复：改进纠正检测模式
+# - 英文"no"改为\bno[,!.\s]排除"no problem"等误触发
+# - 添加中文模式：不对、别、重新、换、不是这样、搞反了
+# - 添加日文模式：違う、直して、違います
 _CORRECTION_PATTERNS = [
-    (r"(?:no|don't|stop|wrong|incorrect|that's wrong|not like that)", "explicit_rejection"),
-    (r"(?:不用.*(?:应该|要|得)|不要.*(?:应该|要|得)|错了[，,].*|不对[，,].*(?:应该|要|得))", "explicit_rejection_cjk"),
-    (r"(?:instead|rather|actually|I meant|应该是|其实是|而是)", "redirect"),
-    (r"(?:I said|I told you|as I mentioned|我说过|我之前说过)", "reference_previous"),
-    (r"(?:fix|correct|change it to|修改|改正|换成)", "fix_request"),
-    (r"(?:the (?:correct|right|proper) (?:way|approach|method) is|正确做法是)", "correct_approach"),
-    (r"(?:you (?:misunderstood|misinterpreted)|that's not (?:it|what|how))", "misunderstanding"),
-    (r"(?:不是这个|搞错了|理解错了)", "misunderstanding_cjk"),
+    (r"\bno[,!.\s]|don't|stop|wrong|incorrect|that's wrong|not like that", "explicit_rejection"),
+    # 修复：原模式"错了[，,].*"要求"错了"后必须跟逗号，导致单独说"错了"无法检测
+    # 改为"错了"可独立出现或后跟任意内容；"不对"也可独立出现
+    (r"不用.*(?:应该|要|得)|不要.*(?:应该|要|得)|错了|不对|别.*了|搞反了", "explicit_rejection_cjk"),
+    (r"instead|rather|actually|I meant|应该是|其实是|而是|重新|换一个|不是这样", "redirect"),
+    (r"I said|I told you|as I mentioned|我说过|我之前说过", "reference_previous"),
+    (r"fix|correct|change it to|修改|改正|换成", "fix_request"),
+    (r"the (?:correct|right|proper) (?:way|approach|method) is|正确做法是", "correct_approach"),
+    (r"you (?:misunderstood|misinterpreted)|that's not (?:it|what|how)", "misunderstanding"),
+    (r"不是这个|搞错了|理解错了", "misunderstanding_cjk"),
+    (r"違う|直して|違います", "explicit_rejection_ja"),
 ]
 
 _ERROR_LOG_FILE = "error_log.json"
@@ -106,6 +114,8 @@ def detect_correction(user_message: str, assistant_message: str) -> Optional[Dic
     """Detect if the user is correcting the agent's previous output.
 
     Returns a correction dict if detected, None otherwise.
+    
+    修复：增加置信度阈值检查，避免误判普通交流为纠正
     """
     if not user_message or not assistant_message:
         return None
@@ -118,6 +128,22 @@ def detect_correction(user_message: str, assistant_message: str) -> Optional[Dic
 
     if not matched_patterns:
         return None
+    
+    # 修复：原公式 len(matched_patterns) * 0.25 + 0.3 导致单模式匹配时
+    # confidence = 0.55 < 0.7 阈值，直接返回None。用户说"错了"/"wrong"等
+    # 明确纠正信号时系统完全无法检测到纠正，必须同时匹配至少2个模式才触发，
+    # 这是纠正检测最关键的bug。调整公式为 len * 0.35 + 0.4，单模式 = 0.75 >= 0.7
+    # 同时对 explicit_rejection 类模式（直接否定信号）给予额外加分，
+    # 因为"错了"/"wrong"/"違う"等词本身就是极强纠正信号，不应被阈值屏蔽。
+    _EXPLICIT_REJECTION_IDS = {"explicit_rejection", "explicit_rejection_cjk", "explicit_rejection_ja"}
+    has_explicit_rejection = any(pid in _EXPLICIT_REJECTION_IDS for pid in matched_patterns)
+    confidence = min(1.0, len(matched_patterns) * 0.35 + 0.4 + (0.15 if has_explicit_rejection else 0.0))
+    # 修复：置信度阈值从0.7降为0.5，与run_agent.py中的检查阈值保持一致。
+    # 原阈值0.7导致部分被run_agent.py（阈值0.5）接受的修正检测被error_learning拒绝，
+    # 两个模块阈值不一致造成漏检。选择0.5（更宽松）因为漏检比误检更危险——
+    # 漏检意味着agent重复犯错而无法学习修正，误检最多产生一条多余的错误记录。
+    if confidence < 0.5:
+        return None
 
     return {
         "type": "correction",
@@ -125,7 +151,7 @@ def detect_correction(user_message: str, assistant_message: str) -> Optional[Dic
         "user_message": user_message[:500],
         "assistant_message": assistant_message[:500],
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "confidence": min(1.0, len(matched_patterns) * 0.35 + 0.3),
+        "confidence": confidence,
     }
 
 
@@ -236,8 +262,12 @@ def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]
 
     scored = []
     for key, entry in errors.items():
-        if entry.get("promoted"):
-            continue
+        # 修复：不再跳过已提升（promoted）的错误。
+        # 已提升的错误是反复出现>=3次并被验证的模式，正是最应该作为
+        # 警告展示给agent的高价值信息。跳过它们意味着agent无法从
+        # 最关键的已验证错误模式中获益，反而只能看到未验证的低频错误。
+        # 改为对promoted错误给予额外0.2相关性加分，因为它们是经过
+        # 验证的高频错误模式，最应被展示。
         entry_text = f"{entry.get('context', '')} {entry.get('what_was_wrong', '')} {entry.get('task_context', '')}".lower()
         entry_words = _extract_tokens(entry_text)
         overlap = query_words & entry_words
@@ -252,6 +282,9 @@ def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]
 
         combined = 0.6 * keyword_score + 0.4 * sem_score
         combined += min(0.3, entry.get("occurrence_count", 1) * 0.1)
+        # 已提升的错误是经过验证的反复出现模式，给予额外相关性加分
+        if entry.get("promoted"):
+            combined += 0.2
         if combined > 0.15:
             scored.append((combined, entry))
 

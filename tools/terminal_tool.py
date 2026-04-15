@@ -108,28 +108,46 @@ def _check_disk_usage_warning():
         return False
 
 
-# Session-cached sudo password (persists until CLI exits).
-# Security: stored in a process-local environment variable rather than a Python
-# global so it is not trivially readable via object introspection, debugger
-# attachment, or accidental logging.  This is NOT encryption — the value is
-# still in process memory — but it raises the bar above a bare string global.
-# Call _clear_cached_sudo_password() on exit to scrub the env var.
+# 【安全修复】sudo密码缓存机制改进：
+# 原实现将密码存入os.environ环境变量，在gateway多用户共享进程下不安全——
+# 任何子进程都能通过/proc/PID/environ或环境变量继承读取到密码。
+# 改进方案：gateway模式下使用进程内变量缓存，不写入环境变量；
+# CLI单用户模式下仍使用环境变量（保持原有行为，CLI场景下进程为单用户独占）。
+# 已知限制：进程内变量仍可通过调试器或内存转储读取，但比环境变量更难
+# 被子进程意外继承。真正的安全需要使用系统密钥环或sudo token机制。
 _SUDO_PASSWORD_ENV_KEY = "_KM_SUDO_PASS"
+_sudo_password_in_memory: str = ""  # gateway模式下的进程内缓存
+
+
+def _is_gateway_mode() -> bool:
+    """判断当前是否为gateway多用户模式。"""
+    return bool(os.getenv("KUNMING_GATEWAY_SESSION"))
 
 
 def _cache_sudo_password(password: str) -> None:
-    """Store sudo password in a process-local env var (not on disk)."""
-    os.environ[_SUDO_PASSWORD_ENV_KEY] = password
+    """缓存sudo密码。gateway模式用进程内变量，CLI模式用环境变量。"""
+    if _is_gateway_mode():
+        # gateway模式下不写入环境变量，避免子进程继承泄露密码
+        global _sudo_password_in_memory
+        _sudo_password_in_memory = password
+    else:
+        os.environ[_SUDO_PASSWORD_ENV_KEY] = password
 
 
 def _get_cached_sudo_password() -> str:
-    """Retrieve the cached sudo password, or empty string if none."""
+    """获取缓存的sudo密码。gateway模式从进程内变量读取，CLI模式从环境变量读取。"""
+    if _is_gateway_mode():
+        return _sudo_password_in_memory
     return os.environ.get(_SUDO_PASSWORD_ENV_KEY, "")
 
 
 def _clear_cached_sudo_password() -> None:
-    """Remove the cached sudo password from the environment."""
-    os.environ.pop(_SUDO_PASSWORD_ENV_KEY, None)
+    """清除缓存的sudo密码。"""
+    if _is_gateway_mode():
+        global _sudo_password_in_memory
+        _sudo_password_in_memory = ""
+    else:
+        os.environ.pop(_SUDO_PASSWORD_ENV_KEY, None)
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these

@@ -69,7 +69,7 @@ Usage:
 import json
 import logging
 
-from kunming_constants import get_kunming_home
+from kunming_constants import get_kunming_home, estimate_tokens_cjk_aware  # 整合: 导入统一 token 估算函数 [H10]
 import os
 import re
 from enum import Enum
@@ -104,20 +104,9 @@ _REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "dayt
 _secret_capture_callback = None
 
 
-def load_env() -> Dict[str, str]:
-    """Load profile-scoped environment variables from KUNMING_HOME/.env."""
-    env_path = get_kunming_home() / ".env"
-    env_vars: Dict[str, str] = {}
-    if not env_path.exists():
-        return env_vars
-
-    with env_path.open() as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                env_vars[key.strip()] = value.strip().strip("\"'")
-    return env_vars
+# 整合: 删除本地 load_env，统一使用 kunming_cli.config.load_env（含 Windows UTF-8 编码处理） [H4]
+from kunming_cli.config import load_env as _load_env_from_config
+load_env = _load_env_from_config  # 保持函数名不变，调用点无需修改
 
 
 class SkillReadinessStatus(str, Enum):
@@ -446,17 +435,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     return None
 
 
-def _estimate_tokens(content: str) -> int:
-    """
-    Rough token estimate (4 chars per token average).
-
-    Args:
-        content: Text content
-
-    Returns:
-        Estimated token count
-    """
-    return len(content) // 4
+# 整合: 删除本地 _estimate_tokens，统一使用 kunming_constants.estimate_tokens_cjk_aware [H10]
 
 
 def _parse_tags(tags_value) -> List[str]:

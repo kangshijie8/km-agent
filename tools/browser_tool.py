@@ -946,6 +946,15 @@ def _run_browser_command(
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+            # 修复：超时时清理临时文件，与正常路径一致
+            # 原因：超时返回前未清理stdout_path/stderr_path临时文件，
+            # 长期运行会导致临时目录中残留大量_stdout_*/_stderr_*文件。
+            # 资源清理应在所有代码路径上执行，不仅是正常路径。
+            for p in (stdout_path, stderr_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
             logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
                            command, timeout, task_id, task_socket_dir)
             return {"success": False, "error": f"Command timed out after {timeout} seconds"}

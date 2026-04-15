@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
-from kunming_constants import OPENROUTER_MODELS_URL
+from kunming_constants import OPENROUTER_MODELS_URL, estimate_tokens_cjk_aware  # 整合: 导入统一 token 估算函数 [H9]
 
 logger = logging.getLogger(__name__)
 
@@ -980,15 +980,10 @@ def get_model_context_length(
     return DEFAULT_FALLBACK_CONTEXT
 
 
-def estimate_tokens_rough(text: str) -> int:
-    """Rough token estimate for pre-flight checks. CJK-aware."""
-    if not text:
-        return 0
-    cjk_count = len(re.findall(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]', text))
-    non_cjk_len = len(text) - cjk_count
-    cjk_tokens = cjk_count * 2
-    non_cjk_tokens = non_cjk_len // 4 + 10
-    return cjk_tokens + non_cjk_tokens
+# 整合: 删除本地 estimate_tokens_rough，统一使用 kunming_constants.estimate_tokens_cjk_aware [H9]
+# 旧调用 estimate_tokens_rough(x) 现改为 estimate_tokens_cjk_aware(x)
+# 注意: 旧版对 CJK 字符按 2 tokens/char 计算（+10 偏移），新版按 0.5 char/token（即 2 tokens/char），
+# 结果非常接近但新版更精确且无偏移量，对 pre-flight 检查足够准确
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
@@ -1000,20 +995,20 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     for msg in messages:
         content = msg.get("content")
         if isinstance(content, str):
-            total_tokens += estimate_tokens_rough(content)
+            total_tokens += estimate_tokens_cjk_aware(content)  # 整合: 统一使用 estimate_tokens_cjk_aware [H9]
         elif isinstance(content, list):
             for block in content:
                 if isinstance(block, dict):
-                    total_tokens += estimate_tokens_rough(block.get("text", ""))
+                    total_tokens += estimate_tokens_cjk_aware(block.get("text", ""))  # 整合 [H9]
                     total_tokens += len(str(block.get("tool_use_id", ""))) // 4
         for tc in msg.get("tool_calls") or []:
             if isinstance(tc, dict):
                 fn = tc.get("function", {})
-                total_tokens += estimate_tokens_rough(fn.get("name", ""))
-                total_tokens += estimate_tokens_rough(fn.get("arguments", ""))
+                total_tokens += estimate_tokens_cjk_aware(fn.get("name", ""))  # 整合 [H9]
+                total_tokens += estimate_tokens_cjk_aware(fn.get("arguments", ""))  # 整合 [H9]
         reasoning = msg.get("reasoning") or msg.get("reasoning_content")
         if reasoning:
-            total_tokens += estimate_tokens_rough(reasoning) if isinstance(reasoning, str) else len(str(reasoning)) // 4
+            total_tokens += estimate_tokens_cjk_aware(reasoning) if isinstance(reasoning, str) else len(str(reasoning)) // 4  # 整合 [H9]
     return total_tokens
 
 

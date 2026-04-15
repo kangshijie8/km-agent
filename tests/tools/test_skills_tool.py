@@ -13,7 +13,7 @@ from tools.skills_tool import (
     _parse_frontmatter,
     _parse_tags,
     _get_category_from_path,
-    _estimate_tokens,
+    # 整合: _estimate_tokens已迁移到kunming_constants.estimate_tokens_cjk_aware [H8]
     _find_all_skills,
     skill_matches_platform,
     skills_list,
@@ -191,15 +191,17 @@ class TestGetCategoryFromPath:
 
 
 # ---------------------------------------------------------------------------
-# _estimate_tokens
+# 整合: _estimate_tokens已迁移到kunming_constants.estimate_tokens_cjk_aware [H8]
 # ---------------------------------------------------------------------------
 
 
-class TestEstimateTokens:
+class TestEstimateTokensCjkAware:
     def test_estimate(self):
-        assert _estimate_tokens("1234") == 1
-        assert _estimate_tokens("12345678") == 2
-        assert _estimate_tokens("") == 0
+        # 整合: 使用统一的CJK感知token估算函数 [H8]
+        from kunming_constants import estimate_tokens_cjk_aware
+        assert estimate_tokens_cjk_aware("1234") == 1
+        assert estimate_tokens_cjk_aware("12345678") == 2
+        assert estimate_tokens_cjk_aware("") == 0
 
 
 # ---------------------------------------------------------------------------

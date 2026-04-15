@@ -12,7 +12,8 @@ import json
 import time
 from typing import Optional
 
-from kunming_cli.config import get_kunming_home
+# 优化: 从轻量kunming_constants导入，避免触发config.py的重量级初始化 [M17]
+from kunming_constants import get_kunming_home
 
 
 CACHE_PATH = get_kunming_home() / "sticker_cache.json"

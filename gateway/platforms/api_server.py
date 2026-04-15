@@ -72,7 +72,8 @@ class ResponseStore:
         self._max_size = max_size
         if db_path is None:
             try:
-                from kunming_cli.config import get_kunming_home
+                # 优化: 从轻量kunming_constants导入get_kunming_home [M17]
+                from kunming_constants import get_kunming_home
                 db_path = str(get_kunming_home() / "response_store.db")
             except Exception:
                 db_path = ":memory:"

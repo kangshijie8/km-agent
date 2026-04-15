@@ -317,6 +317,10 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a delete file operation."""
+    # 【安全修复】路径遍历检查：LLM生成的文件路径可能包含".."
+    # 导致越权删除工作目录之外的文件。拒绝包含".."的路径。
+    if ".." in op.file_path:
+        return False, f"Path traversal detected in file path: {op.file_path}"
     # Read file first for diff
     read_result = file_ops.read_file(op.file_path)
     
@@ -336,6 +340,12 @@ def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply a move file operation."""
+    # 【安全修复】路径遍历检查：LLM生成的文件路径可能包含".."
+    # 导致越权移动工作目录之外的文件。源路径和目标路径都需要检查。
+    if ".." in op.file_path:
+        return False, f"Path traversal detected in source path: {op.file_path}"
+    if op.new_path and ".." in op.new_path:
+        return False, f"Path traversal detected in destination path: {op.new_path}"
     # Use shell mv command
     mv_result = file_ops._exec(
         f"mv {file_ops._escape_shell_arg(op.file_path)} {file_ops._escape_shell_arg(op.new_path)}"
@@ -350,6 +360,10 @@ def _apply_move(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
 
 def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
     """Apply an update file operation."""
+    # 【安全修复】路径遍历检查：LLM生成的文件路径可能包含".."
+    # 导致越权修改工作目录之外的文件。拒绝包含".."的路径。
+    if ".." in op.file_path:
+        return False, f"Path traversal detected in file path: {op.file_path}"
     # Read current content
     read_result = file_ops.read_file(op.file_path, limit=10000)
     

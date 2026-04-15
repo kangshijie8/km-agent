@@ -2186,7 +2186,8 @@ class DiscordAdapter(BasePlatformAdapter):
     @staticmethod
     def _thread_state_path() -> Path:
         """Path to the persisted thread participation set."""
-        from kunming_cli.config import get_kunming_home
+        # 优化: 从轻量kunming_constants导入get_kunming_home [M17]
+        from kunming_constants import get_kunming_home
         return get_kunming_home() / "discord_threads.json"
 
     @classmethod

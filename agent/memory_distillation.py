@@ -46,10 +46,10 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
-from kunming_constants import get_kunming_home
+from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils import file_lock
+from utils import file_lock, _extract_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,8 @@ W_REC = 0.15
 W_CON = 0.10
 W_CPT = 0.06
 
-DEFAULT_CONFIG = {
+# 修复: 重命名避免与全局DEFAULT_CONFIG同名混淆 [M15]
+_DISTILL_DEFAULT_CONFIG = {
     "enabled": True,
     "schedule": "0 3 * * *",
     "min_score": 0.65,
@@ -170,9 +171,14 @@ def _extract_concept_tags(text: str, max_tags: int = 8) -> List[str]:
 
 
 def _jaccard_similarity(a: str, b: str) -> float:
-    """Jaccard similarity on word sets. Used for semantic dedup."""
-    wa = set(a.lower().split())
-    wb = set(b.lower().split())
+    """Jaccard similarity on token sets. Used for semantic dedup.
+
+    修复：使用_extract_tokens替代split()，支持CJK文本分词
+    原实现使用split()按空白分词，对中文/日文等无空白分隔的语言完全无效
+    """
+    # 修复：使用_extract_tokens替代split()，支持CJK分词
+    wa = _extract_tokens(a.lower())
+    wb = _extract_tokens(b.lower())
     if not wa and not wb:
         return 1.0
     if not wa or not wb:
@@ -258,9 +264,9 @@ def _score_candidates(
     """
     now = datetime.now(timezone.utc)
     half_life = config.get("recency_half_life_days", 14)
-    min_score = config.get("min_score", DEFAULT_CONFIG.get("min_score", 0.65))
-    min_signals = config.get("min_signal_count", DEFAULT_CONFIG.get("min_signal_count", 2))
-    min_days = config.get("min_unique_days", DEFAULT_CONFIG.get("min_unique_days", 1))
+    min_score = config.get("min_score", _DISTILL_DEFAULT_CONFIG.get("min_score", 0.65))
+    min_signals = config.get("min_signal_count", _DISTILL_DEFAULT_CONFIG.get("min_signal_count", 2))
+    min_days = config.get("min_unique_days", _DISTILL_DEFAULT_CONFIG.get("min_unique_days", 1))
     max_age = config.get("max_age_days", 30)
 
     candidates = []
@@ -429,12 +435,27 @@ def _promote_to_memory(
             if not candidates_for_eviction:
                 candidates_for_eviction = [(i, e) for i, e in enumerate(existing)]
 
-            _PROTECTED_KEYWORDS = ("preference", "always", "never", "must", "required", "important")
+            # 使用共享常量，避免与 memory_tool.py 中定义不同步（此前缺少 "critical"）
+            _PROTECTED_KEYWORDS = _MEMORY_PROTECTED_KEYWORDS
 
             def _eviction_score(entry):
                 content = entry.lower()
                 has_protected = any(kw in content for kw in _PROTECTED_KEYWORDS)
-                return (0 if has_protected else 1, len(entry))
+                if has_protected:
+                    return (0, 0)  # 永不驱逐保护条目
+                # 修复：纳入 Ebbinghaus 元数据考量，避免高价值短条目被优先驱逐
+                # 原实现仅按条目长度排序，短的非保护条目总是先被驱逐，
+                # 但一个频繁访问（高 access_count）或高 importance 的短条目
+                # 可能比一个很少被访问的长条目更有价值。
+                # 通过 retention_bonus 降低有效驱逐分数：
+                #   有效长度 = 实际长度 / (1 + retention_bonus)
+                # access_count 越高、importance 越高的条目获得越大的保护
+                entry_hash = store._entry_key(entry)
+                meta = store._meta.get("experiences", {}).get(entry_hash, {})
+                access_count = meta.get("access_count", 0)
+                importance = meta.get("importance", 0.5)
+                retention_bonus = min(access_count * 0.1, 2.0) + importance
+                return (1, len(entry) / (1 + retention_bonus))
 
             candidates_for_eviction.sort(key=lambda x: _eviction_score(x[1]))
 
@@ -500,22 +521,39 @@ def _ingest_session_transcripts(lookback_days: int = 7) -> int:
     except Exception:
         return 0
 
+    # 修复：用户纠正关键词列表，用于从user消息中筛选纠正信号
+    _USER_CORRECTION_KEYWORDS = (
+        "wrong", "incorrect", "no,", "fix", "错了", "不对", "修改", "改正",
+        "应该是", "不是这样", "搞错了", "違う", "直して",
+    )
+
     for row in rows:
         ts = row.get("timestamp", "")
         content = row.get("content", "")
         role = row.get("role", "")
 
-        if role != "assistant" or not content:
+        if not content:
             continue
         if ts < cutoff_ts:
             continue
 
-        snippet = content.strip()[:280]
-        if len(snippet) < 30:
-            continue
-
-        record_signal(snippet, source="session", score=0.55, query=f"session:{ts[:10]}")
-        count += 1
+        # 修复：同时摄入user消息中包含纠正关键词的内容
+        # 原实现仅摄入assistant消息，丢失了用户纠正信号
+        if role == "assistant":
+            snippet = content.strip()[:280]
+            if len(snippet) < 30:
+                continue
+            record_signal(snippet, source="session", score=0.55, query=f"session:{ts[:10]}")
+            count += 1
+        elif role == "user":
+            # 用户纠正消息是高价值信号，给予更高分数
+            content_lower = content.lower()
+            if any(kw in content_lower for kw in _USER_CORRECTION_KEYWORDS):
+                snippet = content.strip()[:280]
+                if len(snippet) < 10:
+                    continue
+                record_signal(snippet, source="session", score=0.75, query=f"correction:{ts[:10]}")
+                count += 1
 
     return count
 
@@ -539,7 +577,9 @@ def _llm_extract_patterns(candidates: List[Dict], themes: List[Dict]) -> List[Di
 
     prompt = (
         "Analyze these memory entries and extract 1-3 reusable rules or patterns.\n"
-        "Each rule should be a concise, actionable insight.\n\n"
+        "Each rule should be a concise, actionable insight.\n"
+        # 修复：添加多语言输出指令，确保中文/日文记忆提取效果
+        "Output rules in the same language as the input entries.\n\n"
         f"Themes found: {theme_str}\n\n"
         f"Entries:\n" + "\n".join(f"- {s}" for s in snippets) + "\n\n"
         "Output format: one rule per line, no numbering, no explanation. "
@@ -547,7 +587,8 @@ def _llm_extract_patterns(candidates: List[Dict], themes: List[Dict]) -> List[Di
     )
 
     try:
-        response = call_llm(prompt, max_tokens=200, temperature=0.3)
+        # 修复: call_llm参数名错误，prompt应传给messages参数而非task参数，导致LLM辅助REM从未成功 [H1]
+        response = call_llm(messages=[{"role": "user", "content": prompt}], max_tokens=200, temperature=0.3)
         if not response or not response.strip():
             return []
         rules = [r.strip() for r in response.strip().split("\n") if r.strip() and len(r.strip()) > 10]
@@ -597,7 +638,7 @@ def run_distillation(config: Optional[Dict[str, Any]] = None, verbose: bool = Fa
     Returns a summary dict with statistics and any themes discovered.
     """
     if config is None:
-        config = DEFAULT_CONFIG.copy()
+        config = _DISTILL_DEFAULT_CONFIG.copy()
 
     if not config.get("enabled", True):
         return {"status": "disabled", "message": "Memory distillation is not enabled."}

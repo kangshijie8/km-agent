@@ -544,19 +544,24 @@ def handle_function_call(
         with _tool_failure_lock:
             _tool_failure_counts[function_name] = _tool_failure_counts.get(function_name, 0) + 1
         _record_tool_failure(function_name, "value_error", _tool_start)
-        return json.dumps({"error": f"{function_name}: {type(e).__name__}"}, ensure_ascii=False)
+        # 修复：保留原始异常消息，截断至200字符防止过长。
+        # 原格式 "{function_name}: {type(e).__name__}" 只包含异常类型名
+        # （如"terminal: TypeError"），丢失了原始错误消息，对调试毫无帮助。
+        return json.dumps({"error": f"{function_name}: {type(e).__name__}: {str(e)[:200]}"}, ensure_ascii=False)
     except RuntimeError as e:
         logger.error("Runtime error in %s: %s", function_name, e)
         with _tool_failure_lock:
             _tool_failure_counts[function_name] = _tool_failure_counts.get(function_name, 0) + 1
         _record_tool_failure(function_name, "runtime_error", _tool_start)
-        return json.dumps({"error": f"{function_name}: {type(e).__name__}"}, ensure_ascii=False)
+        # 修复：同上，保留原始异常消息
+        return json.dumps({"error": f"{function_name}: {type(e).__name__}: {str(e)[:200]}"}, ensure_ascii=False)
     except Exception as e:
         logger.error("Unexpected error in %s: %s", function_name, e, exc_info=True)
         with _tool_failure_lock:
             _tool_failure_counts[function_name] = _tool_failure_counts.get(function_name, 0) + 1
         _record_tool_failure(function_name, "unexpected", _tool_start)
-        return json.dumps({"error": f"{function_name}: {type(e).__name__}"}, ensure_ascii=False)
+        # 修复：同上，保留原始异常消息
+        return json.dumps({"error": f"{function_name}: {type(e).__name__}: {str(e)[:200]}"}, ensure_ascii=False)
 
 
 def _record_tool_failure(tool_name: str, error_type: str, start_time: float = 0):

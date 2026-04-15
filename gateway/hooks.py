@@ -25,7 +25,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import yaml
 
-from kunming_cli.config import get_kunming_home
+# 优化: 从轻量kunming_constants导入get_kunming_home [M17]
+from kunming_constants import get_kunming_home
 
 
 HOOKS_DIR = get_kunming_home() / "hooks"

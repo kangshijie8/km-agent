@@ -12,6 +12,9 @@ from pathlib import Path
 import yaml
 import logging
 
+# 整合: 从 config 导入权威版 _deep_merge，消除本地重复实现 [H5]
+from kunming_cli.config import _deep_merge
+
 logger = logging.getLogger(__name__)
 
 # Default skin configuration
@@ -211,15 +214,7 @@ _BUILTIN_SKINS: Dict[str, dict] = {
 
 _skins_dir: Optional[Path] = None
 
-
-def _deep_merge(base, override):
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
+# 整合: 本地 _deep_merge 已删除，统一使用从 kunming_cli.config 导入的版本 [H5]
 
 
 def _build_skin_config(data: dict) -> SkinConfig:
@@ -255,7 +250,8 @@ def load_skin(name: str) -> SkinConfig:
         _active_skin = _load_skin_from_dict(merged)
         return _active_skin
 
-    from kunming_cli.config import get_kunming_home
+    # 优化: 从轻量kunming_constants导入get_kunming_home [M17]
+    from kunming_constants import get_kunming_home
     skin_path = get_kunming_home() / "skins" / f"{name}.yaml"
 
     if skin_path.exists():
@@ -306,7 +302,8 @@ def list_available_skins() -> List[str]:
     skins = list(_BUILTIN_SKINS.keys())
 
     try:
-        from kunming_cli.config import get_kunming_home
+        # 优化: 从轻量kunming_constants导入get_kunming_home [M17]
+        from kunming_constants import get_kunming_home
         skins_dir = get_kunming_home() / "skins"
         if skins_dir.exists():
             for f in skins_dir.iterdir():

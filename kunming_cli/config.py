@@ -1476,6 +1476,18 @@ _KNOWN_ROOT_KEYS = {
     "personalities", "security", "cron", "logging", "honcho",
     "timezone", "discord", "whatsapp", "skills", "smart_model_routing",
     "prefill_messages_file", "language",
+    # 修复：以下键在代码中被广泛使用但之前遗漏，导致 validate_config_structure()
+    # 将用户合法配置的这些根键误报为"misplaced"警告
+    "mcp_servers",              # MCP 服务器配置 (mcp_tool.py, cli.py, tools_config.py)
+    "custom_providers",         # 自定义提供商列表 (credential_pool.py, model_switch.py, setup.py)
+    "model_aliases",            # 模型别名映射 (model_switch.py)
+    "fallback_model",           # 回退模型配置 (validate_config_structure 自身使用)
+    "mcp",                      # MCP 全局配置 (DEFAULT_CONFIG 中定义)
+    "session_reset",            # 会话重置策略 (setup.py, gateway/config.py)
+    "group_sessions_per_user",  # 群组会话设置 (gateway 多平台适配器)
+    "platform_toolsets",        # 平台工具集配置 (nous_subscription.py)
+    "code_execution",           # 代码执行配置 (code_execution_tool.py)
+    "streaming",                # 流式输出配置 (gateway/config.py)
 }
 
 # Valid fields inside a custom_providers list entry
@@ -1981,6 +1993,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge *override* into *base*, preserving nested defaults.
+    # 整合: 此为 _deep_merge 的权威版本，skin_engine.py 等消费方应从此处导入 [H5]
 
     Keys in *override* take precedence. If both values are dicts the merge
     recurses, so a user who overrides only ``tts.elevenlabs.voice_id`` will

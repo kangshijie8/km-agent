@@ -125,20 +125,25 @@ def _apply_profile_override() -> None:
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0:
             for i, arg in enumerate(argv):
+                # 修复: argv=sys.argv[1:]所以argv[i]对应sys.argv[i+1]，删除--profile及其值应从sys.argv[i+1]开始 [H7]
                 if arg in ("--profile", "-p"):
-                    start = i + 1  # +1 because argv is sys.argv[1:]
-                    sys.argv = sys.argv[:start] + sys.argv[start + consume:]
+                    # argv[i]对应sys.argv[i+1](--profile标志)，argv[i+1]对应sys.argv[i+2](profile值)
+                    # 删除范围: sys.argv[i+1]到sys.argv[i+2]（含），共consume=2个元素
+                    del_start = i + 1  # --profile在sys.argv中的位置
+                    sys.argv = sys.argv[:del_start] + sys.argv[del_start + consume:]
                     break
                 elif arg.startswith("--profile="):
-                    start = i + 1
-                    sys.argv = sys.argv[:start] + sys.argv[start + 1:]
+                    # --profile=value只占1个argv元素，对应sys.argv[i+1]
+                    del_start = i + 1
+                    sys.argv = sys.argv[:del_start] + sys.argv[del_start + 1:]
                     break
 
 _apply_profile_override()
 
 # Load .env from ~/.kunming/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from kunming_cli.config import get_kunming_home
+# 优化: get_kunming_home从轻量kunming_constants导入 [M17]
+from kunming_constants import get_kunming_home
 from kunming_cli.env_loader import load_kunming_dotenv
 load_kunming_dotenv(project_env=PROJECT_ROOT / '.env')
 
@@ -180,7 +185,9 @@ def _relative_time(ts) -> str:
 
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
-    from kunming_cli.config import get_env_path, get_kunming_home, load_config
+    # 优化: get_kunming_home从轻量kunming_constants导入 [M17]
+    from kunming_constants import get_kunming_home
+    from kunming_cli.config import get_env_path, load_config
     from kunming_cli.auth import get_auth_status
 
     # Determine whether Kunming itself has been explicitly configured (model
@@ -3300,7 +3307,9 @@ def _invalidate_update_cache():
     default_home = get_kunming_home()
     homes.append(default_home)
     # Named profiles under ~/.kunming/profiles/
-    profiles_root = default_home / "profiles"
+    # 修复: 使用_get_profiles_root()替代内联计算，避免profile嵌套错误 [M16]
+    from kunming_cli.profiles import _get_profiles_root
+    profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
         for entry in profiles_root.iterdir():
             if entry.is_dir():

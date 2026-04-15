@@ -354,9 +354,24 @@ class ToolRegistry:
             else:
                 result = tool.handler(params, task_id=task_id, **kwargs)
 
-            if isinstance(result, dict):
+            # 统一工具返回格式，确保始终返回有效的JSON字符串
+            # 修复：解决工具返回格式不一致导致的调用方解析错误
+            if isinstance(result, str):
+                # 验证是否已经是有效的JSON字符串
+                try:
+                    json.loads(result)
+                    return result  # 已经是有效的JSON字符串，直接返回
+                except json.JSONDecodeError:
+                    # 不是JSON字符串，包装为标准格式
+                    return json.dumps({"result": result}, ensure_ascii=False)
+            elif isinstance(result, dict):
                 return json.dumps(result, ensure_ascii=False)
-            return result
+            elif result is None:
+                # 处理None返回值，避免调用方解析错误
+                return json.dumps({"success": True}, ensure_ascii=False)
+            else:
+                # 其他类型（int, float, bool, list等），转换为字符串并包装
+                return json.dumps({"result": str(result)}, ensure_ascii=False)
         except Exception as e:
             logger.error("Tool '%s' failed: %s", tool_name, e)
             logger.debug(traceback.format_exc())

@@ -23,19 +23,24 @@ def jittered_backoff(
     max_delay: float = 120.0,
     jitter_ratio: float = 0.5,
 ) -> float:
-    """Compute a jittered exponential backoff delay.
+    """Compute a decorrelated jittered backoff delay.
+
+    修复：更新文档以匹配实际实现（decorrelated jitter策略），
+    原文档描述的 base * 2^(attempt-1) + jitter 与实际 uniform(base_delay, delay*3) 不一致。
 
     Args:
         attempt: 1-based retry attempt number.
-        base_delay: Base delay in seconds for attempt 1.
+        base_delay: Base delay in seconds (minimum delay floor).
         max_delay: Maximum delay cap in seconds.
-        jitter_ratio: Fraction of computed delay to use as random jitter
-            range.  0.5 means jitter is uniform in [0, 0.5 * delay].
+        jitter_ratio: Unused in current implementation (kept for API
+            compatibility). Previously controlled jitter range ratio.
 
     Returns:
-        Delay in seconds: min(base * 2^(attempt-1), max_delay) + jitter.
+        Delay in seconds: uniform(base_delay, min(base * 2^(attempt-1), max_delay) * 3),
+        capped at max_delay. This is a decorrelated jitter strategy that spreads
+        retries more effectively than simple exponential backoff + additive jitter.
 
-    The jitter decorrelates concurrent retries so multiple sessions
+    The decorrelated jitter decorrelates concurrent retries so multiple sessions
     hitting the same provider don't all retry at the same instant.
     """
     global _jitter_counter

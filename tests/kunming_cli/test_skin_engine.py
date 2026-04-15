@@ -160,7 +160,8 @@ class TestUserSkins:
         }
         import yaml
         skin_file.write_text(yaml.dump(skin_data))
-        monkeypatch.setattr("kunming_cli.config.get_kunming_home", lambda: tmp_path)
+        # 修复: get_kunming_home已迁移到kunming_constants导入 [M17]
+        monkeypatch.setattr("kunming_constants.get_kunming_home", lambda: tmp_path)
 
         skin = load_skin("custom")
         assert skin.name == "custom"
@@ -177,7 +178,8 @@ class TestUserSkins:
             "name": "pirate",
             "description": "Arr matey",
         }))
-        monkeypatch.setattr("kunming_cli.config.get_kunming_home", lambda: tmp_path)
+        # 修复: get_kunming_home已迁移到kunming_constants导入 [M17]
+        monkeypatch.setattr("kunming_constants.get_kunming_home", lambda: tmp_path)
 
         skins = list_skins()
         names = [s["name"] for s in skins]

@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import re
 from pathlib import Path
 
 
@@ -112,3 +113,80 @@ AI_GATEWAY_CHAT_URL = f"{AI_GATEWAY_BASE_URL}/chat/completions"
 
 NOUS_API_BASE_URL = "https://inference-api.kunming.dev/v1"
 NOUS_API_CHAT_URL = f"{NOUS_API_BASE_URL}/chat/completions"
+
+# 记忆保护关键词 — 集中定义，避免 memory_tool.py 和 memory_distillation.py 两处不同步
+# 含 "critical"（合并自 memory_tool.py 的版本），用于 Ebbinghaus 衰减和蒸馏驱逐时的保护判定
+# 修改此列表时只需改这一处，所有消费方自动同步
+_MEMORY_PROTECTED_KEYWORDS = (
+    "preference", "always", "never", "must", "required", "important", "critical",
+    "必须", "永远", "不要", "重要", "关键", "务必", "绝不", "一定", "禁止", "只能", "从不", "偏好",
+)
+
+# 整合: 统一 CJK 感知的 token 估算函数，消除 context_compressor.py / model_metadata.py / skills_tool.py 三处重复实现 [H8/H9/H10]
+# 基于 context_compressor.py 的版本（最精确：拉丁4字符/token，CJK 0.5字符/token，含韩文范围）
+_CHARS_PER_TOKEN_LATIN = 4
+_CHARS_PER_TOKEN_CJK = 0.5
+_CJK_CHAR_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
+
+
+def estimate_tokens_cjk_aware(text: str) -> int:
+    """Estimate token count with CJK awareness.
+
+    Latin text: ~4 chars per token.
+    CJK text (Chinese, Japanese Hiragana/Katakana, Korean): ~0.5 chars per token (2 tokens per char).
+    This is the single source of truth — all other copies should import this.
+    """
+    if not text:
+        return 0
+    cjk_count = len(_CJK_CHAR_RE.findall(text))
+    latin_count = len(text) - cjk_count
+    return int(latin_count / _CHARS_PER_TOKEN_LATIN + cjk_count / _CHARS_PER_TOKEN_CJK)
+
+
+# 整合: 统一 PROVIDER_ALIASES 字典，合并 auth.py 和 models.py 两处重复定义 [M3]
+# auth.py 独有: qwen-cli, qwen-oauth, local server aliases (lmstudio/ollama/vllm/llamacpp等)
+# models.py 独有: deep-seek, dashscope, aliyun, qwen, alibaba-cloud
+PROVIDER_ALIASES = {
+    "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
+    "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
+    "kimi": "kimi-coding", "moonshot": "kimi-coding",
+    "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
+    "claude": "anthropic", "claude-code": "anthropic",
+    "github": "copilot", "github-copilot": "copilot",
+    "github-models": "copilot", "github-model": "copilot",
+    "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+    "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
+    "opencode": "opencode-zen", "zen": "opencode-zen",
+    "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
+    "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
+    "go": "opencode-go", "opencode-go-sub": "opencode-go",
+    "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+    # models.py 独有条目
+    "deep-seek": "deepseek",
+    "dashscope": "alibaba", "aliyun": "alibaba", "qwen": "alibaba", "alibaba-cloud": "alibaba",
+    # Local server aliases - route through the generic custom provider
+    "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
+    "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
+    "llama.cpp": "custom", "llama-cpp": "custom",
+}
+
+# 整合: 统一 PLATFORMS 字典，合并 tools_config.py 和 skills_config.py 两处重复定义 [H4]
+# 以 tools_config.py 的 dict 结构为权威版本（含 label 和 default_toolset）
+PLATFORMS = {
+    "cli":      {"label": "🖥️ CLI",       "default_toolset": "kunming-cli"},
+    "telegram": {"label": "[MOBILE] Telegram",   "default_toolset": "kunming-telegram"},
+    "discord":  {"label": "[CHAT] Discord",    "default_toolset": "kunming-discord"},
+    "slack":    {"label": "[WORK] Slack",      "default_toolset": "kunming-slack"},
+    "whatsapp": {"label": "[MOBILE] WhatsApp",   "default_toolset": "kunming-whatsapp"},
+    "signal":   {"label": "[HOME] Signal",     "default_toolset": "kunming-signal"},
+    "bluebubbles": {"label": "💙 BlueBubbles", "default_toolset": "kunming-bluebubbles"},
+    "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "kunming-homeassistant"},
+    "email":    {"label": "📧 Email",      "default_toolset": "kunming-email"},
+    "matrix":   {"label": "[CHAT] Matrix",     "default_toolset": "kunming-matrix"},
+    "dingtalk": {"label": "[CHAT] DingTalk", "default_toolset": "kunming-dingtalk"},
+    "feishu":   {"label": "🪶 Feishu", "default_toolset": "kunming-feishu"},
+    "wecom":    {"label": "[CHAT] WeCom", "default_toolset": "kunming-wecom"},
+    "api_server": {"label": "🌐 API Server", "default_toolset": "kunming-api-server"},
+    "mattermost": {"label": "[CHAT] Mattermost", "default_toolset": "kunming-mattermost"},
+    "webhook":  {"label": "🔗 Webhook", "default_toolset": "kunming-webhook"},
+}

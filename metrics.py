@@ -194,7 +194,8 @@ def _get_db_path() -> Path:
     global _db_path
     if _db_path is not None:
         return _db_path
-    from kunming_cli.config import get_kunming_home
+    # 优化: 从轻量kunming_constants导入get_kunming_home [M17]
+    from kunming_constants import get_kunming_home
     _db_path = get_kunming_home() / "metrics.db"
     return _db_path
 

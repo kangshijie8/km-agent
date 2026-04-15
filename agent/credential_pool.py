@@ -351,6 +351,14 @@ def get_pool_strategy(provider: str) -> str:
     strategy = str(strategies.get(provider, "") or "").strip().lower()
     if strategy in SUPPORTED_POOL_STRATEGIES:
         return strategy
+    # 修复：策略无效时打印警告，避免静默回退导致用户不知情
+    if strategy:
+        print(
+            f"  ⚠ Invalid credential_pool_strategies for '{provider}': "
+            f"'{strategy}'. Valid options: {', '.join(sorted(SUPPORTED_POOL_STRATEGIES))}. "
+            f"Falling back to '{STRATEGY_FILL_FIRST}'.",
+            flush=True,
+        )
     return STRATEGY_FILL_FIRST
 
 
@@ -728,6 +736,13 @@ class CredentialPool:
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
+            # 修复：凭证池耗尽时向用户显示友好提示
+            print(
+                f"  ⚠ All credentials for '{self.provider}' are exhausted. "
+                f"API calls will fail until credentials recover. "
+                f"Use /credentials to check status.",
+                flush=True,
+            )
             return None
 
         if self._strategy == STRATEGY_RANDOM:

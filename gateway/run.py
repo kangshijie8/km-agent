@@ -7420,8 +7420,8 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
         if tick_count % DISTILL_EVERY == 0:
             try:
-                from agent.memory_distillation import run_distillation, DEFAULT_CONFIG
-                distill_cfg = DEFAULT_CONFIG.copy()
+                from agent.memory_distillation import run_distillation, _DISTILL_DEFAULT_CONFIG
+                distill_cfg = _DISTILL_DEFAULT_CONFIG.copy()
                 distill_cfg["enabled"] = True
                 result = run_distillation(config=distill_cfg, verbose=False)
                 if result.get("deep", {}).get("promoted", 0) > 0:

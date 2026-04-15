@@ -24,7 +24,8 @@ from cron.jobs import (
     pause_job,
     resume_job,
     trigger_job,
-    JOBS_FILE,
+    # 修复: JOBS_FILE改为延迟求值函数_get_jobs_file [H3]
+    _get_jobs_file as JOBS_FILE,
 )
 from cron.scheduler import tick
 
@@ -38,5 +39,6 @@ __all__ = [
     "resume_job",
     "trigger_job",
     "tick",
+    # 修复: JOBS_FILE现在是函数，调用时需加() [H3]
     "JOBS_FILE",
 ]

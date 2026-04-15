@@ -29,6 +29,7 @@ Remote execution additionally requires Python 3 in the terminal backend.
 """
 
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -382,18 +383,19 @@ def _rpc_server_loop(
                 # Dispatch through the standard tool handler.
                 # Suppress stdout/stderr from internal tool handlers so
                 # their status prints don't leak into the CLI spinner.
+                # 【安全修复】使用contextlib.redirect_stdout/redirect_stderr替代
+                # 手动替换sys.stdout/stderr。原实现在多线程环境下不安全：
+                # 1. 手动替换的时间窗口内，其他线程的输出会被丢弃
+                # 2. 异常路径下devnull文件描述符可能泄漏
+                # redirect_stdout/redirect_stderr是上下文管理器，保证所有代码路径
+                # 上都能正确恢复，且语义更清晰。
                 try:
-                    _real_stdout, _real_stderr = sys.stdout, sys.stderr
                     devnull = open(os.devnull, "w")
-                    try:
-                        sys.stdout = devnull
-                        sys.stderr = devnull
+                    with contextlib.redirect_stdout(devnull), contextlib.redirect_stderr(devnull):
                         result = handle_function_call(
                             tool_name, tool_args, task_id=task_id
                         )
-                    finally:
-                        sys.stdout, sys.stderr = _real_stdout, _real_stderr
-                        devnull.close()
+                    devnull.close()
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = tool_error(str(exc))
@@ -898,11 +900,12 @@ def execute_code(
                 child_env[k] = v
         child_env["KUNMING_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
-        # Ensure the kunming-agent root is importable in the sandbox so
-        # repo-root modules are available to child scripts.
-        _kunming_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # 【安全修复】仅将临时目录（kunming_tools.py所在目录）注入PYTHONPATH，
+        # 不注入kunming-agent项目根目录。沙箱隔离原则：沙盒子进程不应能import
+        # 项目中的任意模块（如API密钥、内部工具等），仅允许import沙箱自身的
+        # kunming_tools模块。
         _existing_pp = child_env.get("PYTHONPATH", "")
-        child_env["PYTHONPATH"] = _kunming_root + (os.pathsep + _existing_pp if _existing_pp else "")
+        child_env["PYTHONPATH"] = tmpdir + (os.pathsep + _existing_pp if _existing_pp else "")
         # Inject user's configured timezone so datetime.now() in sandboxed
         # code reflects the correct wall-clock time.
         _tz_name = os.getenv("KUNMING_TIMEZONE", "").strip()

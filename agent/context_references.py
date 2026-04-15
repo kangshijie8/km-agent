@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from agent.model_metadata import estimate_tokens_rough
+# 整合: 将已删除的 estimate_tokens_rough 替换为统一的 estimate_tokens_cjk_aware [H8/H9]
+from kunming_constants import estimate_tokens_cjk_aware
 
 REFERENCE_PATTERN = re.compile(
     r"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>\S+))"
@@ -165,7 +166,7 @@ async def preprocess_context_references_async(
             warnings.append(warning)
         if block:
             blocks.append(block)
-            injected_tokens += estimate_tokens_rough(block)
+            injected_tokens += estimate_tokens_cjk_aware(block)  # 整合: 替换已删除的 estimate_tokens_rough [H8/H9]
 
     hard_limit = max(1, int(context_length * 0.50))
     soft_limit = max(1, int(context_length * 0.25))

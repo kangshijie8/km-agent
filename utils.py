@@ -262,6 +262,9 @@ def simhash_similarity(hash1: int, hash2: int, hashbits: int = 64) -> float:
     Returns:
         Similarity score between 0.0 and 1.0
     """
+    # 整合: 添加双零哈希特殊处理（来自 memory_tool.py），两个空文本不应视为"相同" [H5]
+    if hash1 == 0 and hash2 == 0:
+        return 0.0
     if hash1 == hash2:
         return 1.0
     

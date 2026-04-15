@@ -54,7 +54,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from agent.credential_pool import load_pool
-from kunming_cli.config import get_kunming_home
+# 优化: 从轻量kunming_constants导入，避免触发config.py的重量级初始化 [M17]
+from kunming_constants import get_kunming_home
 from kunming_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)

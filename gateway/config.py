@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from enum import Enum
 
-from kunming_cli.config import get_kunming_home
+# 优化: 从轻量kunming_constants导入，避免触发config.py的重量级初始化 [M17]
+from kunming_constants import get_kunming_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)

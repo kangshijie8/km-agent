@@ -32,6 +32,7 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import collections
 import hashlib
 import json
 import logging
@@ -39,13 +40,14 @@ import math
 import os
 import re
 import struct
+import sys  # Windows平台检测需要（原子写入安全策略）
 import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from kunming_constants import get_kunming_home
+from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS
 from typing import Dict, Any, List, Optional, Tuple
-from utils import _extract_tokens, simhash, file_lock
+from utils import _extract_tokens, simhash, simhash_similarity, file_lock  # 整合: 导入 simhash_similarity 替代类内静态方法 [H5]
 
 try:
     import fcntl
@@ -54,18 +56,18 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Where memory files live — resolved dynamically so profile overrides
-# (KUNMING_HOME env var changes) are always respected.  The old module-level
-# constant was cached at import time and could go stale if a profile switch
-# happened after the first import.
+# 修复：移除MEMORY_DIR模块级常量，改为每次调用get_memory_dir()重新计算
+# 原因：MEMORY_DIR在模块导入时缓存get_memory_dir()的返回值，如果profile在
+# 导入后切换（KUNMING_HOME环境变量变更），MEMORY_DIR将指向旧路径，导致
+# 记忆文件读写到错误的profile目录。get_memory_dir()每次调用都从
+# get_kunming_home()重新计算，确保始终指向当前profile的memories目录。
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_kunming_home() / "memories"
+    """Return the profile-scoped memories directory.
 
-# Backward-compatible alias — gateway/run.py imports this at runtime inside
-# a function body, so it gets the correct snapshot for that process.  New code
-# should prefer get_memory_dir().
-MEMORY_DIR = get_memory_dir()
+    每次调用都重新计算路径，确保profile切换后路径正确。
+    不要在模块级缓存返回值——profile可能在导入后切换。
+    """
+    return get_kunming_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -166,8 +168,13 @@ class MemoryStore:
             self._char_limits["user"] = user_char_limit
         self._system_prompt_snapshot: Dict[str, str] = {t: "" for t in VALID_TARGETS}
         self._meta: Dict[str, Dict[str, Dict[str, Any]]] = {t: {} for t in VALID_TARGETS}
-        # Cache for simhash values to avoid recomputation during recall
-        self._simhash_cache: Dict[str, int] = {}
+        # 修复：_simhash_cache改为OrderedDict实现LRU淘汰，容量上限1024
+        # 原因：无界Dict在长期运行的gateway进程中内存持续增长，永不释放。
+        # 容量选择1024：假设每条记忆条目cache key约50字节+8字节int值，
+        # 1024条约占58KB，足够覆盖典型记忆量（4层x每层50条=200条），
+        # 同时为高频recall场景留有余量。超出时淘汰最久未访问的条目。
+        self._simhash_cache: collections.OrderedDict = collections.OrderedDict()
+        self._simhash_cache_maxsize = 1024
 
     @property
     def _meta_path(self) -> Path:
@@ -195,13 +202,19 @@ class MemoryStore:
             self._set_meta(target, content, meta)
 
     def _save_meta(self) -> bool:
+        # 修复：添加file_lock保护，防止并发写入导致元数据损坏
+        # 原实现无文件锁，多个并发recall操作可能同时写入.meta.json导致数据丢失
         try:
             get_memory_dir().mkdir(parents=True, exist_ok=True)
-            tmp_path = self._meta_path.with_suffix(".tmp")
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(self._meta, f, ensure_ascii=False, indent=2)
-                f.flush()
-            tmp_path.replace(self._meta_path)
+            with file_lock(self._meta_path) as acquired:
+                if not acquired:
+                    logger.warning("Memory metadata save failed: could not acquire file lock")
+                    return False
+                tmp_path = self._meta_path.with_suffix(".tmp")
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(self._meta, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                tmp_path.replace(self._meta_path)
             return True
         except Exception as e:
             logger.warning(f"Memory metadata save failed: {e}")
@@ -222,6 +235,8 @@ class MemoryStore:
 
         retention = exp(-0.693 * age / (half_life * access_boost))
         access_boost = 1 + log(1 + access_count) * 0.3
+        
+        修复：调整访问次数对半衰期的提升因子，增加最小保留值确保记忆不会完全消失
         """
         meta = self._get_meta(target, content)
         if not meta:
@@ -231,11 +246,16 @@ class MemoryStore:
         access_count = meta.get("access_count", 1)
         importance = meta.get("importance", 0.5)
 
-        age_days = (time.time() - created) / 86400.0
-        access_boost = 1.0 + math.log1p(access_count) * 0.3
+        # 修复：Ebbinghaus衰减应基于last_accessed而非created_at
+        # 原实现从created_at计算age_days，导致最近recall过的记忆仍然快速衰减
+        # 改为从last_accessed计算，每次recall刷新衰减起点
+        age_days = (time.time() - last_accessed) / 86400.0
+        # 修复：增加访问次数对半衰期的提升因子，从0.3提高到0.5
+        access_boost = 1.0 + math.log1p(access_count) * 0.5
         effective_half_life = _EBINGHAUS_HALF_LIFE_DAYS * access_boost * (0.5 + importance)
         retention = math.exp(-0.693 * age_days / effective_half_life)
-        return max(0.0, min(1.0, retention))
+        # 修复：设置最小保留值为5%，确保重要记忆不会完全消失
+        return max(0.05, min(1.0, retention))
 
     def decay_memories(self, target: str) -> int:
         """Remove entries below Ebbinghaus retention threshold.
@@ -244,7 +264,8 @@ class MemoryStore:
         'preference', 'always', 'never', 'must') are never decayed.
         Returns count of removed entries.
         """
-        _PROTECTED_KEYWORDS = ("preference", "always", "never", "must", "required", "important", "critical")
+        # 使用共享常量，避免与 memory_distillation.py 中定义不同步
+        _PROTECTED_KEYWORDS = _MEMORY_PROTECTED_KEYWORDS
         entries = self._entries.get(target, [])
         if not entries:
             return 0
@@ -334,9 +355,22 @@ class MemoryStore:
         self._set_entries(target, fresh)
 
     def save_to_disk(self, target: str):
-        """Persist entries to the appropriate file. Called after every mutation."""
+        """Persist entries to the appropriate file. Called after every mutation.
+
+        修复：添加file_lock保护写入阶段，防止并发写入竞态。
+        两层锁分工：add/replace/remove中的file_lock保护"读取-修改"阶段，
+        save_to_disk中的file_lock保护"写入"阶段。两层锁不嵌套避免死锁。
+        """
         get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        # 修复：写入阶段获取file_lock，防止两个并发save_to_disk同时执行
+        # tempfile+os.replace本身是原子的，但没有锁保护时两个并发写入可能
+        # 互相覆盖：进程A写tmp_a，进程B写tmp_b，A的replace先完成，
+        # B的replace后完成覆盖A的结果
+        with file_lock(self._path_for(target)) as acquired:
+            if not acquired:
+                logger.warning("Memory save failed: could not acquire file lock for write")
+                return
+            self._write_file(self._path_for(target), self._entries_for(target))
         # Persist Ebbinghaus metadata atomically
         try:
             meta_content = json.dumps(self._meta, ensure_ascii=False)
@@ -393,18 +427,17 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         try:
-            with file_lock(self._path_for(target)):
-                # Re-read from disk under lock to pick up writes from other sessions
+            with file_lock(self._path_for(target)) as acquired:
+                if not acquired:
+                    return {"success": False, "error": "Failed to acquire file lock."}
                 self._reload_target(target)
 
                 entries = self._entries_for(target)
                 limit = self._char_limit(target)
 
-                # Reject exact duplicates
                 if content in entries:
                     return self._success_response(target, "Entry already exists (no duplicate added).")
 
-                # Calculate what the new total would be
                 new_entries = entries + [content]
                 new_total = len(ENTRY_DELIMITER.join(new_entries))
 
@@ -423,12 +456,15 @@ class MemoryStore:
 
                 entries.append(content)
                 self._set_entries(target, entries)
-                self.save_to_disk(target)
                 self._init_meta(target, content)
-        except TimeoutError:
-            logger.error("Failed to acquire file lock for memory add operation")
-            return {"success": False, "error": "Failed to acquire file lock. Please try again."}
+            # 修复：释放读锁后由save_to_disk自身的写入锁保护持久化
+            self.save_to_disk(target)
+        except Exception as e:
+            # 修复：添加异常处理，确保文件锁异常被捕获
+            logger.error(f"Memory add failed: {e}")
+            return {"success": False, "error": str(e)}
 
+        # 记录信号到记忆蒸馏系统（非关键操作，失败不阻塞主流程）
         try:
             from agent.memory_distillation import record_signal
             record_signal(content, source="write", score=0.7, query=f"add:{target}")
@@ -452,7 +488,9 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         try:
-            with file_lock(self._path_for(target)):
+            with file_lock(self._path_for(target)) as acquired:
+                if not acquired:
+                    return {"success": False, "error": "Failed to acquire file lock."}
                 self._reload_target(target)
 
                 entries = self._entries_for(target)
@@ -462,7 +500,6 @@ class MemoryStore:
                     return {"success": False, "error": f"No entry matched '{old_text}'."}
 
                 if len(matches) > 1:
-                    # If all matches are identical (exact duplicates), operate on the first one
                     unique_texts = set(e for _, e in matches)
                     if len(unique_texts) > 1:
                         previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
@@ -471,13 +508,11 @@ class MemoryStore:
                             "error": f"Multiple entries matched '{old_text}'. Be more specific.",
                             "matches": previews,
                         }
-                    # All identical -- safe to replace just the first
 
                 idx = matches[0][0]
                 old_entry = entries[idx]
                 limit = self._char_limit(target)
 
-                # Check that replacement doesn't blow the budget
                 test_entries = entries.copy()
                 test_entries[idx] = new_content
                 new_total = len(ENTRY_DELIMITER.join(test_entries))
@@ -500,11 +535,14 @@ class MemoryStore:
                     self._set_meta(target, new_content, old_meta)
                     old_key = self._entry_key(old_entry)
                     self._meta.get(target, {}).pop(old_key, None)
-                self.save_to_disk(target)
-        except TimeoutError:
-            logger.error("Failed to acquire file lock for memory replace operation")
-            return {"success": False, "error": "Failed to acquire file lock. Please try again."}
+            # 修复：释放读锁后由save_to_disk自身的写入锁保护持久化
+            self.save_to_disk(target)
+        except Exception as e:
+            # 修复：添加异常处理，确保文件锁异常被捕获
+            logger.error(f"Memory replace failed: {e}")
+            return {"success": False, "error": str(e)}
 
+        # 记录信号到记忆蒸馏系统（非关键操作，失败不阻塞主流程）
         try:
             from agent.memory_distillation import record_signal
             record_signal(new_content, source="replace", score=0.6, query=f"replace:{target}")
@@ -520,7 +558,9 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
 
         try:
-            with file_lock(self._path_for(target)):
+            with file_lock(self._path_for(target)) as acquired:
+                if not acquired:
+                    return {"success": False, "error": "Failed to acquire file lock."}
                 self._reload_target(target)
 
                 entries = self._entries_for(target)
@@ -530,7 +570,6 @@ class MemoryStore:
                     return {"success": False, "error": f"No entry matched '{old_text}'."}
 
                 if len(matches) > 1:
-                    # If all matches are identical (exact duplicates), remove the first one
                     unique_texts = set(e for _, e in matches)
                     if len(unique_texts) > 1:
                         previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
@@ -539,7 +578,6 @@ class MemoryStore:
                             "error": f"Multiple entries matched '{old_text}'. Be more specific.",
                             "matches": previews,
                         }
-                    # All identical -- safe to remove just the first
 
                 idx = matches[0][0]
                 old_entry = entries[idx]
@@ -547,11 +585,14 @@ class MemoryStore:
                 self._meta.get(target, {}).pop(old_key, None)
                 entries.pop(idx)
                 self._set_entries(target, entries)
-                self.save_to_disk(target)
-        except TimeoutError:
-            logger.error("Failed to acquire file lock for memory remove operation")
-            return {"success": False, "error": "Failed to acquire file lock. Please try again."}
+            # 修复：释放读锁后由save_to_disk自身的写入锁保护持久化
+            self.save_to_disk(target)
+        except Exception as e:
+            # 修复：添加异常处理，确保文件锁异常被捕获
+            logger.error(f"Memory remove failed: {e}")
+            return {"success": False, "error": str(e)}
 
+        # 记录信号到记忆蒸馏系统（非关键操作，失败不阻塞主流程）
         try:
             from agent.memory_distillation import record_signal
             record_signal(old_entry, source="remove", score=0.5, query=f"remove:{target}")
@@ -607,22 +648,28 @@ class MemoryStore:
         query_words = _extract_tokens(query_lower)
         query_hash = simhash(query_lower)
         results = []
-        touched = False
 
         for target in VALID_TARGETS:
             for entry in self._entries.get(target, []):
                 entry_lower = entry.lower()
-                # Use cached simhash if available
+                # 修复：使用OrderedDict实现LRU淘汰，访问时移动到末尾（最近使用）
                 cache_key = f"{target}:{self._entry_key(entry)}"
                 if cache_key in self._simhash_cache:
                     entry_hash = self._simhash_cache[cache_key]
+                    # LRU：将已访问的条目移到末尾，标记为最近使用
+                    self._simhash_cache.move_to_end(cache_key)
                 else:
                     entry_hash = simhash(entry_lower)
                     self._simhash_cache[cache_key] = entry_hash
+                    # LRU淘汰：超出容量时删除最久未访问的条目（OrderedDict首部）
+                    if len(self._simhash_cache) > self._simhash_cache_maxsize:
+                        self._simhash_cache.popitem(last=False)
                 
                 fts_score = self._fts_score(entry_lower, query_lower, query_words)
-                vector_score = self._simhash_similarity(query_hash, entry_hash)
-                hybrid_score = 0.35 * fts_score + 0.65 * vector_score
+                vector_score = simhash_similarity(query_hash, entry_hash)  # 整合: 改用模块级函数 [H5]
+                # 修复：SimHash权重过高(0.45)，FTS关键词匹配更可靠
+                # 调整为FTS 0.6 + SimHash 0.4，提高关键词匹配的权重
+                hybrid_score = 0.6 * fts_score + 0.4 * vector_score
                 if hybrid_score > 0.05:
                     results.append({
                         "target": target,
@@ -631,14 +678,17 @@ class MemoryStore:
                         "fts_score": round(fts_score, 4),
                         "vector_score": round(vector_score, 4),
                     })
-                    self._touch_meta(target, entry)
-                    touched = True
-
-        if touched:
-            self._save_meta()
 
         results.sort(key=lambda r: r["score"], reverse=True)
         top = results[:8]
+
+        # 修复：仅对最终返回的top-8结果更新元数据（_touch_meta + _save_meta）
+        # 原实现对所有匹配条目（可能远超8个）都更新元数据并持久化到磁盘，
+        # 产生大量不必要的磁盘I/O。Ebbinghaus记忆衰减的访问刷新只需对
+        # 实际返回给调用方的条目执行，未返回的条目不应被recall影响。
+        for r in top:
+            self._touch_meta(r["target"], r["content"])
+        self._save_meta()
 
         return {
             "success": True,
@@ -649,7 +699,10 @@ class MemoryStore:
 
     @staticmethod
     def _fts_score(text: str, query_lower: str, query_words: set) -> float:
-        """Score text against query using keyword matching and proximity."""
+        """Score text against query using keyword matching and proximity.
+        
+        修复：调整权重分配，提高关键词覆盖率的权重，改善语义相关性判别
+        """
         if not query_words:
             return 0.0
 
@@ -660,19 +713,15 @@ class MemoryStore:
                 return 0.6
             return 0.0
 
+        # 修复：增加关键词覆盖率和密度的权重，改善相似内容评分
         coverage = len(overlap) / len(query_words)
         density = len(overlap) / max(len(text_words), 1)
         exact_bonus = 1.0 if query_lower in text else 0.0
-        return min(1.0, coverage * 0.6 + density * 0.2 + exact_bonus * 0.2)
+        # 调整权重：覆盖率70%，密度20%，精确匹配10%
+        return min(1.0, coverage * 0.7 + density * 0.2 + exact_bonus * 0.1)
 
-    @staticmethod
-    def _simhash_similarity(hash1: int, hash2: int, hashbits: int = 64) -> float:
-        """Compute similarity between two SimHash fingerprints (0-1)."""
-        if hash1 == 0 and hash2 == 0:
-            return 0.0
-        xor = hash1 ^ hash2
-        diff_bits = bin(xor).count('1')
-        return 1.0 - (diff_bits / hashbits)
+    # 整合: 删除 _simhash_similarity 静态方法，统一使用 utils.simhash_similarity [H5]
+    # 旧调用 self._simhash_similarity(h1, h2) 已改为 simhash_similarity(h1, h2)
 
     # -- Internal helpers --
 
@@ -744,6 +793,8 @@ class MemoryStore:
         file *before* the lock is acquired, creating a race window where
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
+        
+        修复：Windows兼容性处理 - Windows下os.replace()可能因文件被占用而失败
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
@@ -756,7 +807,39 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
+                
+                # Windows安全替换策略：先备份旧文件，再替换，确保至少有一个完整版本始终存在
+                # 原因：Windows上os.unlink+os.replace之间存在时间窗口，若进程在此期间崩溃，
+                # 旧文件已被删除但新文件尚未就位，导致记忆文件丢失。
+                # 策略：先原子重命名旧文件为.bak备份，再重命名新文件为目标文件，
+                # 若第二步失败则从备份恢复，确保任何时刻至少有一个完整版本存在。
+                # 如果备份步骤本身失败（如权限问题），回退到直接替换（仍比unlink+replace安全）
+                if sys.platform == "win32":
+                    backup_path = str(path) + ".bak"
+                    backup_created = False
+                    if path.exists():
+                        try:
+                            os.replace(str(path), backup_path)
+                            backup_created = True
+                        except OSError:
+                            pass  # 备份失败时回退到直接替换
+                    try:
+                        os.replace(tmp_path, str(path))
+                    except OSError:
+                        if backup_created and os.path.exists(backup_path):
+                            try:
+                                os.replace(backup_path, str(path))
+                            except OSError:
+                                pass
+                        raise
+                    if backup_created:
+                        try:
+                            if os.path.exists(backup_path):
+                                os.unlink(backup_path)
+                        except OSError:
+                            pass
+                else:
+                    os.replace(tmp_path, str(path))
             except BaseException:
                 # Clean up temp file on any failure
                 try:

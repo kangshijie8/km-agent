@@ -43,7 +43,8 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
-from kunming_constants import get_kunming_home
+# 整合: 将已删除的 estimate_tokens_rough 替换为统一的 estimate_tokens_cjk_aware [H8/H9]
+from kunming_constants import get_kunming_home, estimate_tokens_cjk_aware
 
 # Load .env from ~/.kunming/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -86,7 +87,7 @@ from agent.prompt_builder import (
 )
 from agent.model_metadata import (
     fetch_model_metadata,
-    estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
+    estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
@@ -6295,8 +6296,9 @@ class AIAgent:
 
         # Update token estimate after compaction so pressure calculations
         # use the post-compression count, not the stale pre-compression one.
+        # 整合: 将已删除的 estimate_tokens_rough 替换为统一的 estimate_tokens_cjk_aware [H8/H9]
         _compressed_est = (
-            estimate_tokens_rough(new_system_prompt)
+            estimate_tokens_cjk_aware(new_system_prompt)
             + estimate_messages_tokens_rough(compressed)
         )
         self.context_compressor.last_prompt_tokens = _compressed_est
@@ -6448,8 +6450,9 @@ class AIAgent:
             )
 
             # Bridge: notify external memory provider of built-in memory writes
+            # 修复：添加"remove"到通知条件，原实现遗漏remove操作导致外部提供者状态不同步
             if function_name == "memory" and self._memory_manager:
-                if function_args.get("action") in ("add", "replace"):
+                if function_args.get("action") in ("add", "replace", "remove"):
                     try:
                         self._memory_manager.on_memory_write(
                             function_args.get("action", ""),
@@ -7321,6 +7324,8 @@ class AIAgent:
         self._codex_incomplete_retries = 0
         self._thinking_prefill_retries = 0
         self._length_continue_retries = 0
+        # 修复：重置429连续计数，避免上一轮的速率限制退避影响新一轮对话
+        self._consecutive_429_count = 0
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._surrogate_sanitized = False
@@ -8108,7 +8113,8 @@ class AIAgent:
                                 if assistant_message.content:
                                     truncated_response_prefix += assistant_message.content
 
-                                if length_continue_retries < 3:
+                                # 修复：length_continue_retries是未定义的局部变量，应为self._length_continue_retries
+                                if self._length_continue_retries < 3:
                                     self._vprint(
                                         f"{self.log_prefix}?Requesting continuation "
                                         f"({self._length_continue_retries}/3)..."

@@ -14,7 +14,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
-from kunming_cli.config import get_env_value, get_kunming_home, save_env_value, is_managed, managed_error
+from kunming_cli.config import get_env_value, save_env_value, is_managed, managed_error
+# 优化: get_kunming_home从轻量kunming_constants导入 [M17]
+from kunming_constants import _get_default_kunming_home, get_kunming_home
 # display_kunming_home is imported lazily at call sites to avoid ImportError
 # when kunming_constants is cached from a pre-update version during `km update`.
 from kunming_cli.setup import (
@@ -265,7 +267,8 @@ def _profile_suffix() -> str:
     import re
     from pathlib import Path as _Path
     home = get_kunming_home().resolve()
-    default = (_Path.home() / ".kunming").resolve()
+    # 修复: 使用_get_default_kunming_home()替代硬编码路径，保持profile兼容 [H11]
+    default = _get_default_kunming_home().resolve()
     if home == default:
         return ""
     # Detect ~/.kunming/profiles/<name> pattern use the profile name
@@ -295,7 +298,8 @@ def _profile_arg(kunming_home: str | None = None) -> str:
     import re
     from pathlib import Path as _Path
     home = Path(kunming_home or str(get_kunming_home())).resolve()
-    default = (_Path.home() / ".kunming").resolve()
+    # 修复: 使用_get_default_kunming_home()替代硬编码路径，保持profile兼容 [H11]
+    default = _get_default_kunming_home().resolve()
     if home == default:
         return ""
     profiles_root = (default / "profiles").resolve()
@@ -650,7 +654,8 @@ def _kunming_home_for_target_user(target_home_dir: str) -> str:
       /opt/custom-kunming               /opt/custom-kunming  (kept as-is)
     """
     current_kunming = get_kunming_home().resolve()
-    current_default = (Path.home() / ".kunming").resolve()
+    # 修复: 使用_get_default_kunming_home()替代硬编码路径，保持profile兼容 [H11]
+    current_default = _get_default_kunming_home().resolve()
     target_default = Path(target_home_dir) / ".kunming"
 
     # Default ~/.kunming remap to target user's default

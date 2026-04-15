@@ -3988,8 +3988,8 @@ class KunmingCLI:
         elif subcmd == "run":
             self.console.print("[dim]Running memory distillation...[/]")
             try:
-                from agent.memory_distillation import run_distillation, DEFAULT_CONFIG
-                cfg = DEFAULT_CONFIG.copy()
+                from agent.memory_distillation import run_distillation, _DISTILL_DEFAULT_CONFIG
+                cfg = _DISTILL_DEFAULT_CONFIG.copy()
                 cfg["enabled"] = True
                 result = run_distillation(config=cfg, verbose=True)
                 if result.get("status") == "disabled":
@@ -8500,8 +8500,8 @@ class KunmingCLI:
                     # Memory distillation every 20 ticks (60 minutes / 3 min interval)
                     if _tick_count % 20 == 0:
                         try:
-                            from agent.memory_distillation import run_distillation, DEFAULT_CONFIG
-                            _dcfg = DEFAULT_CONFIG.copy()
+                            from agent.memory_distillation import run_distillation, _DISTILL_DEFAULT_CONFIG
+                            _dcfg = _DISTILL_DEFAULT_CONFIG.copy()
                             _dcfg["enabled"] = True
                             run_distillation(config=_dcfg, verbose=False)
                         except Exception:

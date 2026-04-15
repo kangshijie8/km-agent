@@ -30,17 +30,25 @@ _MAX_SUMMARY_CHARS = 10000
 _MAX_TOOL_TRACE_ENTRIES = 50
 
 
-# Tools that children must never have access to
+# 子代理禁止使用的工具列表
+# 修复：移除"memory"——子代理应能通过recall读取记忆进行跨任务推理，
+# 写入操作（add/replace/remove）通过系统提示指令禁止而非工具级屏蔽，
+# 因为memory的写入是会话隔离的（写入磁盘但不改变系统提示快照），
+# 完全禁止意味着子代理无法利用已有知识，遵循最小权限原则：
+# 允许读取（recall），禁止写入（通过提示指令约束）。
 DELEGATE_BLOCKED_TOOLS = frozenset([
     "delegate_task",   # no recursive delegation
     "clarify",         # no user interaction
-    "memory",          # no writes to shared MEMORY.md
     "send_message",    # no cross-platform side effects
     "execute_code",    # children should reason step-by-step, not write scripts
     "session_search",  # no access to parent session history
 ])
 
-MAX_CONCURRENT_CHILDREN = 5
+# 修复：MAX_CONCURRENT_CHILDREN必须与schema中tasks.maxItems=3保持一致
+# 原因：schema的maxItems是面向LLM的约束（LLM不会生成超过3个task），
+# 代码中的截断限制必须与schema一致，否则通过API直接调用时可能出现
+# schema允许3个但代码截断为5个的不一致行为
+MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
@@ -82,6 +90,13 @@ def _build_child_system_prompt(
         "- Any issues encountered\n\n"
         "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
         "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
+        # 修复：子代理允许使用memory的recall操作读取已有知识辅助推理，
+        # 但禁止add/replace/remove操作——子代理不应修改共享记忆层，
+        # 因为写入会持久化到磁盘影响其他会话，而子代理缺乏全局上下文
+        # 来判断写入是否合适。遵循最小权限原则。
+        "Memory tool restriction: You may use the memory tool with action='recall' to "
+        "retrieve relevant knowledge, but you MUST NOT use action='add', 'replace', or 'remove' "
+        "-- subagents must not modify the shared memory layer.\n\n"
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )
@@ -115,8 +130,10 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     """Remove toolsets that contain only blocked tools."""
+    # 修复：移除"memory"——子代理需要memory工具集（recall操作），
+    # 写入限制通过系统提示指令实现，而非工具集级屏蔽
     blocked_toolset_names = {
-        "delegation", "clarify", "memory", "code_execution",
+        "delegation", "clarify", "code_execution",
     }
     return [t for t in toolsets if t not in blocked_toolset_names]
 
@@ -905,8 +922,9 @@ DELEGATE_TASK_SCHEMA = {
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
-        "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
-        "execute_code.\n"
+        # 修复：更新描述——memory不再完全禁止，子代理可使用recall操作
+        "- Subagents CANNOT call: delegate_task, clarify, send_message, "
+        "execute_code. Subagents can use memory with action='recall' only (no add/replace/remove).\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     ),

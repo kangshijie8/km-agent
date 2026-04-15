@@ -7,8 +7,9 @@ import sys
 import subprocess
 import shutil
 
-from kunming_cli.config import get_project_root, get_kunming_home, get_env_path
-from kunming_constants import display_kunming_home
+from kunming_cli.config import get_project_root, get_env_path
+# 优化: get_kunming_home从轻量kunming_constants导入 [M17]
+from kunming_constants import display_kunming_home, get_kunming_home
 
 PROJECT_ROOT = get_project_root()
 # Note: KUNMING_HOME and _DHH are now computed inside run_doctor() to support profile switching
