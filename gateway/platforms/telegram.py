@@ -108,6 +108,104 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
+# 危险字符和编码模式，用于输入验证和清理
+# 这些模式可能用于注入攻击或恶意编码
+_DANGEROUS_CHARS_RE = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')  # 控制字符
+_HTML_ESCAPE_RE = re.compile(r'&(amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);')  # HTML实体编码
+_UNICODE_ESCAPE_RE = re.compile(r'\\u[0-9a-fA-F]{4}')  # Unicode转义序列
+_SCRIPT_TAG_RE = re.compile(r'<script[^>]*>.*?</script>', re.IGNORECASE | re.DOTALL)  # 脚本标签
+_EVENT_HANDLER_RE = re.compile(r'\s*on\w+\s*=\s*["\'][^"\']*["\']', re.IGNORECASE)  # 事件处理器
+
+
+def _sanitize_input_text(text: str) -> str:
+    """清理和验证输入文本，防止恶意编码和注入攻击。
+
+    执行以下清理操作：
+    1. 移除控制字符（除换行和制表符外）
+    2. 规范化空白字符
+    3. 移除潜在的脚本标签
+    4. 限制文本长度防止DoS
+
+    Args:
+        text: 原始输入文本
+
+    Returns:
+        清理后的安全文本
+
+    Raises:
+        ValueError: 如果输入包含严重危险的字符或模式
+    """
+    if not text:
+        return ""
+
+    # 检查文本长度，防止DoS攻击
+    if len(text) > 100000:  # 100KB限制
+        logger.warning("Input text too long (%d chars), truncating", len(text))
+        text = text[:100000]
+
+    # 移除控制字符（保留换行、回车、制表符）
+    text = _DANGEROUS_CHARS_RE.sub('', text)
+
+    # 移除脚本标签
+    text = _SCRIPT_TAG_RE.sub('', text)
+
+    # 移除事件处理器属性
+    text = _EVENT_HANDLER_RE.sub('', text)
+
+    # 规范化空白字符（多个空格合并为单个）
+    text = re.sub(r'[ \t]+', ' ', text)
+
+    # 移除零宽字符（可能用于视觉欺骗）
+    text = re.sub(r'[\u200B-\u200D\uFEFF]', '', text)
+
+    return text.strip()
+
+
+def _validate_message_event(event: "MessageEvent") -> bool:
+    """验证消息事件的完整性。
+
+    检查事件对象是否包含所有必需的字段，且字段值符合预期格式。
+
+    Args:
+        event: 消息事件对象
+
+    Returns:
+        True如果事件有效，False否则
+    """
+    if not event:
+        logger.warning("Message event is None")
+        return False
+
+    # 检查必需字段
+    if not hasattr(event, 'source') or not event.source:
+        logger.warning("Message event missing source")
+        return False
+
+    if not hasattr(event.source, 'chat_id') or not event.source.chat_id:
+        logger.warning("Message event missing chat_id")
+        return False
+
+    # 验证chat_id格式（应该是数字字符串）
+    chat_id = str(event.source.chat_id)
+    if not chat_id.isdigit() and not chat_id.startswith('-'):
+        logger.warning("Invalid chat_id format: %s", chat_id)
+        return False
+
+    # 验证user_id如果存在
+    if hasattr(event.source, 'user_id') and event.source.user_id:
+        user_id = str(event.source.user_id)
+        if not user_id.isdigit():
+            logger.warning("Invalid user_id format: %s", user_id)
+            return False
+
+    # 验证message_id
+    if not hasattr(event, 'message_id') or not event.message_id:
+        logger.warning("Message event missing message_id")
+        return False
+
+    return True
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -2076,17 +2174,29 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         event = self._build_message_event(update.message, MessageType.TEXT)
+
+        # 验证事件完整性
+        if not _validate_message_event(event):
+            logger.warning("[%s] Invalid message event, skipping", self.name)
+            return
+
         event.text = self._clean_bot_trigger_text(event.text)
         self._enqueue_text_event(event)
-    
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
         if not update.message or not update.message.text:
             return
         if not self._should_process_message(update.message, is_command=True):
             return
-        
+
         event = self._build_message_event(update.message, MessageType.COMMAND)
+
+        # 验证事件完整性
+        if not _validate_message_event(event):
+            logger.warning("[%s] Invalid command event, skipping", self.name)
+            return
+
         await self.handle_message(event)
     
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2660,14 +2770,23 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_id = str(message.reply_to_message.message_id)
             reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
 
+        # 清理输入文本，防止恶意编码
+        raw_text = message.text or ""
+        sanitized_text = _sanitize_input_text(raw_text)
+
+        # 清理回复文本
+        sanitized_reply_text = None
+        if reply_to_text:
+            sanitized_reply_text = _sanitize_input_text(reply_to_text)
+
         return MessageEvent(
-            text=message.text or "",
+            text=sanitized_text,
             message_type=msg_type,
             source=source,
             raw_message=message,
             message_id=str(message.message_id),
             reply_to_message_id=reply_to_id,
-            reply_to_text=reply_to_text,
+            reply_to_text=sanitized_reply_text,
             auto_skill=topic_skill,
             timestamp=message.date,
         )

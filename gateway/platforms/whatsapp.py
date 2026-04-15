@@ -848,6 +848,28 @@ class WhatsAppAdapter(BasePlatformAdapter):
             cached_urls = []
             media_types = []
             for url in raw_urls:
+                # 验证URL有效性
+                if not url or not isinstance(url, str):
+                    logger.warning("[%s] Invalid or empty media URL, skipping", self.name)
+                    continue
+
+                # 验证URL格式（防止恶意URL）
+                if url.startswith(("http://", "https://")):
+                    # 基本URL格式验证
+                    from urllib.parse import urlparse
+                    try:
+                        parsed = urlparse(url)
+                        if not parsed.netloc or not parsed.scheme:
+                            logger.warning("[%s] Malformed URL, skipping: %s", self.name, url[:100])
+                            continue
+                    except Exception as e:
+                        logger.warning("[%s] URL parsing error: %s, skipping", self.name, e)
+                        continue
+                elif not os.path.isabs(url):
+                    # 既不是HTTP(S)也不是绝对路径，可能是相对路径或其他格式
+                    logger.warning("[%s] Unsupported URL format, skipping: %s", self.name, url[:100])
+                    continue
+
                 if msg_type == MessageType.PHOTO and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_image_from_url(url, ext=".jpg")

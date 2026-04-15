@@ -38,6 +38,8 @@ _CORRECTION_PATTERNS = [
     (r"(?:I said|I told you|as I mentioned|我说过|我之前说过)", "reference_previous"),
     (r"(?:fix|correct|change it to|修改|改正|换成)", "fix_request"),
     (r"(?:the (?:correct|right|proper) (?:way|approach|method) is|正确做法是)", "correct_approach"),
+    (r"(?:you (?:misunderstood|misinterpreted)|that's not (?:it|what|how))", "misunderstanding"),
+    (r"(?:不是这个|搞错了|理解错了)", "misunderstanding_cjk"),
 ]
 
 _ERROR_LOG_FILE = "error_log.json"
@@ -62,27 +64,42 @@ def _load_error_log() -> Dict[str, Any]:
     if not path.exists():
         return {"version": 1, "errors": {}}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        content = path.read_text(encoding="utf-8")
+        if not content.strip():
+            return {"version": 1, "errors": {}}
+        data = json.loads(content)
+        if not isinstance(data, dict):
+            return {"version": 1, "errors": {}}
+        if "errors" not in data:
+            data["errors"] = {}
+        return data
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        logger.warning(f"Failed to load error log: {e}. Starting fresh.")
         return {"version": 1, "errors": {}}
 
 
-def _save_error_log(data: Dict[str, Any]) -> None:
+def _save_error_log(data: Dict[str, Any]) -> bool:
     path = _error_log_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".err_")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, str(path))
-    except BaseException:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".err_")
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, str(path))
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to save error log: {e}")
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False
+    except Exception as e:
+        logger.warning(f"Failed to create error log directory: {e}")
+        return False
 
 
 def detect_correction(user_message: str, assistant_message: str) -> Optional[Dict[str, Any]]:
@@ -235,7 +252,7 @@ def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]
 
         combined = 0.6 * keyword_score + 0.4 * sem_score
         combined += min(0.3, entry.get("occurrence_count", 1) * 0.1)
-        if combined > 0.08:
+        if combined > 0.15:
             scored.append((combined, entry))
 
     scored.sort(key=lambda x: x[0], reverse=True)

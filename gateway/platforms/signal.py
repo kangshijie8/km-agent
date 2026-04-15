@@ -495,6 +495,13 @@ class SignalAdapter(BasePlatformAdapter):
                 try:
                     cached_path, ext = await self._fetch_attachment(att_id)
                     if cached_path:
+                        # 验证缓存路径有效性
+                        if not os.path.exists(cached_path):
+                            logger.warning("Signal: cached attachment path does not exist: %s", cached_path)
+                            continue
+                        if not os.path.isfile(cached_path):
+                            logger.warning("Signal: cached attachment path is not a file: %s", cached_path)
+                            continue
                         # Use contentType from Signal if available, else map from extension
                         content_type = att.get("contentType") or _ext_to_mime(ext)
                         media_urls.append(cached_path)

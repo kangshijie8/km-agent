@@ -1139,19 +1139,48 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         if backend == "tavily":
             logger.info("Tavily search: '%s' (limit: %d)", query, limit)
-            raw = _tavily_request("search", {
-                "query": query,
-                "max_results": min(limit, 20),
-                "include_raw_content": False,
-                "include_images": False,
-            })
-            response_data = _normalize_tavily_search_results(raw)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
+            try:
+                raw = _tavily_request("search", {
+                    "query": query,
+                    "max_results": min(limit, 20),
+                    "include_raw_content": False,
+                    "include_images": False,
+                })
+                response_data = _normalize_tavily_search_results(raw)
+                debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+                result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+                debug_call_data["final_response_size"] = len(result_json)
+                _debug.log_call("web_search_tool", debug_call_data)
+                _debug.save()
+                return result_json
+            except httpx.HTTPStatusError as e:
+                logger.error("Tavily API HTTP error: %s - %s", e.response.status_code, e.response.text)
+                return json.dumps({
+                    "success": False,
+                    "error": f"Tavily API error: HTTP {e.response.status_code}",
+                    "details": str(e)
+                })
+            except httpx.RequestError as e:
+                logger.error("Tavily API request error: %s", e)
+                return json.dumps({
+                    "success": False,
+                    "error": f"Tavily API request failed: {type(e).__name__}",
+                    "details": str(e)
+                })
+            except json.JSONDecodeError as e:
+                logger.error("Tavily API JSON decode error: %s", e)
+                return json.dumps({
+                    "success": False,
+                    "error": "Invalid JSON response from Tavily API",
+                    "details": str(e)
+                })
+            except Exception as e:
+                logger.error("Tavily search unexpected error: %s", e)
+                return json.dumps({
+                    "success": False,
+                    "error": f"Tavily search failed: {type(e).__name__}",
+                    "details": str(e)
+                })
 
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
@@ -1281,11 +1310,40 @@ async def web_extract_tool(
                 results = _exa_extract(safe_urls)
             elif backend == "tavily":
                 logger.info("Tavily extract: %d URL(s)", len(safe_urls))
-                raw = _tavily_request("extract", {
-                    "urls": safe_urls,
-                    "include_images": False,
-                })
-                results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+                try:
+                    raw = _tavily_request("extract", {
+                        "urls": safe_urls,
+                        "include_images": False,
+                    })
+                    results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+                except httpx.HTTPStatusError as e:
+                    logger.error("Tavily extract HTTP error: %s - %s", e.response.status_code, e.response.text)
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Tavily extract API error: HTTP {e.response.status_code}",
+                        "details": str(e)
+                    })
+                except httpx.RequestError as e:
+                    logger.error("Tavily extract request error: %s", e)
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Tavily extract request failed: {type(e).__name__}",
+                        "details": str(e)
+                    })
+                except json.JSONDecodeError as e:
+                    logger.error("Tavily extract JSON decode error: %s", e)
+                    return json.dumps({
+                        "success": False,
+                        "error": "Invalid JSON response from Tavily extract API",
+                        "details": str(e)
+                    })
+                except Exception as e:
+                    logger.error("Tavily extract unexpected error: %s", e)
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Tavily extract failed: {type(e).__name__}",
+                        "details": str(e)
+                    })
             else:
                 # -- Firecrawl extraction --
                 # Determine requested formats for Firecrawl v2
@@ -1599,17 +1657,45 @@ async def web_crawl_tool(
                 return tool_error("Interrupted", success=False)
 
             logger.info("Tavily crawl: %s", url)
-            payload: Dict[str, Any] = {
-                "url": url,
-                "limit": 20,
-                "extract_depth": depth,
-            }
-            if instructions:
-                payload["instructions"] = instructions
-            raw = _tavily_request("crawl", payload)
-            results = _normalize_tavily_documents(raw, fallback_url=url)
-
-            response = {"results": results}
+            try:
+                payload: Dict[str, Any] = {
+                    "url": url,
+                    "limit": 20,
+                    "extract_depth": depth,
+                }
+                if instructions:
+                    payload["instructions"] = instructions
+                raw = _tavily_request("crawl", payload)
+                results = _normalize_tavily_documents(raw, fallback_url=url)
+                response = {"results": results}
+            except httpx.HTTPStatusError as e:
+                logger.error("Tavily crawl HTTP error: %s - %s", e.response.status_code, e.response.text)
+                return json.dumps({
+                    "success": False,
+                    "error": f"Tavily crawl API error: HTTP {e.response.status_code}",
+                    "details": str(e)
+                })
+            except httpx.RequestError as e:
+                logger.error("Tavily crawl request error: %s", e)
+                return json.dumps({
+                    "success": False,
+                    "error": f"Tavily crawl request failed: {type(e).__name__}",
+                    "details": str(e)
+                })
+            except json.JSONDecodeError as e:
+                logger.error("Tavily crawl JSON decode error: %s", e)
+                return json.dumps({
+                    "success": False,
+                    "error": "Invalid JSON response from Tavily crawl API",
+                    "details": str(e)
+                })
+            except Exception as e:
+                logger.error("Tavily crawl unexpected error: %s", e)
+                return json.dumps({
+                    "success": False,
+                    "error": f"Tavily crawl failed: {type(e).__name__}",
+                    "details": str(e)
+                })
             # Fall through to the shared LLM processing and trimming below
             # (skip the Firecrawl-specific crawl logic)
             pages_crawled = len(response.get('results', []))

@@ -858,6 +858,20 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        # 验证文件路径存在性
+        if not file_path:
+            return SendResult(success=False, error="File path is empty")
+
+        if not os.path.exists(file_path):
+            return SendResult(success=False, error=f"File not found: {file_path}")
+
+        if not os.path.isfile(file_path):
+            return SendResult(success=False, error=f"Path is not a file: {file_path}")
+
+        # 检查文件可读性
+        if not os.access(file_path, os.R_OK):
+            return SendResult(success=False, error=f"File is not readable: {file_path}")
+
         channel = self._client.get_channel(int(chat_id))
         if not channel:
             channel = await self._client.fetch_channel(int(chat_id))

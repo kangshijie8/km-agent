@@ -205,7 +205,12 @@ def _check_quota(metric: str, amount: int = 1) -> Dict[str, Any]:
     }
     limit_val = limit_map.get(metric, -1)
 
+    # 处理无效或负数的限制值（-1 表示无限制，其他负数视为配置错误）
     if limit_val == -1:
+        return {"allowed": True, "used": 0, "limit": -1, "remaining": -1, "tier": tier}
+    if limit_val < 0:
+        logger.warning("Invalid quota limit for metric '%s': %d (must be -1 or positive)", metric, limit_val)
+        # 将负数限制视为无限制，避免意外拒绝服务
         return {"allowed": True, "used": 0, "limit": -1, "remaining": -1, "tier": tier}
 
     with _DB_LOCK:

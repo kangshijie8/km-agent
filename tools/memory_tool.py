@@ -194,13 +194,18 @@ class MemoryStore:
             meta["access_count"] = meta.get("access_count", 0) + 1
             self._set_meta(target, content, meta)
 
-    def _save_meta(self) -> None:
+    def _save_meta(self) -> bool:
         try:
             get_memory_dir().mkdir(parents=True, exist_ok=True)
-            with open(self._meta_path, "w", encoding="utf-8") as f:
-                json.dump(self._meta, f)
-        except Exception:
-            logger.debug("Memory metadata save failed", exc_info=True)
+            tmp_path = self._meta_path.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(self._meta, f, ensure_ascii=False, indent=2)
+                f.flush()
+            tmp_path.replace(self._meta_path)
+            return True
+        except Exception as e:
+            logger.warning(f"Memory metadata save failed: {e}")
+            return False
 
     def _init_meta(self, target: str, content: str) -> None:
         """Initialize metadata for a new entry."""
@@ -500,6 +505,12 @@ class MemoryStore:
             logger.error("Failed to acquire file lock for memory replace operation")
             return {"success": False, "error": "Failed to acquire file lock. Please try again."}
 
+        try:
+            from agent.memory_distillation import record_signal
+            record_signal(new_content, source="replace", score=0.6, query=f"replace:{target}")
+        except Exception:
+            pass
+
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
@@ -540,6 +551,12 @@ class MemoryStore:
         except TimeoutError:
             logger.error("Failed to acquire file lock for memory remove operation")
             return {"success": False, "error": "Failed to acquire file lock. Please try again."}
+
+        try:
+            from agent.memory_distillation import record_signal
+            record_signal(old_entry, source="remove", score=0.5, query=f"remove:{target}")
+        except Exception:
+            pass
 
         return self._success_response(target, "Entry removed.")
 

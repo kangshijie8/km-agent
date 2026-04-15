@@ -349,19 +349,8 @@ class ToolRegistry:
         # Call the handler directly
         try:
             if tool.is_async:
-                import asyncio
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    loop = None
-                if loop and loop.is_running():
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                        result = pool.submit(
-                            asyncio.run, tool.handler(params, task_id=task_id, **kwargs)
-                        ).result()
-                else:
-                    result = asyncio.run(tool.handler(params, task_id=task_id, **kwargs))
+                from tools.async_bridge import run_async
+                result = run_async(tool.handler(params, task_id=task_id, **kwargs))
             else:
                 result = tool.handler(params, task_id=task_id, **kwargs)
 

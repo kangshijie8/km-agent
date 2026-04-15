@@ -715,17 +715,19 @@ class KawaiiSpinner:
         self._write(f"\r{blanks}\r  {text}", flush=True)
 
     def stop(self, final_message: str = None):
+        was_running = self.running
         self.running = False
-        if self.thread:
-            self.thread.join(timeout=0.5)
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+            if self.thread.is_alive():
+                logger.debug("Spinner thread did not stop within timeout")
 
         is_tty = self._is_tty
-        if is_tty:
+        if is_tty and was_running:
             blanks = ' ' * max(self.last_line_len + 5, 40)
             self._write(f"\r{blanks}\r", end='', flush=True)
         if final_message:
             elapsed = f" ({time.time() - self.start_time:.1f}s)" if self.start_time else ""
-            # Add ISO timestamp for visibility into when operations complete
             ts = datetime.now().strftime('%H:%M:%S')
             self._write(f"  [{ts}] [done] {final_message}{elapsed}", flush=True)
 
