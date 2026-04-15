@@ -166,6 +166,8 @@ class MemoryStore:
             self._char_limits["user"] = user_char_limit
         self._system_prompt_snapshot: Dict[str, str] = {t: "" for t in VALID_TARGETS}
         self._meta: Dict[str, Dict[str, Dict[str, Any]]] = {t: {} for t in VALID_TARGETS}
+        # Cache for simhash values to avoid recomputation during recall
+        self._simhash_cache: Dict[str, int] = {}
 
     @property
     def _meta_path(self) -> Path:
@@ -390,6 +392,11 @@ class MemoryStore:
     def _set_entries(self, target: str, entries: List[str]):
         resolved = self._resolve_target(target)
         self._entries[resolved] = entries
+        # Clear simhash cache for this target since entries changed
+        prefix = f"{resolved}:"
+        keys_to_remove = [k for k in self._simhash_cache if k.startswith(prefix)]
+        for k in keys_to_remove:
+            del self._simhash_cache[k]
 
     def _char_count(self, target: str) -> int:
         entries = self._entries_for(target)
@@ -586,6 +593,7 @@ class MemoryStore:
         """Search across all memory layers using hybrid FTS + simhash scoring.
 
         Returns top-k results ranked by relevance, grouped by layer.
+        Uses cached simhash values for performance optimization.
         """
         if not query.strip():
             return {"success": False, "error": "Query cannot be empty."}
@@ -599,8 +607,16 @@ class MemoryStore:
         for target in VALID_TARGETS:
             for entry in self._entries.get(target, []):
                 entry_lower = entry.lower()
+                # Use cached simhash if available
+                cache_key = f"{target}:{self._entry_key(entry)}"
+                if cache_key in self._simhash_cache:
+                    entry_hash = self._simhash_cache[cache_key]
+                else:
+                    entry_hash = self._simhash(entry_lower)
+                    self._simhash_cache[cache_key] = entry_hash
+                
                 fts_score = self._fts_score(entry_lower, query_lower, query_words)
-                vector_score = self._simhash_similarity(query_hash, self._simhash(entry_lower))
+                vector_score = self._simhash_similarity(query_hash, entry_hash)
                 hybrid_score = 0.35 * fts_score + 0.65 * vector_score
                 if hybrid_score > 0.05:
                     results.append({
