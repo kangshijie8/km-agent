@@ -1154,11 +1154,16 @@ class AIAgent:
                 self._memory_manager = None
 
         # Inject memory provider tool schemas into the tool surface
+        # [R2-P1] 添加去重保护：跳过已在valid_tool_names中的工具，避免重复注册
+        # 原因：BuiltinMemoryProvider现在通过get_tool_schemas()返回MEMORY_SCHEMA，
+        # 但memory工具已通过标准tool registry注册，不重复添加
         if self._memory_manager and self.tools is not None:
             for _schema in self._memory_manager.get_all_tool_schemas():
+                _tname = _schema.get("name", "")
+                if _tname and _tname in self.valid_tool_names:
+                    continue  # [R2-P1] 跳过已注册的工具，避免重复
                 _wrapped = {"type": "function", "function": _schema}
                 self.tools.append(_wrapped)
-                _tname = _schema.get("name", "")
                 if _tname:
                     self.valid_tool_names.add(_tname)
 

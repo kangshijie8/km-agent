@@ -433,8 +433,10 @@ def session_search(
 def check_session_search_requirements() -> bool:
     """Requires SQLite state database and an auxiliary text model."""
     try:
-        from kunming_state import DEFAULT_DB_PATH
-        return DEFAULT_DB_PATH.parent.exists()
+        # [Profile隔离] 使用 get_default_db_path() 替代模块级 DEFAULT_DB_PATH 常量，
+        # 确保检查路径反映当前 profile 的 KUNMING_HOME
+        from kunming_state import get_default_db_path
+        return get_default_db_path().parent.exists()
     except ImportError:
         return False
 

@@ -87,7 +87,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.7",
-    "minimax-cn": "minimax-m2.7",  # Lowercase for Anthropic-compatible API
+    "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
     "ai-gateway": "google/gemini-3-flash",
     "opencode-zen": "gemini-3-flash",
@@ -133,13 +133,12 @@ _NOUS_FREE_TIER_VISION_MODEL = "xiaomi/mimo-v2-omni"
 _NOUS_FREE_TIER_AUX_MODEL = "xiaomi/mimo-v2-pro"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.kunming.dev/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
-_AUTH_JSON_PATH = None
 
+# [Profile隔离] 每次调用都重新计算路径，不缓存，确保 profile 切换后路径正确。
+# 原因: KUNMING_HOME 可能在运行时被修改(如 profile 切换)，缓存的路径会失效，
+# 导致不同 profile 的 auth.json 被混用。
 def _get_auth_json_path() -> Path:
-    global _AUTH_JSON_PATH
-    if _AUTH_JSON_PATH is None:
-        _AUTH_JSON_PATH = get_kunming_home() / "auth.json"
-    return _AUTH_JSON_PATH
+    return get_kunming_home() / "auth.json"
 
 # Codex fallback: uses the Responses API (the only endpoint the Codex
 # OAuth token can access) with a fast model for auxiliary tasks.
@@ -613,7 +612,8 @@ def _read_nous_auth() -> Optional[dict]:
         auth_path = _get_auth_json_path()
         if not auth_path.is_file():
             return None
-        data = json.loads(auth_path.read_text())
+        # Windows兼容: 指定utf-8编码，避免默认GBK编码读取含非ASCII字符的auth.json时抛出UnicodeDecodeError
+        data = json.loads(auth_path.read_text(encoding="utf-8"))
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})
@@ -2242,5 +2242,25 @@ async def async_call_llm(
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
-            return await client.chat.completions.create(**kwargs)
+            try:
+                return await client.chat.completions.create(**kwargs)
+            except Exception as retry_err:
+                # [R2-A1] max_tokens重试也遇到payment error时，继续走payment fallback
+                # 原因：sync版call_llm有此逻辑，async版缺失导致payment error被直接抛出
+                if not _is_payment_error(retry_err):
+                    raise
+                first_err = retry_err
+
+        # [R2-A1] Payment/credit exhaustion fallback — 与sync版call_llm对齐
+        # 原因：async消费者(web_tools, session_search)遇到余额耗尽时无法自动切换provider
+        if _is_payment_error(first_err):
+            fb_client, fb_model, fb_label = _try_payment_fallback(
+                resolved_provider, task)
+            if fb_client is not None:
+                fb_kwargs = _build_call_kwargs(
+                    fb_label, fb_model, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, timeout=effective_timeout,
+                    extra_body=extra_body)
+                return await fb_client.chat.completions.create(**fb_kwargs)
         raise

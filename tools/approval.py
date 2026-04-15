@@ -103,6 +103,11 @@ DANGEROUS_PATTERNS = [
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
     (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
+    # [提权检测] sudo su/-i/-s 打开持久root shell，绕过后续逐命令审批
+    # 原理: 普通sudo只提升单条命令权限，但sudo su/i/s会进入root shell
+    # 在root shell中执行的后续命令不再经过approval检查
+    # 正则说明: (-\S+(?:\s+\S+)?\s+)* 匹配sudo的flag及可选参数值(如 -u root)，最终匹配 su/-i/-s
+    (r'\bsudo\s+(-\S+(?:\s+\S+)?\s+)*(su\b|-i\b|-s\b)', "escalate to persistent root shell"),
 ]
 
 if sys.platform == "win32":
@@ -113,6 +118,12 @@ if sys.platform == "win32":
         (r'\bbcdedit\b', "boot configuration edit"),
         (r'>\s*[a-z]:\\autoexec\.bat', "overwrite autoexec.bat"),
         (r'>\s*[a-z]:\\config\.sys', "overwrite config.sys"),
+        # [PowerShell安全] 检测远程脚本执行和执行策略绕过
+        # 原理: iex/Invoke-Expression + irm/Invoke-WebRequest 组合等效于Unix的 curl|bash
+        # Set-ExecutionPolicy Bypass 会绕过所有脚本执行安全限制
+        (r'\bInvoke-Expression\b.*\bInvoke-WebRequest\b', "PowerShell remote script execution"),
+        (r'\biex\b.*\birm\b', "PowerShell remote script execution (aliased)"),
+        (r'\bSet-ExecutionPolicy\b.*Bypass', "PowerShell execution policy bypass"),
     ])
 
 

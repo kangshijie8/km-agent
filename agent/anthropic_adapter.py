@@ -606,7 +606,13 @@ _OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 _OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
-_KUNMING_OAUTH_FILE = get_kunming_home() / ".anthropic_oauth.json"
+
+# [Profile隔离] 不在模块级调用 get_kunming_home()，因为 import 时
+# _apply_profile_override() 可能尚未设置正确的 KUNMING_HOME 环境变量，
+# 导致 profile 切换后 OAuth 文件路径仍指向旧 profile 目录。
+# 改为惰性函数，每次调用时动态计算路径。
+def _get_oauth_file_path():
+    return get_kunming_home() / ".anthropic_oauth.json"
 
 
 def _generate_pkce() -> tuple:
@@ -728,18 +734,20 @@ def _save_kunming_oauth_credentials(access_token: str, refresh_token: str, expir
         "expiresAt": expires_at_ms,
     }
     try:
-        _KUNMING_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _KUNMING_OAUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        _KUNMING_OAUTH_FILE.chmod(0o600)
+        oauth_file = _get_oauth_file_path()
+        oauth_file.parent.mkdir(parents=True, exist_ok=True)
+        oauth_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        oauth_file.chmod(0o600)
     except (OSError, IOError) as e:
         logger.debug("Failed to save Kunming OAuth credentials: %s", e)
 
 
 def read_kunming_oauth_credentials() -> Optional[Dict[str, Any]]:
     """Read Kunming-managed OAuth credentials from ~/.kunming/.anthropic_oauth.json."""
-    if _KUNMING_OAUTH_FILE.exists():
+    oauth_file = _get_oauth_file_path()
+    if oauth_file.exists():
         try:
-            data = json.loads(_KUNMING_OAUTH_FILE.read_text(encoding="utf-8"))
+            data = json.loads(oauth_file.read_text(encoding="utf-8"))
             if data.get("accessToken"):
                 return data
         except (json.JSONDecodeError, OSError, IOError) as e:

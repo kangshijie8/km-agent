@@ -309,7 +309,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 self._set_fatal_error("whatsapp_session_lock", message, retryable=False)
                 return False
         except Exception as e:
-            logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
+            # [R2-G1] 锁获取异常必须视为致命错误，而非非致命警告。
+            # 原则：若 acquire_scoped_lock 本身抛异常（如文件系统权限问题），
+            # 无法确认锁状态，继续运行可能导致同一 session 被多个 gateway 进程
+            # 同时使用，产生消息重复发送等严重问题。与 Telegram 适配器保持一致，
+            # 锁相关异常一律致命。
+            message = f"Could not acquire session lock: {e}. Cannot safely start WhatsApp bridge."
+            logger.error("[%s] %s", self.name, message)
+            self._set_fatal_error("whatsapp_session_lock", message, retryable=False)
+            return False
 
         # Auto-install npm dependencies if node_modules doesn't exist
         bridge_dir = bridge_path.parent

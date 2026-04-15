@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kunming_constants import get_kunming_home
+from kunming_constants import get_kunming_home, _get_default_kunming_home
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -67,8 +67,10 @@ def resolve_config_path() -> Path:
     if local_path.exists():
         return local_path
 
-    # Default profile's config -host blocks accumulate here via setup/clone
-    default_path = Path.home() / ".kunming" / "honcho.json"
+    # [Profile隔离] 使用 _get_default_kunming_home() 替代硬编码 Path.home() / ".kunming"，
+    # 确保在测试环境或自定义 HOME 路径下也能正确解析默认 profile 的配置。
+    # 此处语义是 fallback 到默认 profile 的 honcho.json，而非当前 profile。
+    default_path = _get_default_kunming_home() / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
 

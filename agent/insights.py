@@ -115,7 +115,10 @@ class InsightsEngine:
             db: A SessionDB instance (from kunming_state.py)
         """
         self.db = db
-        self._conn = db._conn
+        # [R2-I1] 不再直接访问 db._conn 私有属性，改用公共 execute_readonly() 方法。
+        # 原则：直接访问 _conn 绕过了 SessionDB 的线程安全锁（_lock），
+        # 在 gateway 多线程场景下可能导致并发读异常。通过 execute_readonly()
+        # 执行查询，确保所有数据库访问都在锁保护下进行。
 
     def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
         """
@@ -195,11 +198,11 @@ class InsightsEngine:
 
     def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
         """Fetch sessions within the time window."""
+        # [R2-I1] 使用 execute_readonly() 替代直接访问 _conn，确保线程安全
         if source:
-            cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
+            return self.db.execute_readonly(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
         else:
-            cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
-        return [dict(row) for row in cursor.fetchall()]
+            return self.db.execute_readonly(self._GET_SESSIONS_ALL, (cutoff,))
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
         """Get tool call counts from messages.
@@ -211,9 +214,10 @@ class InsightsEngine:
         """
         tool_counts = Counter()
 
+        # [R2-I1] 使用 execute_readonly() 替代直接访问 _conn，确保线程安全
         # Source 1: explicit tool_name on tool response messages
         if source:
-            cursor = self._conn.execute(
+            rows = self.db.execute_readonly(
                 """SELECT m.tool_name, COUNT(*) as count
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
@@ -224,7 +228,7 @@ class InsightsEngine:
                 (cutoff, source),
             )
         else:
-            cursor = self._conn.execute(
+            rows = self.db.execute_readonly(
                 """SELECT m.tool_name, COUNT(*) as count
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
@@ -234,13 +238,13 @@ class InsightsEngine:
                    ORDER BY count DESC""",
                 (cutoff,),
             )
-        for row in cursor.fetchall():
+        for row in rows:
             tool_counts[row["tool_name"]] += row["count"]
 
         # Source 2: extract from tool_calls JSON on assistant messages
         # (covers CLI sessions where tool_name is NULL on tool responses)
         if source:
-            cursor2 = self._conn.execute(
+            rows2 = self.db.execute_readonly(
                 """SELECT m.tool_calls
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
@@ -249,7 +253,7 @@ class InsightsEngine:
                 (cutoff, source),
             )
         else:
-            cursor2 = self._conn.execute(
+            rows2 = self.db.execute_readonly(
                 """SELECT m.tool_calls
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
@@ -259,7 +263,7 @@ class InsightsEngine:
             )
 
         tool_calls_counts = Counter()
-        for row in cursor2.fetchall():
+        for row in rows2:
             try:
                 calls = row["tool_calls"]
                 if isinstance(calls, str):
@@ -295,8 +299,9 @@ class InsightsEngine:
 
     def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
         """Get aggregate message statistics."""
+        # [R2-I1] 使用 execute_readonly() 替代直接访问 _conn，确保线程安全
         if source:
-            cursor = self._conn.execute(
+            rows = self.db.execute_readonly(
                 """SELECT
                      COUNT(*) as total_messages,
                      SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) as user_messages,
@@ -308,7 +313,7 @@ class InsightsEngine:
                 (cutoff, source),
             )
         else:
-            cursor = self._conn.execute(
+            rows = self.db.execute_readonly(
                 """SELECT
                      COUNT(*) as total_messages,
                      SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) as user_messages,
@@ -319,8 +324,7 @@ class InsightsEngine:
                    WHERE s.started_at >= ?""",
                 (cutoff,),
             )
-        row = cursor.fetchone()
-        return dict(row) if row else {
+        return rows[0] if rows else {
             "total_messages": 0, "user_messages": 0,
             "assistant_messages": 0, "tool_messages": 0,
         }

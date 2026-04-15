@@ -45,7 +45,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS, HYBRID_SEARCH_FTS_WEIGHT, HYBRID_SEARCH_VECTOR_WEIGHT  # 整合: 使用统一搜索权重 [S1]
+from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS, HYBRID_SEARCH_FTS_WEIGHT, HYBRID_SEARCH_VECTOR_WEIGHT, ebbinghaus_retention, _EBINGHAUS_HALF_LIFE_DAYS, _EBINGHAUS_RETENTION_THRESHOLD  # 整合: 使用统一搜索权重 [S1]
 from typing import Dict, Any, List, Optional, Tuple
 from utils import _extract_tokens, simhash, simhash_similarity, file_lock  # 整合: 导入 simhash_similarity 替代类内静态方法 [H5]
 
@@ -92,8 +92,10 @@ TARGET_CHAR_LIMITS = {
     "user": 1375,
 }
 
-_EBINGHAUS_HALF_LIFE_DAYS = 14.0
-_EBINGHAUS_RETENTION_THRESHOLD = 0.15
+# [R2-M2] 半衰期常量已迁移至kunming_constants._EBINGHAUS_HALF_LIFE_DAYS
+_EBINGHAUS_HALF_LIFE_DAYS = _EBINGHAUS_HALF_LIFE_DAYS  # noqa: F811
+# [R2-M2] 衰减阈值常量已迁移至kunming_constants._EBINGHAUS_RETENTION_THRESHOLD
+_EBINGHAUS_RETENTION_THRESHOLD = _EBINGHAUS_RETENTION_THRESHOLD  # noqa: F811
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +254,7 @@ class MemoryStore:
         age_days = (time.time() - last_accessed) / 86400.0
         # 修复：增加访问次数对半衰期的提升因子，从0.3提高到0.5
         access_boost = 1.0 + math.log1p(access_count) * 0.5
-        effective_half_life = _EBINGHAUS_HALF_LIFE_DAYS * access_boost * (0.5 + importance)
+        effective_half_life = _EBINGHAUS_HALF_LIFE_DAYS * access_boost * (0.5 + importance)  # [R2-M2] 使用统一常量
         retention = math.exp(-0.693 * age_days / effective_half_life)
         # 修复：设置最小保留值为5%，确保重要记忆不会完全消失
         return max(0.05, min(1.0, retention))
@@ -348,6 +350,14 @@ class MemoryStore:
         resolved = TARGET_ALIASES.get(target, target)
         return mem_dir / TARGET_FILES.get(resolved, "FACTS.md")
 
+    @staticmethod
+    def _lock_path_for(target: str) -> Path:
+        # [R2-M1-fix] 锁文件路径：使用独立的.lock文件而非数据文件本身
+        # 原因：Windows上msvcrt.locking锁定的文件被os.replace()替换后，
+        # 锁状态与文件句柄脱钩，导致后续操作出现[WinError 5]权限拒绝。
+        # 独立锁文件不受数据文件原子替换的影响。
+        return Path(str(MemoryStore._path_for(target)) + ".lock")
+
     def _reload_target(self, target: str):
         """Re-read entries from disk into in-memory state."""
         fresh = self._read_file(self._path_for(target))
@@ -362,11 +372,8 @@ class MemoryStore:
         save_to_disk中的file_lock保护"写入"阶段。两层锁不嵌套避免死锁。
         """
         get_memory_dir().mkdir(parents=True, exist_ok=True)
-        # 修复：写入阶段获取file_lock，防止两个并发save_to_disk同时执行
-        # tempfile+os.replace本身是原子的，但没有锁保护时两个并发写入可能
-        # 互相覆盖：进程A写tmp_a，进程B写tmp_b，A的replace先完成，
-        # B的replace后完成覆盖A的结果
-        with file_lock(self._path_for(target)) as acquired:
+        # [R2-M1-fix] 使用独立锁文件，避免Windows上锁定数据文件后os.replace()失败
+        with file_lock(self._lock_path_for(target)) as acquired:
             if not acquired:
                 logger.warning("Memory save failed: could not acquire file lock for write")
                 return
@@ -427,7 +434,8 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         try:
-            with file_lock(self._path_for(target)) as acquired:
+                # [R2-M1-fix] 独立锁文件，避免Windows上锁定数据文件后os.replace()失败
+            with file_lock(self._lock_path_for(target)) as acquired:
                 if not acquired:
                     return {"success": False, "error": "Failed to acquire file lock."}
                 self._reload_target(target)
@@ -488,7 +496,8 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         try:
-            with file_lock(self._path_for(target)) as acquired:
+                # [R2-M1-fix] 独立锁文件，避免Windows上锁定数据文件后os.replace()失败
+            with file_lock(self._lock_path_for(target)) as acquired:
                 if not acquired:
                     return {"success": False, "error": "Failed to acquire file lock."}
                 self._reload_target(target)
@@ -558,7 +567,8 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
 
         try:
-            with file_lock(self._path_for(target)) as acquired:
+                # [R2-M1-fix] 独立锁文件，避免Windows上锁定数据文件后os.replace()失败
+            with file_lock(self._lock_path_for(target)) as acquired:
                 if not acquired:
                     return {"success": False, "error": "Failed to acquire file lock."}
                 self._reload_target(target)

@@ -542,7 +542,8 @@ def _load_context_cache() -> Dict[str, int]:
     if not path.exists():
         return {}
     try:
-        with open(path) as f:
+        # Windows兼容: 指定utf-8编码，避免默认GBK编码读取含非ASCII字符(如中文模型名)的YAML时失败
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         return data.get("context_lengths", {})
     except Exception as e:
@@ -564,7 +565,8 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     path = _get_context_cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
+        # Windows兼容: 指定utf-8编码写入，避免默认GBK编码写入非ASCII字符时失败
+        with open(path, "w", encoding="utf-8") as f:
             yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
         logger.info("Cached context length %s -> %s tokens", key, f"{length:,}")
     except Exception as e:

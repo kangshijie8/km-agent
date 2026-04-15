@@ -37,7 +37,6 @@ import math
 import os
 import re
 import sys
-import threading
 import time
 from collections import Counter, defaultdict
 from contextlib import contextmanager
@@ -45,10 +44,10 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
-from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS, utc_now_iso  # 整合: 使用统一时间戳函数 [T1]
+from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS, utc_now_iso, _EBINGHAUS_HALF_LIFE_DAYS  # 整合: 使用统一时间戳函数 [T1]; 统一Ebbinghaus半衰期常量 [R2-M2]
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils import file_lock, _extract_tokens, atomic_json_write  # 整合: 使用统一原子写入，消除本地 _save_json 重复实现 [J1]
+from utils import file_lock, _extract_tokens, atomic_json_write, extract_keywords_cjk, jaccard_similarity  # [R2-K1] 导入统一关键词提取函数; [R2-J1] 导入统一Jaccard相似度函数
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +70,7 @@ _DISTILL_DEFAULT_CONFIG = {
     "min_signal_count": 2,
     "min_unique_days": 1,
     "max_age_days": 30,
-    "recency_half_life_days": 14,
+    "recency_half_life_days": _EBINGHAUS_HALF_LIFE_DAYS,  # [R2-M2] 使用统一常量，避免硬编码14与kunming_constants不同步
     "max_promotions_per_run": 8,
     "lookback_days": 7,
     "llm_assisted_rem": True,
@@ -120,56 +119,24 @@ def _extract_concept_tags(text: str, max_tags: int = 8) -> List[str]:
 
     Multi-language aware: handles CJK characters, compound terms (hyphen/dot joined),
     and filters common stop words.
+
+    [R2-K1] 委托给统一函数extract_keywords_cjk，消除本地重复实现
     """
-    _STOP_WORDS = frozenset({
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "shall", "can", "need", "dare", "ought",
-        "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
-        "as", "into", "through", "during", "before", "after", "above", "below",
-        "between", "out", "off", "over", "under", "again", "further", "then",
-        "once", "here", "there", "when", "where", "why", "how", "all", "each",
-        "every", "both", "few", "more", "most", "other", "some", "such", "no",
-        "not", "only", "own", "same", "so", "than", "too", "very", "just",
-        "because", "but", "and", "or", "if", "while", "about", "up", "its",
-        "it", "this", "that", "these", "those", "i", "me", "my", "we", "our",
-        "you", "your", "he", "him", "his", "she", "her", "they", "them", "their",
-        "what", "which", "who", "whom", "whose",
-        "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一",
-        "一个", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有",
-        "看", "好", "自己", "这",
-    })
-
-    compound_pattern = re.compile(r'[a-zA-Z][\w.-]+[\w]')
-    cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{2,}')
-
-    tags = Counter()
-    for m in compound_pattern.finditer(text.lower()):
-        word = m.group()
-        if word not in _STOP_WORDS and len(word) >= 3:
-            tags[word] += 1
-    for m in cjk_pattern.finditer(text):
-        word = m.group()
-        if word not in _STOP_WORDS:
-            tags[word] += 1
-
-    return [t for t, _ in tags.most_common(max_tags)]
+    return extract_keywords_cjk(text, max_keywords=max_tags)
 
 
-def _jaccard_similarity(a: str, b: str) -> float:
+# [R2-J1] 删除本地_jaccard_similarity()，改用utils.jaccard_similarity
+# 原实现：接受两个字符串参数，内部调用_extract_tokens分词后计算集合Jaccard
+# 新方式：调用方自行分词，传入集合给jaccard_similarity()
+# 保留辅助函数封装分词+相似度计算，方便现有调用点使用
+def _jaccard_text_similarity(a: str, b: str) -> float:
     """Jaccard similarity on token sets. Used for semantic dedup.
 
-    修复：使用_extract_tokens替代split()，支持CJK文本分词
-    原实现使用split()按空白分词，对中文/日文等无空白分隔的语言完全无效
+    [R2-J1] 封装：分词 + 调用统一jaccard_similarity，替代原本地实现
     """
-    # 修复：使用_extract_tokens替代split()，支持CJK分词
     wa = _extract_tokens(a.lower())
     wb = _extract_tokens(b.lower())
-    if not wa and not wb:
-        return 1.0
-    if not wa or not wb:
-        return 0.0
-    return len(wa & wb) / len(wa | wb)
+    return jaccard_similarity(wa, wb)
 
 
 def record_signal(
@@ -249,7 +216,7 @@ def _score_candidates(
     Returns candidates sorted by descending score, filtered by thresholds.
     """
     now = datetime.now(timezone.utc)
-    half_life = config.get("recency_half_life_days", 14)
+    half_life = config.get("recency_half_life_days", _EBINGHAUS_HALF_LIFE_DAYS)  # [R2-M2] 使用统一常量作为默认值
     min_score = config.get("min_score", _DISTILL_DEFAULT_CONFIG.get("min_score", 0.65))
     min_signals = config.get("min_signal_count", _DISTILL_DEFAULT_CONFIG.get("min_signal_count", 2))
     min_days = config.get("min_unique_days", _DISTILL_DEFAULT_CONFIG.get("min_unique_days", 1))
@@ -286,7 +253,11 @@ def _score_candidates(
         freq = math.log1p(signal_count) / math.log1p(10)
         relevance = (total_score / signal_count) if signal_count > 0 else 0
         diversity = max(len(q_hashes), len(seen_days)) / 5.0
-        recency = math.exp(-0.693 * age_days / half_life) if half_life > 0 else 1.0
+        # [R2-M2] 使用统一的Ebbinghaus函数计算recency
+        # 原实现仅用纯half_life，无access_boost/importance，与memory_tool.py不一致
+        # 信号条目没有access_count/importance元数据，使用默认值（0次访问，0.5重要性）
+        # 这样当信号被promote为记忆条目后，两者的衰减行为保持一致
+        recency = ebbinghaus_retention(age_days=age_days, half_life_days=half_life)
 
         spacing = 0.0
         span = 0.0
@@ -368,7 +339,7 @@ def _deduplicate_candidates(candidates: List[Dict], threshold: float = 0.88) -> 
     for c in candidates:
         is_dup = False
         for r in result:
-            if _jaccard_similarity(c["snippet"], r["snippet"]) >= threshold:
+            if _jaccard_text_similarity(c["snippet"], r["snippet"]) >= threshold:  # [R2-J1] 改用封装函数
                 is_dup = True
                 break
         if not is_dup:
@@ -384,6 +355,9 @@ def _promote_to_memory(
 
     Uses atomic write to avoid disrupting concurrent sessions. Each promoted
     entry is marked with a comment so re-promotion is idempotent.
+
+    [R2-M1] 修复并发写竞争：eviction操作使用memory_lock保护，
+    防止distillation的eviction与主会话的add互相覆盖。
     """
     from tools.memory_tool import MemoryStore, ENTRY_DELIMITER
 
@@ -402,7 +376,7 @@ def _promote_to_memory(
         snippet = c["snippet"]
         existing = store._entries.get("experiences", [])
         is_dup = any(
-            _jaccard_similarity(snippet, e) >= 0.88
+            _jaccard_text_similarity(snippet, e) >= 0.88  # [R2-J1] 改用封装函数
             for e in existing
         )
         if is_dup:
@@ -417,45 +391,72 @@ def _promote_to_memory(
         new_chars = current_chars + len(ENTRY_DELIMITER) + len(entry_text)
 
         if new_chars > store._char_limits.get("experiences", 4000):
-            candidates_for_eviction = [(i, e) for i, e in enumerate(existing) if "[distilled:" not in e]
-            if not candidates_for_eviction:
-                candidates_for_eviction = [(i, e) for i, e in enumerate(existing)]
+            # [R2-M1] 使用memory_lock保护eviction操作，防止并发写入覆盖
+            # 原实现无锁保护：eviction先读existing，再修改_entries，再save_to_disk
+            # 若主会话在eviction读后、save前添加了新条目，eviction的save会覆盖主会话的添加
+            # 修复：在锁内reload最新数据，确保eviction基于最新状态操作
+            with store.memory_lock("experiences") as acquired:
+                if not acquired:
+                    logger.warning("[R2-M1] Failed to acquire memory lock for eviction, skipping")
+                    continue
+                # 锁内reload，获取最新数据
+                store._reload_target("experiences")
+                existing = store._entries.get("experiences", [])
 
-            # 使用共享常量，避免与 memory_tool.py 中定义不同步（此前缺少 "critical"）
-            _PROTECTED_KEYWORDS = _MEMORY_PROTECTED_KEYWORDS
+                # 重新检查重复（reload后数据可能已变化）
+                if any(_jaccard_text_similarity(snippet, e) >= 0.88 for e in existing):
+                    continue
+                if any(marker in e for e in existing):
+                    continue
 
-            def _eviction_score(entry):
-                content = entry.lower()
-                has_protected = any(kw in content for kw in _PROTECTED_KEYWORDS)
-                if has_protected:
-                    return (0, 0)  # 永不驱逐保护条目
-                # 修复：纳入 Ebbinghaus 元数据考量，避免高价值短条目被优先驱逐
-                # 原实现仅按条目长度排序，短的非保护条目总是先被驱逐，
-                # 但一个频繁访问（高 access_count）或高 importance 的短条目
-                # 可能比一个很少被访问的长条目更有价值。
-                # 通过 retention_bonus 降低有效驱逐分数：
-                #   有效长度 = 实际长度 / (1 + retention_bonus)
-                # access_count 越高、importance 越高的条目获得越大的保护
-                entry_hash = store._entry_key(entry)
-                meta = store._meta.get("experiences", {}).get(entry_hash, {})
-                access_count = meta.get("access_count", 0)
-                importance = meta.get("importance", 0.5)
-                retention_bonus = min(access_count * 0.1, 2.0) + importance
-                return (1, len(entry) / (1 + retention_bonus))
+                # 重新计算字符数
+                current_chars = len(ENTRY_DELIMITER.join(existing)) if existing else 0
+                new_chars = current_chars + len(ENTRY_DELIMITER) + len(entry_text)
+                if new_chars <= store._char_limits.get("experiences", 4000):
+                    # reload后空间足够，无需eviction，直接跳到add
+                    pass
+                else:
+                    candidates_for_eviction = [(i, e) for i, e in enumerate(existing) if "[distilled:" not in e]
+                    if not candidates_for_eviction:
+                        candidates_for_eviction = [(i, e) for i, e in enumerate(existing)]
 
-            candidates_for_eviction.sort(key=lambda x: _eviction_score(x[1]))
+                    # 使用共享常量，避免与 memory_tool.py 中定义不同步（此前缺少 "critical"）
+                    _PROTECTED_KEYWORDS = _MEMORY_PROTECTED_KEYWORDS
 
-            evicted_indices = []
-            for idx, _ in candidates_for_eviction:
-                evicted_indices.append(idx)
-                tentative = [e for i, e in enumerate(store._entries["experiences"]) if i not in evicted_indices]
-                freed_chars = len(ENTRY_DELIMITER.join(tentative)) + len(ENTRY_DELIMITER) + len(entry_text)
-                if freed_chars <= store._char_limits.get("experiences", 4000):
-                    break
+                    def _eviction_score(entry):
+                        content = entry.lower()
+                        has_protected = any(kw in content for kw in _PROTECTED_KEYWORDS)
+                        if has_protected:
+                            return (0, 0)  # 永不驱逐保护条目
+                        # 修复：纳入 Ebbinghaus 元数据考量，避免高价值短条目被优先驱逐
+                        # 原实现仅按条目长度排序，短的非保护条目总是先被驱逐，
+                        # 但一个频繁访问（高 access_count）或高 importance 的短条目
+                        # 可能比一个很少被访问的长条目更有价值。
+                        # 通过 retention_bonus 降低有效驱逐分数：
+                        #   有效长度 = 实际长度 / (1 + retention_bonus)
+                        # access_count 越高、importance 越高的条目获得越大的保护
+                        entry_hash = store._entry_key(entry)
+                        meta = store._meta.get("experiences", {}).get(entry_hash, {})
+                        access_count = meta.get("access_count", 0)
+                        importance = meta.get("importance", 0.5)
+                        retention_bonus = min(access_count * 0.1, 2.0) + importance
+                        return (1, len(entry) / (1 + retention_bonus))
 
-            for idx in sorted(evicted_indices, reverse=True):
-                store._entries["experiences"].pop(idx)
-            store.save_to_disk("experiences")
+                    candidates_for_eviction.sort(key=lambda x: _eviction_score(x[1]))
+
+                    evicted_indices = []
+                    for idx, _ in candidates_for_eviction:
+                        evicted_indices.append(idx)
+                        tentative = [e for i, e in enumerate(store._entries["experiences"]) if i not in evicted_indices]
+                        freed_chars = len(ENTRY_DELIMITER.join(tentative)) + len(ENTRY_DELIMITER) + len(entry_text)
+                        if freed_chars <= store._char_limits.get("experiences", 4000):
+                            break
+
+                    for idx in sorted(evicted_indices, reverse=True):
+                        store._entries["experiences"].pop(idx)
+                    # [R2-M1] _skip_lock=True：外层memory_lock已持有文件锁，
+                    # save_to_disk不需要再获取锁，避免嵌套死锁
+                    store.save_to_disk("experiences", _skip_lock=True)
 
         result = store.add("experiences", entry_text)
         if result.get("success"):
@@ -601,15 +602,30 @@ def _write_models_to_store(rules: List[Dict]) -> int:
 
 
 def _run_ebbinghaus_decay() -> Dict[str, int]:
-    """Run Ebbinghaus decay on all memory targets."""
+    """Run Ebbinghaus decay on all memory targets.
+
+    [R2-M1] 修复并发写竞争：每个target的decay操作使用memory_lock保护，
+    在锁内reload最新数据后再执行decay，防止与主会话的并发写入互相覆盖。
+    原实现：load_from_disk()后直接decay_memories()，load和decay之间无锁保护，
+    若主会话在load后、decay前添加了新条目，decay的save_to_disk会覆盖主会话的添加。
+    """
     from tools.memory_tool import MemoryStore
     store = MemoryStore()
     store.load_from_disk()
     results = {}
     for target in ("facts", "experiences", "models"):
-        removed = store.decay_memories(target)
-        if removed > 0:
-            results[target] = removed
+        # [R2-M1] 每个target独立加锁，避免长时间持有全局锁
+        with store.memory_lock(target) as acquired:
+            if not acquired:
+                logger.warning("[R2-M1] Failed to acquire memory lock for decay on %s, skipping", target)
+                continue
+            # 锁内reload，确保基于最新数据执行衰减
+            store._reload_target(target)
+            # _skip_lock=True：外层memory_lock已持有文件锁，decay_memories内部的
+            # save_to_disk不需要再获取锁，避免嵌套死锁
+            removed = store.decay_memories(target, _skip_lock=True)
+            if removed > 0:
+                results[target] = removed
     return results
 
 
@@ -629,81 +645,92 @@ def run_distillation(config: Optional[Dict[str, Any]] = None, verbose: bool = Fa
     if not config.get("enabled", True):
         return {"status": "disabled", "message": "Memory distillation is not enabled."}
 
-    start = time.monotonic()
-    result = {
-        "status": "ok",
-        "light": {"signals_ingested": 0},
-        "rem": {"themes": [], "llm_rules": []},
-        "deep": {"candidates_scored": 0, "promoted": 0, "promotions": []},
-        "decay": {},
-    }
+    # [蒸馏并发保护] 使用文件锁防止多个cron实例同时运行蒸馏
+    # 原理: 蒸馏涉及读取-评分-写入操作，并发执行会导致:
+    # 1. 重复评分相同的候选条目 2. 并发写入EXPERIENCES.md导致数据丢失
+    # 使用短超时非阻塞锁获取，如果锁已被持有则跳过本次运行
+    # timeout=0.5: 尝试获取锁最多0.5秒（至少一次尝试），避免timeout=0时while循环不执行
+    distill_lock_path = str(get_kunming_home() / "memories" / ".distillation.lock")
+    with file_lock(distill_lock_path, timeout=0.5) as acquired:
+        if not acquired:
+            logger.info("Distillation already running, skipping this cycle")
+            return {"status": "skipped", "message": "Another distillation is already running."}
 
-    _distill_dir().mkdir(parents=True, exist_ok=True)
+        start = time.monotonic()
+        result = {
+            "status": "ok",
+            "light": {"signals_ingested": 0},
+            "rem": {"themes": [], "llm_rules": []},
+            "deep": {"candidates_scored": 0, "promoted": 0, "promotions": []},
+            "decay": {},
+        }
 
-    lookback = config.get("lookback_days", 7)
-    ingested = _ingest_session_transcripts(lookback_days=lookback)
-    result["light"]["signals_ingested"] = ingested
+        _distill_dir().mkdir(parents=True, exist_ok=True)
 
-    signals_path = _signals_path()
-    signals = _load_json(signals_path, {"version": 1, "entries": {}})
-    entries = signals.get("entries", {})
+        lookback = config.get("lookback_days", 7)
+        ingested = _ingest_session_transcripts(lookback_days=lookback)
+        result["light"]["signals_ingested"] = ingested
 
-    if not entries:
-        result["status"] = "no_signals"
+        signals_path = _signals_path()
+        signals = _load_json(signals_path, {"version": 1, "entries": {}})
+        entries = signals.get("entries", {})
+
+        if not entries:
+            result["status"] = "no_signals"
+            return result
+
+        candidates = _score_candidates(entries, config)
+        result["deep"]["candidates_scored"] = len(candidates)
+
+        themes = _extract_themes(candidates)
+        result["rem"]["themes"] = themes
+
+        if config.get("llm_assisted_rem", True):
+            llm_rules = _llm_extract_patterns(candidates, themes)
+            result["rem"]["llm_rules"] = llm_rules
+            if llm_rules:
+                written = _write_models_to_store(llm_rules)
+                result["rem"]["models_written"] = written
+
+        candidates = _deduplicate_candidates(candidates)
+
+        promoted = _promote_to_memory(candidates, config)
+        result["deep"]["promoted"] = len(promoted)
+        result["deep"]["promotions"] = [
+            {"snippet": p["snippet"][:80], "score": p["score"]}
+            for p in promoted
+        ]
+
+        if promoted:
+            _mark_promoted([p["key"] for p in promoted])
+
+        if config.get("decay_on_distill", True):
+            decay_results = _run_ebbinghaus_decay()
+            result["decay"] = decay_results
+
+        state_path = _state_path()
+        with file_lock(str(state_path)):
+            state = _load_json(state_path, {"version": 1, "runs": []})
+            runs = state.setdefault("runs", [])
+            runs.append({
+                "timestamp": utc_now_iso(),  # 整合: 使用统一时间戳函数 [T1]
+                "duration_ms": int((time.monotonic() - start) * 1000),
+                "signals_count": len(entries),
+                "candidates_scored": len(candidates),
+                "promoted": len(promoted),
+                "themes_found": len(themes),
+            })
+            runs = runs[-50:]
+            state["runs"] = runs
+            atomic_json_write(state_path, state)  # 整合: 使用统一原子写入 [J1]
+
+        if verbose:
+            logger.info(
+                "Distillation complete: %d signals, %d candidates, %d promoted, %d themes",
+                len(entries), len(candidates), len(promoted), len(themes),
+            )
+
         return result
-
-    candidates = _score_candidates(entries, config)
-    result["deep"]["candidates_scored"] = len(candidates)
-
-    themes = _extract_themes(candidates)
-    result["rem"]["themes"] = themes
-
-    if config.get("llm_assisted_rem", True):
-        llm_rules = _llm_extract_patterns(candidates, themes)
-        result["rem"]["llm_rules"] = llm_rules
-        if llm_rules:
-            written = _write_models_to_store(llm_rules)
-            result["rem"]["models_written"] = written
-
-    candidates = _deduplicate_candidates(candidates)
-
-    promoted = _promote_to_memory(candidates, config)
-    result["deep"]["promoted"] = len(promoted)
-    result["deep"]["promotions"] = [
-        {"snippet": p["snippet"][:80], "score": p["score"]}
-        for p in promoted
-    ]
-
-    if promoted:
-        _mark_promoted([p["key"] for p in promoted])
-
-    if config.get("decay_on_distill", True):
-        decay_results = _run_ebbinghaus_decay()
-        result["decay"] = decay_results
-
-    state_path = _state_path()
-    with file_lock(str(state_path)):
-        state = _load_json(state_path, {"version": 1, "runs": []})
-        runs = state.setdefault("runs", [])
-        runs.append({
-            "timestamp": utc_now_iso(),  # 整合: 使用统一时间戳函数 [T1]
-            "duration_ms": int((time.monotonic() - start) * 1000),
-            "signals_count": len(entries),
-            "candidates_scored": len(candidates),
-            "promoted": len(promoted),
-            "themes_found": len(themes),
-        })
-        runs = runs[-50:]
-        state["runs"] = runs
-        atomic_json_write(state_path, state)  # 整合: 使用统一原子写入 [J1]
-
-    if verbose:
-        logger.info(
-            "Distillation complete: %d signals, %d candidates, %d promoted, %d themes",
-            len(entries), len(candidates), len(promoted), len(themes),
-        )
-
-    return result
 
 
 def get_distillation_status() -> Dict[str, Any]:

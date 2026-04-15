@@ -29,7 +29,19 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-DEFAULT_DB_PATH = get_kunming_home() / "state.db"
+# [Profile隔离] 不在模块级调用 get_kunming_home()，因为 import 时
+# _apply_profile_override() 可能尚未设置正确的 KUNMING_HOME 环境变量，
+# 导致 profile 切换后数据库路径仍指向旧 profile 目录。
+# 改为惰性函数，每次调用时动态计算路径。
+def get_default_db_path() -> Path:
+    return get_kunming_home() / "state.db"
+
+# 向后兼容: 保留 DEFAULT_DB_PATH 作为属性，通过模块 __getattr__ 惰性求值
+# (直接赋值会在 import 时求值，所以用 __getattr__ 拦截)
+def __getattr__(name):
+    if name == "DEFAULT_DB_PATH":
+        return get_default_db_path()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 SCHEMA_VERSION = 6
 
@@ -137,7 +149,9 @@ class SessionDB:
     _CHECKPOINT_EVERY_N_WRITES = 50
 
     def __init__(self, db_path: Path = None):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        # [Profile隔离] 使用 get_default_db_path() 替代模块级 DEFAULT_DB_PATH 常量，
+        # 确保每次实例化时动态计算路径，反映当前 profile 的 KUNMING_HOME
+        self.db_path = db_path or get_default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.Lock()
@@ -1182,6 +1196,26 @@ class SessionDB:
     # =========================================================================
     # Utility
     # =========================================================================
+
+    def execute_readonly(self, sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        """Execute a read-only SQL query under the thread-safety lock.
+
+        [R2-I1] 提供公共只读查询接口，避免外部模块直接访问 _conn 私有属性。
+        原则：SessionDB 的 _lock 是线程安全的核心保障，绕过 _conn 直接访问
+        会跳过锁保护，在 gateway 多线程场景下可能导致并发读异常。
+        所有外部只读查询应通过此方法执行，确保锁保护一致性。
+
+        Args:
+            sql: SQL query string (should be SELECT / read-only)
+            params: Query parameters tuple
+
+        Returns:
+            List of dicts, one per row
+        """
+        with self._lock:
+            cursor = self._conn.execute(sql, params)
+            rows = cursor.fetchall()
+        return [dict(row) for row in rows]
 
     def session_count(self, source: str = None) -> int:
         """Count sessions, optionally filtered by source."""

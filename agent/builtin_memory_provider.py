@@ -31,9 +31,14 @@ class BuiltinMemoryProvider(MemoryProvider):
     """Built-in file-backed memory (FACTS.md + EXPERIENCES.md + MODELS.md + USER.md).
 
     Always active, never disabled by other providers. The `memory` tool
-    is handled by run_agent.py's agent-level tool interception (not through
-    the normal registry), so get_tool_schemas() returns an empty list —
-    the memory tool is already wired separately.
+    is also registered in the tool registry with is_agent_tool=True and
+    intercepted in run_agent.py for agent-level state injection (store kwarg).
+
+    [R2-P1] get_tool_schemas() now returns [MEMORY_SCHEMA] to properly fulfill
+    the MemoryProvider interface contract. When this provider is registered with
+    MemoryManager, the manager can discover and route the memory tool correctly.
+    Duplicate registration is prevented by run_agent.py's dedup guard on
+    valid_tool_names.
     """
 
     def __init__(
@@ -102,17 +107,40 @@ class BuiltinMemoryProvider(MemoryProvider):
         """Built-in memory doesn't auto-sync turns — writes happen via the memory tool."""
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Return empty list.
+        """Return the memory tool schema.
 
-        The `memory` tool is an agent-level intercepted tool, handled
-        specially in run_agent.py before normal tool dispatch. It's not
-        part of the standard tool registry. We don't duplicate it here.
+        [R2-P1] 返回MEMORY_SCHEMA以正确履行MemoryProvider接口契约。
+        原实现返回空列表[]，理由是"memory工具在run_agent.py中被拦截处理"，
+        但这导致MemoryManager无法发现和路由memory工具，违反接口语义：
+        provider应声明其暴露的工具，使MemoryManager能正确路由调用。
+        去重保护：run_agent.py在注入MemoryManager的tool schemas时，
+        会跳过已在valid_tool_names中的工具名，避免重复注册。
         """
-        return []
+        # 延迟导入避免循环依赖：tools.memory_tool在导入时执行registry.register()
+        from tools.memory_tool import MEMORY_SCHEMA
+        return [MEMORY_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
-        """Not used — the memory tool is intercepted in run_agent.py."""
-        return tool_error("Built-in memory tool is handled by the agent loop")
+        """Handle the memory tool call by delegating to memory_tool().
+
+        [R2-P1] 实现handle_tool_call()，使BuiltinMemoryProvider能通过
+        MemoryManager路由处理memory工具调用。使用self._store作为存储后端，
+        与run_agent.py中agent-level拦截使用的是同一个MemoryStore实例。
+        """
+        if tool_name == "memory":
+            # 延迟导入避免循环依赖
+            from tools.memory_tool import memory_tool
+            if self._store is None:
+                return tool_error("Memory store is not available.", success=False)
+            return memory_tool(
+                action=args.get("action", ""),
+                target=args.get("target", "facts"),
+                content=args.get("content"),
+                old_text=args.get("old_text"),
+                query=args.get("query"),
+                store=self._store,
+            )
+        return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
         """No cleanup needed — files are saved on every write."""

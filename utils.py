@@ -5,9 +5,10 @@ import json
 import os
 import re
 import tempfile
+from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator, Union
+from typing import Any, Generator, List, Union
 
 import yaml
 
@@ -27,6 +28,93 @@ def _extract_tokens(text: str) -> set:
     for i in range(len(cjk_chars) - 1):
         tokens.add(cjk_chars[i] + cjk_chars[i + 1])
     return tokens
+
+
+# [R2-J1] 统一Jaccard相似度函数，消除memory_distillation.py和retrieval.py中的重复实现
+# 原因：两处实现算法相同（集合交集/并集比），但签名和边界条件处理不一致：
+#   - memory_distillation.py: 接受字符串参数，内部调用_extract_tokens分词，双空返回1.0
+#   - retrieval.py: 接受集合参数，使用简单空白分词，双空返回0.0
+# 统一为纯集合操作函数，分词逻辑由调用方负责。双空返回1.0（数学约定：空集相等）。
+def jaccard_similarity(set_a: set, set_b: set) -> float:
+    """Jaccard similarity coefficient: |A ∩ B| / |A ∪ B|.
+
+    Pure set operation — callers handle tokenization.
+
+    Returns 1.0 if both sets are empty (empty sets are equal by convention).
+    Returns 0.0 if exactly one set is empty.
+    """
+    if not set_a and not set_b:
+        return 1.0
+    if not set_a or not set_b:
+        return 0.0
+    intersection = len(set_a & set_b)
+    union = len(set_a | set_b)
+    return intersection / union if union > 0 else 1.0
+
+
+# [R2-K1] 统一CJK关键词提取函数，消除三处重复实现
+# 原因：_extract_tokens(utils.py)、_extract_concept_tags(memory_distillation.py)、
+# _extract_keywords(experience_tool.py) 三者功能高度重叠但各有差异，
+# 导致维护困难且行为不一致。此函数整合三者能力：
+# - Latin复合词提取（同_extract_concept_tags的compound_pattern）
+# - CJK连续段提取（同_extract_concept_tags的cjk_pattern，优于单字+bigram）
+# - 停用词过滤（整合两份停用词表）
+# - 频率排序+去重
+_CJK_CONT_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{2,}')
+_COMPOUND_RE = re.compile(r'[a-zA-Z][\w.-]+[\w]')
+
+_CJK_STOP_WORDS = frozenset({
+    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一",
+    "一个", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有",
+    "看", "好", "自己", "这", "这个", "那个", "可以", "需要", "帮助", "如何",
+    "什么",
+})
+_EN_STOP_WORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "dare", "ought",
+    "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+    "as", "into", "through", "during", "before", "after", "above", "below",
+    "between", "out", "off", "over", "under", "again", "further", "then",
+    "once", "here", "there", "when", "where", "why", "how", "all", "each",
+    "every", "both", "few", "more", "most", "other", "some", "such", "no",
+    "not", "only", "own", "same", "so", "than", "too", "very", "just",
+    "because", "but", "and", "or", "if", "while", "about", "up", "its",
+    "it", "this", "that", "these", "those", "i", "me", "my", "we", "our",
+    "you", "your", "he", "him", "his", "she", "her", "they", "them", "their",
+    "what", "which", "who", "whom", "whose",
+})
+_ALL_STOP_WORDS = _EN_STOP_WORDS | _CJK_STOP_WORDS
+
+
+def extract_keywords_cjk(text: str, max_keywords: int = 10, min_latin_len: int = 3) -> List[str]:
+    """Extract ranked keywords from text with CJK awareness and stop-word filtering.
+
+    Unified replacement for _extract_concept_tags() and _extract_keywords().
+    Returns a list of unique keywords sorted by frequency (most common first),
+    up to *max_keywords* items.
+
+    Args:
+        text: Input text to extract keywords from.
+        max_keywords: Maximum number of keywords to return (default 10).
+        min_latin_len: Minimum length for Latin compound words (default 3,
+            matching _extract_concept_tags behaviour).
+    """
+    tags = Counter()
+
+    # Latin compound words (e.g. "fast-api", "openai.client")
+    for m in _COMPOUND_RE.finditer(text.lower()):
+        word = m.group()
+        if word not in _ALL_STOP_WORDS and len(word) >= min_latin_len:
+            tags[word] += 1
+
+    # CJK continuous runs (2+ chars) — captures words/phrases as units
+    for m in _CJK_CONT_RE.finditer(text):
+        word = m.group()
+        if word not in _ALL_STOP_WORDS:
+            tags[word] += 1
+
+    return [t for t, _ in tags.most_common(max_keywords)]
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})

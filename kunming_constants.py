@@ -156,6 +156,49 @@ HYBRID_SEARCH_FTS_WEIGHT = 0.6
 HYBRID_SEARCH_VECTOR_WEIGHT = 0.4
 
 
+# [R2-M2] 整合: 统一 Ebbinghaus 遗忘曲线常量和计算函数
+# 消除 memory_tool.py 和 memory_distillation.py 两处独立实现的不一致
+# memory_tool.py 原实现: access_boost系数0.5, 含importance因子
+# memory_distillation.py 原实现: 仅使用纯half_life，无access_boost/importance
+# AGENTS.md 文档: access_boost系数0.3 — 与两处代码均不一致
+# 统一方案: 采用memory_tool.py的完整公式（含access_boost和importance），
+# access_boost系数定为0.3（与AGENTS.md文档一致，也符合Ebbinghaus原始理论：
+# 每次回忆对保持的增强效果应适中，0.5过于激进会导致低频访问的记忆衰减过慢）
+_EBINGHAUS_HALF_LIFE_DAYS = 14.0
+_EBINGHAUS_RETENTION_THRESHOLD = 0.15
+_EBINGHAUS_ACCESS_BOOST_COEFF = 0.3  # access_boost = 1 + log(1+count) * coeff
+
+
+def ebbinghaus_retention(
+    age_days: float,
+    access_count: int = 0,
+    importance: float = 0.5,
+    half_life_days: float = _EBINGHAUS_HALF_LIFE_DAYS,
+) -> float:
+    """计算 Ebbinghaus 遗忘曲线保留分数 — 单一事实来源 [R2-M2]
+
+    公式: retention = exp(-0.693 * age_days / effective_half_life)
+    其中: effective_half_life = half_life_days * access_boost * (0.5 + importance)
+          access_boost = 1 + log(1 + access_count) * _EBINGHAUS_ACCESS_BOOST_COEFF
+
+    参数:
+        age_days: 距上次访问的天数（应基于last_accessed而非created_at）
+        access_count: 访问次数，越多衰减越慢
+        importance: 重要性 0.0-1.0，越高衰减越慢
+        half_life_days: 基础半衰期天数，默认14天
+
+    返回:
+        保留分数 0.0-1.0，最小值0.05（确保记忆不会完全消失）
+    """
+    import math as _math
+    access_boost = 1.0 + _math.log1p(access_count) * _EBINGHAUS_ACCESS_BOOST_COEFF
+    effective_half_life = half_life_days * access_boost * (0.5 + importance)
+    if effective_half_life <= 0:
+        return 1.0
+    retention = _math.exp(-0.693 * age_days / effective_half_life)
+    return max(0.05, min(1.0, retention))
+
+
 # 整合: 统一 PROVIDER_ALIASES 字典，合并 auth.py 和 models.py 两处重复定义 [M3]
 # auth.py 独有: qwen-cli, qwen-oauth, local server aliases (lmstudio/ollama/vllm/llamacpp等)
 # models.py 独有: deep-seek, dashscope, aliyun, qwen, alibaba-cloud

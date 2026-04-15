@@ -195,6 +195,7 @@ class TestEagerFallbackWithPool:
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
             agent = AIAgent()
+            agent._consecutive_429_count = 0  # [R2-A1] 初始化子代理新增的属性
 
         agent._credential_pool = None
         if has_pool:
@@ -262,6 +263,7 @@ class TestPoolRotationCycle:
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
             agent = AIAgent()
+            agent._consecutive_429_count = 0  # [R2-A1]
 
         entries = []
         for i in range(pool_entries):
@@ -341,6 +343,7 @@ class TestPoolRotationCycle:
 
         with patch.object(AIAgent, "__init__", lambda self, **kw: None):
             agent = AIAgent()
+            agent._consecutive_429_count = 0  # [R2-A1]
         agent._credential_pool = None
 
         recovered, has_retried = agent._recover_with_credential_pool(

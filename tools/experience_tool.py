@@ -105,24 +105,13 @@ def _simple_hash(text: str) -> str:
 
 
 def _extract_keywords(text: str, max_kws: int = 10) -> str:
-    keywords = []
-    en_words = re.findall(r'[a-zA-Z][a-zA-Z0-9_-]*', text.lower())
-    keywords.extend(en_words)
-    cn_chars = re.findall(r'[\u4e00-\u9fff]', text)
-    if len(cn_chars) >= 2:
-        for i in range(len(cn_chars) - 1):
-            keywords.append(cn_chars[i] + cn_chars[i+1])
-    elif len(cn_chars) == 1:
-        keywords.append(cn_chars[0])
-    stop_words = {"这个", "那个", "可以", "需要", "帮助", "如何", "什么",
-                   "the", "and", "for", "with", "that", "this", "from"}
-    seen = set()
-    result = []
-    for k in keywords:
-        if k not in seen and k not in stop_words:
-            seen.add(k)
-            result.append(k)
-    return ",".join(result[:max_kws])
+    """Extract keywords as comma-separated string.
+
+    [R2-K1] 委托给统一函数extract_keywords_cjk，消除本地重复实现
+    原因：本地实现只提取单字+bigram且停用词表不完整，统一版本使用CJK连续段提取更准确
+    """
+    from utils import extract_keywords_cjk
+    return ",".join(extract_keywords_cjk(text, max_keywords=max_kws))
 
 
 from collections import Counter

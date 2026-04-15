@@ -221,7 +221,15 @@ class SignalAdapter(BasePlatformAdapter):
                 self._set_fatal_error("signal_phone_lock", message, retryable=False)
                 return False
         except Exception as e:
-            logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
+            # [R2-G1] 锁获取异常必须视为致命错误，而非非致命警告。
+            # 原则：若 acquire_scoped_lock 本身抛异常（如文件系统权限问题），
+            # 无法确认锁状态，继续运行可能导致同一 Signal 账号被多个 gateway
+            # 进程同时监听，产生消息重复处理等严重问题。与 Telegram 适配器
+            # 保持一致，锁相关异常一律致命。
+            message = f"Could not acquire phone lock: {e}. Cannot safely start Signal listener."
+            logger.error("Signal: %s", message)
+            self._set_fatal_error("signal_phone_lock", message, retryable=False)
+            return False
 
         self.client = httpx.AsyncClient(timeout=30.0)
 

@@ -10,6 +10,9 @@ import math
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+# [R2-J1] 导入统一Jaccard相似度函数，替代本地_jaccard_similarity静态方法
+from utils import jaccard_similarity
+
 if TYPE_CHECKING:
     from .store import MemoryStore
 
@@ -77,7 +80,7 @@ class FactRetriever:
             tag_tokens = self._tokenize(fact.get("tags", ""))
             all_tokens = content_tokens | tag_tokens
 
-            jaccard = self._jaccard_similarity(query_tokens, all_tokens)
+            jaccard = jaccard_similarity(query_tokens, all_tokens)  # [R2-J1] 改用统一函数
             fts_score = fact.get("fts_rank", 0.0)
 
             # HRR similarity
@@ -557,14 +560,10 @@ class FactRetriever:
                 tokens.add(cleaned)
         return tokens
 
-    @staticmethod
-    def _jaccard_similarity(set_a: set, set_b: set) -> float:
-        """Jaccard similarity coefficient: |A ∩ B| / |A ∪ B|."""
-        if not set_a or not set_b:
-            return 0.0
-        intersection = len(set_a & set_b)
-        union = len(set_a | set_b)
-        return intersection / union if union > 0 else 0.0
+    # [R2-J1] 删除本地_jaccard_similarity静态方法，改用utils.jaccard_similarity
+    # 原实现：接受两个集合参数，计算|A∩B|/|A∪B|，双空返回0.0
+    # 统一函数：相同算法，但双空返回1.0（数学约定：空集相等）
+    # 此处调用场景中query和content不会同时为空集，因此行为差异无实际影响
 
     def _temporal_decay(self, timestamp_str: str | None) -> float:
         """Exponential decay: 0.5^(age_days / half_life_days).

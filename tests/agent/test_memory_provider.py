@@ -400,9 +400,11 @@ class TestBuiltinMemoryProvider:
         assert p.is_available()
 
     def test_no_tools(self):
-        """Builtin provider exposes no tools (memory tool is agent-level)."""
+        """Builtin provider exposes memory tool schema. [R2-P1] Updated: now returns [MEMORY_SCHEMA]."""
         p = BuiltinMemoryProvider()
-        assert p.get_tool_schemas() == []
+        schemas = p.get_tool_schemas()
+        assert len(schemas) == 1
+        assert schemas[0]["name"] == "memory"
 
     def test_system_prompt_with_store(self):
         store = MagicMock()

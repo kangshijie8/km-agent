@@ -223,6 +223,17 @@ class SlackAdapter(BasePlatformAdapter):
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[Slack] Connection failed: %s", e, exc_info=True)
+            # [R2-G1] 连接失败时必须释放已获取的 scoped lock，防止锁泄漏。
+            # 原则：锁在 line 145 处 acquire_scoped_lock 成功后获取，若后续
+            # 连接步骤（auth_test、handler 注册等）抛异常，锁不会被自动释放，
+            # 导致同一 app token 无法被其他 gateway 进程使用（死锁）。
+            if getattr(self, '_token_lock_identity', None):
+                try:
+                    from gateway.status import release_scoped_lock
+                    release_scoped_lock('slack-app-token', self._token_lock_identity)
+                    self._token_lock_identity = None
+                except Exception:
+                    pass
             return False
 
     async def disconnect(self) -> None:

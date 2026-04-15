@@ -15,6 +15,7 @@ Improvements over v1:
 
 import logging
 import re
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -66,6 +67,25 @@ _IMPORTANT_RESULT_TOOLS = frozenset({
 # 旧调用 _estimate_tokens(x) 现改为 estimate_tokens_cjk_aware(x)
 
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 120
+
+
+def _extract_text_content(content) -> str:
+    """从消息content中提取纯文本，兼容OpenAI的list[dict]格式。
+
+    [OpenAI格式兼容] content可能是字符串或list[dict]格式。
+    list格式如 [{"type": "text", "text": "..."}, {"type": "image_url", ...}]
+    需要提取所有text类型的文本拼接后再做len/切片操作。
+    直接对list做len()得到的是元素个数而非字符长度，
+    对list做切片得到的是子列表而非子字符串，导致截断逻辑完全失效。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            b.get("text", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return str(content) if content else ""
 
 
 class ContextCompressor:
@@ -157,7 +177,8 @@ class ContextCompressor:
         
         修复：为Windows系统增加安全边际，避免预判不准确导致上下文丢失
         """
-        import sys
+        # Windows兼容: Windows环境下增加5%安全边际，避免预判不准确导致上下文丢失
+        # sys已移至模块顶部导入，避免每次方法调用重复导入
         rough_estimate = estimate_messages_tokens_rough(messages)
         
         # 修复：Windows环境下增加5%的安全边际，提高预判准确性
@@ -200,6 +221,17 @@ class ContextCompressor:
         result = [m.copy() for m in messages]
         pruned = 0
 
+        # [工具名回溯] 从assistant消息中构建tool_call_id到tool_name的映射
+        # 原因: tool result消息只有tool_call_id(UUID)，没有name字段，
+        # 直接用tool_call_id匹配_IMPORTANT_RESULT_TOOLS集合永远无法命中，
+        # 导致重要工具的输出总是使用默认阈值(800)被裁剪，丢失关键上下文
+        id_to_name = {}
+        for m in messages:
+            if m.get("role") == "assistant":
+                for tc in m.get("tool_calls", []):
+                    if isinstance(tc, dict):
+                        id_to_name[tc.get("id", "")] = tc.get("function", {}).get("name", "")
+
         # Determine the prune boundary
         if protect_tail_tokens is not None and protect_tail_tokens > 0:
             # Token-budget approach: walk backward accumulating tokens
@@ -208,8 +240,11 @@ class ContextCompressor:
             min_protect = min(protect_tail_count, len(result) - 1)
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                content_len = len(msg.get("content") or "")
-                msg_tokens = estimate_tokens_cjk_aware(msg.get("content") or "") + 10
+                # [OpenAI格式兼容] content可能是list[dict]格式，
+                # 直接传list给estimate_tokens_cjk_aware会得到错误结果
+                raw_content = msg.get("content") or ""
+                text_for_estimate = _extract_text_content(raw_content)
+                msg_tokens = estimate_tokens_cjk_aware(text_for_estimate) + 10
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
                         args = tc.get("function", {}).get("arguments", "")
@@ -228,11 +263,14 @@ class ContextCompressor:
             if msg.get("role") != "tool":
                 continue
             content = msg.get("content", "")
-            if not content or content == _PRUNED_TOOL_PLACEHOLDER:
+            # [OpenAI格式兼容] content可能是list[dict]格式，
+            # 需要先提取文本再判断长度，否则len(list)返回元素个数而非字符长度
+            text_content = _extract_text_content(content)
+            if not text_content or text_content == _PRUNED_TOOL_PLACEHOLDER:
                 continue
-            tool_name = msg.get("name", "") or msg.get("tool_call_id", "")
+            tool_name = id_to_name.get(msg.get("tool_call_id", ""), msg.get("name", ""))
             threshold = _PRUNE_IMPORTANT_THRESHOLD if tool_name in _IMPORTANT_RESULT_TOOLS else _PRUNE_DEFAULT_THRESHOLD
-            if len(content) > threshold:
+            if len(text_content) > threshold:
                 result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
                 pruned += 1
 
@@ -272,7 +310,10 @@ class ContextCompressor:
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
-            content = msg.get("content") or ""
+            # [OpenAI格式兼容] content可能是list[dict]格式，
+            # 必须先提取纯文本再进行len/切片/拼接操作
+            raw_content = msg.get("content") or ""
+            content = _extract_text_content(raw_content)
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":
@@ -756,6 +797,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         summary = self._generate_summary(turns_to_summarize)
         if summary is None:
             summary = self._generate_rule_based_summary(turns_to_summarize)
+            # [迭代摘要链修复] rule-based摘要也必须更新_previous_summary，
+            # 否则下次压缩时_generate_summary中的self._previous_summary仍为None或旧值，
+            # 导致迭代更新链断裂——新上下文无法与旧摘要合并，信息逐步丢失
+            if summary:
+                self._previous_summary = summary
 
         # Phase 4: Assemble compressed message list
         compressed = []

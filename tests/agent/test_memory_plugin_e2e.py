@@ -227,17 +227,18 @@ class TestSQLiteMemoryPlugin:
         mgr.add_provider(sqlite_mem)
         mgr.initialize_all(session_id="test-2")
 
-        # Builtin has no tools
-        assert len(builtin.get_tool_schemas()) == 0
+        # Builtin has memory tool [R2-P1] Updated: now returns [MEMORY_SCHEMA]
+        assert len(builtin.get_tool_schemas()) == 1
+        assert builtin.get_tool_schemas()[0]["name"] == "memory"
         # SQLite has 2 tools
         schemas = mgr.get_all_tool_schemas()
         names = {s["name"] for s in schemas}
-        assert names == {"sqlite_retain", "sqlite_recall"}
+        assert names == {"memory", "sqlite_retain", "sqlite_recall"}
 
         # Routing works
         assert mgr.has_tool("sqlite_retain")
         assert mgr.has_tool("sqlite_recall")
-        assert not mgr.has_tool("memory")  # builtin doesn't register this
+        assert mgr.has_tool("memory")  # [R2-P1] builtin now registers memory tool
 
     def test_second_external_plugin_rejected(self):
         """Only one external memory provider is allowed at a time."""
