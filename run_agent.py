@@ -6277,11 +6277,15 @@ class AIAgent:
             t.join(timeout=0.3)
             if self._interrupt_requested:
                 break
-        t.join(timeout=timeout)
+        # When the user explicitly interrupted, don't wait the full
+        # tool timeout. 5s is enough for graceful cleanup; otherwise
+        # the agent thread itself will be considered stuck by the CLI.
+        _join_timeout = 5.0 if self._interrupt_requested else timeout
+        t.join(timeout=_join_timeout)
         if t.is_alive():
             return (
                 f"Error executing tool '{function_name}': "
-                f"Tool execution did not respond to interrupt within {int(timeout)} seconds."
+                f"Tool execution did not respond to interrupt within {int(_join_timeout)} seconds."
             )
         if exc_container[0] is not None:
             raise exc_container[0]
