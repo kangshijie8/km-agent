@@ -17,7 +17,6 @@ import re
 import logging
 import os
 import sys
-import tempfile
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -28,7 +27,8 @@ from kunming_constants import get_kunming_home
 from utils import _extract_tokens
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils import simhash, simhash_similarity, file_lock
+from utils import simhash, simhash_similarity, file_lock, atomic_json_write  # 整合: 使用统一原子写入，消除本地 _save_error_log 重复实现 [J1]
+from kunming_constants import HYBRID_SEARCH_FTS_WEIGHT, HYBRID_SEARCH_VECTOR_WEIGHT  # 整合: 使用统一搜索权重 [S1]
 
 logger = logging.getLogger(__name__)
 
@@ -86,28 +86,9 @@ def _load_error_log() -> Dict[str, Any]:
         return {"version": 1, "errors": {}}
 
 
-def _save_error_log(data: Dict[str, Any]) -> bool:
-    path = _error_log_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".err_")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, str(path))
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to save error log: {e}")
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            return False
-    except Exception as e:
-        logger.warning(f"Failed to create error log directory: {e}")
-        return False
+# 整合: 删除本地 _save_error_log()，使用 utils.atomic_json_write [J1]
+# 原定义: def _save_error_log(data) — tempfile + fsync + os.replace，与 atomic_json_write 功能等价
+# 注意: 原函数返回 bool 表示成功/失败，atomic_json_write 在失败时抛异常，调用方需适配
 
 
 def detect_correction(user_message: str, assistant_message: str) -> Optional[Dict[str, Any]]:
@@ -217,7 +198,10 @@ def log_error(
             errors[key]["promoted"] = True
 
         log["updated_at"] = now_iso
-        _save_error_log(log)
+        try:
+            atomic_json_write(_error_log_path(), log)  # 整合: 使用统一原子写入 [J1]
+        except Exception as e:
+            logger.warning(f"Failed to save error log: {e}")  # 整合: 适配原 _save_error_log 的 bool 返回值语义 [J1]
 
     return {
         "success": True,
@@ -280,7 +264,7 @@ def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]
 
         sem_score = simhash_similarity(query_hash, simhash(entry_text))
 
-        combined = 0.6 * keyword_score + 0.4 * sem_score
+        combined = HYBRID_SEARCH_FTS_WEIGHT * keyword_score + HYBRID_SEARCH_VECTOR_WEIGHT * sem_score  # 整合: 使用统一搜索权重常量 [S1]
         combined += min(0.3, entry.get("occurrence_count", 1) * 0.1)
         # 已提升的错误是经过验证的反复出现模式，给予额外相关性加分
         if entry.get("promoted"):

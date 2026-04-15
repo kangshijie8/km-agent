@@ -45,7 +45,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS
+from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS, HYBRID_SEARCH_FTS_WEIGHT, HYBRID_SEARCH_VECTOR_WEIGHT  # 整合: 使用统一搜索权重 [S1]
 from typing import Dict, Any, List, Optional, Tuple
 from utils import _extract_tokens, simhash, simhash_similarity, file_lock  # 整合: 导入 simhash_similarity 替代类内静态方法 [H5]
 
@@ -667,9 +667,10 @@ class MemoryStore:
                 
                 fts_score = self._fts_score(entry_lower, query_lower, query_words)
                 vector_score = simhash_similarity(query_hash, entry_hash)  # 整合: 改用模块级函数 [H5]
+                # 整合: 使用统一搜索权重常量，消除硬编码 [S1]
                 # 修复：SimHash权重过高(0.45)，FTS关键词匹配更可靠
                 # 调整为FTS 0.6 + SimHash 0.4，提高关键词匹配的权重
-                hybrid_score = 0.6 * fts_score + 0.4 * vector_score
+                hybrid_score = HYBRID_SEARCH_FTS_WEIGHT * fts_score + HYBRID_SEARCH_VECTOR_WEIGHT * vector_score
                 if hybrid_score > 0.05:
                     results.append({
                         "target": target,

@@ -32,6 +32,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from kunming_constants import utc_now_iso  # 整合: 使用统一时间戳函数 [T1]
+
 logger = logging.getLogger(__name__)
 
 from tools.registry import registry
@@ -93,8 +95,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
     """)
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# 整合: 删除本地 _now_iso()，使用 kunming_constants.utc_now_iso [T1]
+# 原定义: def _now_iso() -> str: return datetime.now(timezone.utc).isoformat()
 
 
 def _simple_hash(text: str) -> str:
@@ -154,7 +156,7 @@ def _experience_record_handler(args: Dict[str, Any], **kwargs) -> str:
         conn = _get_conn()
         try:
             _init_db(conn)
-            now = _now_iso()
+            now = utc_now_iso()  # 整合: 使用统一时间戳函数 [T1]
             existing = conn.execute(
                 "SELECT id, use_count, positive_count, negative_count FROM experiences WHERE pattern_hash=?",
                 (pat_hash,),
@@ -312,7 +314,7 @@ def _experience_feedback_handler(args: Dict[str, Any], **kwargs) -> str:
         return json.dumps({"success": False, "error": "feedback_type must be positive/negative/neutral"})
 
     fb_id = f"fb_{uuid.uuid4().hex[:12]}"
-    now = _now_iso()
+    now = utc_now_iso()  # 整合: 使用统一时间戳函数 [T1]
 
     with _DB_LOCK:
         conn = _get_conn()
@@ -334,15 +336,17 @@ def _experience_feedback_handler(args: Dict[str, Any], **kwargs) -> str:
                    updated_at = ?,
                    outcome = CASE
                      WHEN ? = 'positive' THEN 'success'
-                     WHEN ? = 'failure' THEN outcome
+                     WHEN ? = 'negative' THEN 'failure'
                      ELSE outcome
                    END
                  WHERE id=?""",
                 (delta_pos, delta_neg, now,
-                 "success" if feedback_type == "positive" else "",
-                 "failure" if feedback_type == "negative" else "",
+                 feedback_type,
+                 feedback_type,
                  experience_id),
-            )
+            )  # 修复: experience_feedback SQL参数映射bug — 原代码传入"failure"字符串与CASE WHEN 'failure'比较，
+               # 但实际应传入feedback_type("positive"/"negative")与CASE WHEN 'negative'比较，
+               # 且负面反馈应将outcome更新为'failure'而非保持原值 [B1]
 
             row = conn.execute(
                 "SELECT positive_count, negative_count, use_count FROM experiences WHERE id=?",

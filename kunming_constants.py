@@ -6,6 +6,7 @@ without risk of circular imports.
 
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -141,6 +142,18 @@ def estimate_tokens_cjk_aware(text: str) -> int:
     cjk_count = len(_CJK_CHAR_RE.findall(text))
     latin_count = len(text) - cjk_count
     return int(latin_count / _CHARS_PER_TOKEN_LATIN + cjk_count / _CHARS_PER_TOKEN_CJK)
+
+
+# 整合: 统一 UTC ISO 时间戳函数，消除 memory_distillation/experience_tool/analytics_tool/status.py/metrics.py 五处重复定义 [T1]
+def utc_now_iso() -> str:
+    """Return current UTC time in ISO 8601 format. Single source of truth for all _now_iso/_utc_now_iso calls."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+# 整合: 统一混合搜索权重常量，消除 memory_tool/error_learning 两处独立硬编码 [S1]
+# FTS关键词匹配权重与SimHash向量相似度权重之和为1.0
+HYBRID_SEARCH_FTS_WEIGHT = 0.6
+HYBRID_SEARCH_VECTOR_WEIGHT = 0.4
 
 
 # 整合: 统一 PROVIDER_ALIASES 字典，合并 auth.py 和 models.py 两处重复定义 [M3]

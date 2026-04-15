@@ -84,19 +84,34 @@ from .swarm import (
     SwarmAgent, TaskAllocation, HiveMindDecision,
 )
 
-# Import learning system
-from .neural import (
-    ReasoningBank, ReasoningBankConfig,
-    ReasoningTrajectory, ReasoningStep,
-    RLAlgorithmType, SONAArchitectureType,
-    create_reasoning_bank,
-)
+# Import learning system (optional - requires numpy)
+# 修复: numpy为可选依赖，缺少时neural模块优雅降级不阻塞整个项目
+try:
+    from .neural import (
+        ReasoningBank, ReasoningBankConfig,
+        ReasoningTrajectory, ReasoningStep,
+        RLAlgorithmType, SONAArchitectureType,
+        create_reasoning_bank,
+    )
+except ImportError:
+    ReasoningBank = None
+    ReasoningBankConfig = None
+    ReasoningTrajectory = None
+    ReasoningStep = None
+    RLAlgorithmType = None
+    SONAArchitectureType = None
+    create_reasoning_bank = lambda *a, **kw: None
 
-# Import RL trainer
-from .neural.rl_trainer import (
-    RLTrainer, QLearningAgent, ExperienceBuffer,
-    create_rl_trainer,
-)
+try:
+    from .neural.rl_trainer import (
+        RLTrainer, QLearningAgent, ExperienceBuffer,
+        create_rl_trainer,
+    )
+except ImportError:
+    RLTrainer = None
+    QLearningAgent = None
+    ExperienceBuffer = None
+    create_rl_trainer = lambda *a, **kw: None
 
 # Import adapters (only available ones)
 from .adapters import (

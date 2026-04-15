@@ -24,6 +24,8 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from kunming_constants import utc_now_iso  # 整合: 使用统一时间戳函数 [T1]
 from collections import Counter, defaultdict
 
 logger = logging.getLogger(__name__)
@@ -92,8 +94,8 @@ def _init_db(conn: sqlite3.Connection) -> None:
     """)
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# 整合: 删除本地 _now_iso()，使用 kunming_constants.utc_now_iso [T1]
+# 原定义: def _now_iso() -> str: return datetime.now(timezone.utc).isoformat()
 
 
 def _today_str() -> str:
@@ -125,7 +127,7 @@ def _usage_record_handler(args: Dict[str, Any], **kwargs) -> str:
         conn = _get_conn()
         try:
             _init_db(conn)
-            now = _now_iso()
+            now = utc_now_iso()  # 整合: 使用统一时间戳函数 [T1]
             today = _today_str()
 
             conn.execute(
@@ -376,7 +378,7 @@ def _usage_export_handler(args: Dict[str, Any], **kwargs) -> str:
             ).fetchall()
 
             export_data = {
-                "exported_at": _now_iso(),
+                "exported_at": utc_now_iso(),  # 整合: 使用统一时间戳函数 [T1]
                 "period_days": days,
                 "total_records": len(rows),
                 "records": [

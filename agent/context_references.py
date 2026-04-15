@@ -230,7 +230,7 @@ async def _expand_reference(
             content = await _fetch_url_content(ref.target, url_fetcher=url_fetcher)
             if not content:
                 return f"{ref.raw}: no content extracted", None
-            return None, f"🌐 {ref.raw} ({estimate_tokens_rough(content)} tokens)\n{content}"
+            return None, f"🌐 {ref.raw} ({estimate_tokens_cjk_aware(content)} tokens)\n{content}"  # 整合: 替换已删除的 estimate_tokens_rough [H8/H9]
     except Exception as exc:
         return f"{ref.raw}: {exc}", None
 
@@ -261,7 +261,7 @@ def _expand_file_reference(
 
     lang = _code_fence_language(path)
     label = ref.raw
-    return None, f"📄 {label} ({estimate_tokens_rough(text)} tokens)\n```{lang}\n{text}\n```"
+    return None, f"📄 {label} ({estimate_tokens_cjk_aware(text)} tokens)\n```{lang}\n{text}\n```"  # 整合: 替换已删除的 estimate_tokens_rough [H8/H9]
 
 
 def _expand_folder_reference(
@@ -278,7 +278,7 @@ def _expand_folder_reference(
         return f"{ref.raw}: path is not a folder", None
 
     listing = _build_folder_listing(path, cwd)
-    return None, f"[FILES] {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
+    return None, f"[FILES] {ref.raw} ({estimate_tokens_cjk_aware(listing)} tokens)\n{listing}"  # 整合: 替换已删除的 estimate_tokens_rough [H8/H9]
 
 
 def _expand_git_reference(
@@ -303,7 +303,7 @@ def _expand_git_reference(
     content = result.stdout.strip()
     if not content:
         content = "(no output)"
-    return None, f"🧾 {label} ({estimate_tokens_rough(content)} tokens)\n```diff\n{content}\n```"
+    return None, f"🧾 {label} ({estimate_tokens_cjk_aware(content)} tokens)\n```diff\n{content}\n```"  # 整合: 替换已删除的 estimate_tokens_rough [H8/H9]
 
 
 async def _fetch_url_content(

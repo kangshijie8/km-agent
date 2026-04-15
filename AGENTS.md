@@ -12,10 +12,11 @@ source venv/bin/activate  # ALWAYS activate before running Python
 
 ```
 kunming-agent/
-├── run_agent.py          # AIAgent class �?core conversation loop
+├── run_agent.py          # AIAgent class — core conversation loop
 ├── model_tools.py        # Tool orchestration, _discover_tools(), handle_function_call()
 ├── toolsets.py           # Toolset definitions, _KUNMING_CORE_TOOLS list
-├── cli.py                # KunmingCLI class �?interactive CLI orchestrator
+├── kunming_constants.py  # Shared constants (get_kunming_home, estimate_tokens_cjk_aware, PROVIDER_ALIASES, PLATFORMS)
+├── cli.py                # KunmingCLI class — interactive CLI orchestrator
 ├── kunming_state.py       # SessionDB �?SQLite session store (FTS5 search)
 ├── agent/                # Agent internals
 │   ├── prompt_builder.py     # System prompt assembly
@@ -32,6 +33,11 @@ kunming-agent/
 │   ├── builtin_memory_provider.py  # BuiltinMemoryProvider — three-layer file-backed memory
 │   ├── memory_distillation.py      # Offline memory consolidation (Light→REM→Deep→Decay)
 │   └── error_learning.py     # Error learning — correction detection, error log, experience retrieval
+├── agent/cognitive/       # Advanced cognitive system (optional, requires numpy)
+│   ├── neural/            # SONA neural learning (PPO/DQN/A2C, ReasoningBank)
+│   ├── experts/           # Expert agent types (55+ specializations)
+│   ├── swarm/             # Multi-agent coordination (QueenCoordinator)
+│   └── adapters/          # Delegate adapter for cognitive tools
 ├── kunming_cli/           # CLI subcommands and setup
 �?  ├── main.py           # Entry point �?all `km` subcommands
 �?  ├── config.py         # DEFAULT_CONFIG, OPTIONAL_ENV_VARS, migration
@@ -592,8 +598,48 @@ automatically scope to the active profile.
 ### DO NOT hardcode `~/.kunming` paths
 
 Use `get_kunming_home()` from `kunming_constants` for code paths. Use `display_kunming_home()`
-for user-facing print/log messages. Hardcoding `~/.kunming` breaks profiles �?each profile
+for user-facing print/log messages. Hardcoding `~/.kunming` breaks profiles — each profile
 has its own `KUNMING_HOME` directory. This was the source of 5 bugs fixed in PR #3575.
+
+### DO NOT duplicate utility functions across modules
+
+The following utilities have been consolidated into `kunming_constants.py` as single-source-of-truth:
+- `estimate_tokens_cjk_aware()` — CJK-aware token estimation (was in 3 files with different algorithms)
+- `PROVIDER_ALIASES` — provider name alias mapping (was in auth.py + models.py with inconsistencies)
+- `PLATFORMS` — platform definitions dict (was in skills_config.py + tools_config.py with different structures)
+- `HYBRID_SEARCH_FTS_WEIGHT` / `HYBRID_SEARCH_VECTOR_WEIGHT` — hybrid search weights
+
+Other consolidated utilities:
+- `load_env()` — only in `kunming_cli/config.py` (was also in skills_tool.py without Windows encoding)
+- `_deep_merge()` — only in `kunming_cli/config.py` (was also in skin_engine.py without model field handling)
+- `simhash_similarity()` — only in `utils.py` (was also as MemoryStore._simhash_similarity)
+
+When adding new utility functions, check `kunming_constants.py` and `utils.py` first. If a function
+is used by 2+ modules, it belongs in a shared module, not duplicated locally.
+
+### DO NOT use module-level `get_kunming_home()` calls
+
+Module-level constants like `KUNMING_DIR = get_kunming_home()` are evaluated at import time,
+before `_apply_profile_override()` may have set the correct `KUNMING_HOME`. Use lazy evaluation
+instead:
+
+```python
+# BAD — evaluated at import time, may get wrong path for profiles
+KUNMING_DIR = get_kunming_home()
+
+# GOOD — evaluated at call time, always gets correct path
+def _get_kunming_dir():
+    return get_kunming_home()
+```
+
+This pattern was the source of a profile isolation bug in `cron/jobs.py`.
+
+### Cognitive module is optional (requires numpy)
+
+`agent/cognitive/` provides advanced features (SONA neural learning, expert agents, swarm coordination)
+but depends on `numpy`. The import in `run_agent.py` uses try/except with `_COGNITIVE_AVAILABLE` flag.
+When numpy is missing, `enable_learning` is automatically disabled and the agent runs normally
+without cognitive features. Do NOT add hard imports from `agent/cognitive` in core modules.
 
 ### DO NOT use `simple_term_menu` for interactive menus
 

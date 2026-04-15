@@ -16,6 +16,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from kunming_constants import utc_now_iso  # 整合: 使用统一时间戳函数 [T1]
+
 logger = logging.getLogger(__name__)
 
 _DB_LOCK = threading.Lock()
@@ -110,7 +112,7 @@ class MetricsCollector:
                 model=model,
                 provider=provider,
                 platform=platform,
-                started_at=_utc_now_iso(),
+                started_at=utc_now_iso(),  # 整合: 使用统一时间戳函数 [T1]
             )
             self._tool_calls.clear()
             self._llm_calls.clear()
@@ -147,7 +149,7 @@ class MetricsCollector:
     def end_session(self):
         with self._lock:
             if self._current_session is not None:
-                self._current_session.ended_at = _utc_now_iso()
+                self._current_session.ended_at = utc_now_iso()  # 整合: 使用统一时间戳函数 [T1]
                 self._flush_session()
                 self._current_session = None
 
@@ -185,9 +187,8 @@ class MetricsCollector:
         _signal_shutdown()
 
 
-def _utc_now_iso() -> str:
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).isoformat()
+# 整合: 删除本地 _utc_now_iso()，使用 kunming_constants.utc_now_iso [T1]
+# 原定义: def _utc_now_iso() -> str: from datetime import datetime, timezone; return datetime.now(timezone.utc).isoformat()
 
 
 def _get_db_path() -> Path:
@@ -296,7 +297,7 @@ def _write_session(conn, data: dict):
             pass
     data["total_duration_seconds"] = duration
     data["tool_stats"] = tool_stats
-    data["written_at"] = _utc_now_iso()
+    data["written_at"] = utc_now_iso()  # 整合: 使用统一时间戳函数 [T1]
     cols = [
         "session_id", "platform", "model", "provider",
         "total_input_tokens", "total_output_tokens",

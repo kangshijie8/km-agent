@@ -1000,7 +1000,7 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
             for block in content:
                 if isinstance(block, dict):
                     total_tokens += estimate_tokens_cjk_aware(block.get("text", ""))  # 整合 [H9]
-                    total_tokens += len(str(block.get("tool_use_id", ""))) // 4
+                    total_tokens += estimate_tokens_cjk_aware(str(block.get("tool_use_id", "")))  # 整合: 统一使用 CJK 感知估算，消除 //4 残留 [H9]
         for tc in msg.get("tool_calls") or []:
             if isinstance(tc, dict):
                 fn = tc.get("function", {})
@@ -1008,7 +1008,7 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
                 total_tokens += estimate_tokens_cjk_aware(fn.get("arguments", ""))  # 整合 [H9]
         reasoning = msg.get("reasoning") or msg.get("reasoning_content")
         if reasoning:
-            total_tokens += estimate_tokens_cjk_aware(reasoning) if isinstance(reasoning, str) else len(str(reasoning)) // 4  # 整合 [H9]
+            total_tokens += estimate_tokens_cjk_aware(reasoning) if isinstance(reasoning, str) else estimate_tokens_cjk_aware(str(reasoning))  # 整合: 统一使用 CJK 感知估算，消除 //4 残留 [H9]
     return total_tokens
 
 
@@ -1025,11 +1025,12 @@ def estimate_request_tokens_rough(
     tools enabled, schemas alone can add 20-30K tokens — a significant
     blind spot when only counting messages.
     """
-    total_chars = 0
+    # 整合: 统一使用 estimate_tokens_cjk_aware 替代 //4 粗估，修复 CJK 文本严重低估 [H9]
+    total_tokens = 0
     if system_prompt:
-        total_chars += len(system_prompt)
+        total_tokens += estimate_tokens_cjk_aware(system_prompt)
     if messages:
-        total_chars += sum(len(str(msg)) for msg in messages)
+        total_tokens += sum(estimate_tokens_cjk_aware(str(msg)) for msg in messages)
     if tools:
-        total_chars += len(str(tools))
-    return total_chars // 4
+        total_tokens += estimate_tokens_cjk_aware(str(tools))
+    return total_tokens

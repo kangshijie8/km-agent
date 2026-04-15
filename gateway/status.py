@@ -20,7 +20,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from kunming_constants import get_kunming_home
+from kunming_constants import get_kunming_home, utc_now_iso  # 整合: 使用统一时间戳函数 [T1]
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -56,8 +56,8 @@ def _get_lock_dir() -> Path:
     return state_home / "kunming" / _LOCKS_DIRNAME
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# 整合: 删除本地 _utc_now_iso()，使用 kunming_constants.utc_now_iso [T1]
+# 原定义: def _utc_now_iso() -> str: return datetime.now(timezone.utc).isoformat()
 
 
 def _scope_hash(identity: str) -> str:
@@ -226,7 +226,7 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "gateway_state": "starting",
         "exit_reason": None,
         "platforms": {},
-        "updated_at": _utc_now_iso(),
+        "updated_at": utc_now_iso(),  # 整合: 使用统一时间戳函数 [T1]
     })
     return payload
 
@@ -297,7 +297,7 @@ def write_runtime_status(
     payload.setdefault("kind", _GATEWAY_KIND)
     payload["pid"] = os.getpid()
     payload["start_time"] = _get_process_start_time(os.getpid())
-    payload["updated_at"] = _utc_now_iso()
+    payload["updated_at"] = utc_now_iso()  # 整合: 使用统一时间戳函数 [T1]
 
     if gateway_state is not None:
         payload["gateway_state"] = gateway_state
@@ -312,7 +312,7 @@ def write_runtime_status(
             platform_payload["error_code"] = error_code
         if error_message is not None:
             platform_payload["error_message"] = error_message
-        platform_payload["updated_at"] = _utc_now_iso()
+        platform_payload["updated_at"] = utc_now_iso()  # 整合: 使用统一时间戳函数 [T1]
         payload["platforms"][platform] = platform_payload
 
     _write_json_file(path, payload)
@@ -344,7 +344,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         "scope": scope,
         "identity_hash": _scope_hash(identity),
         "metadata": metadata or {},
-        "updated_at": _utc_now_iso(),
+        "updated_at": utc_now_iso(),  # 整合: 使用统一时间戳函数 [T1]
     }
 
     existing = _read_json_file(lock_path)

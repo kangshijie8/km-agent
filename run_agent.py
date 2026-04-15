@@ -107,8 +107,16 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
-from agent.cognitive.neural.reasoning_bank import ReasoningBank
-from agent.cognitive.neural.types import ReasoningTrajectory, generate_trajectory_id
+# 修复: cognitive模块依赖numpy，缺少时优雅降级不阻塞核心功能
+try:
+    from agent.cognitive.neural.reasoning_bank import ReasoningBank
+    from agent.cognitive.neural.types import ReasoningTrajectory, generate_trajectory_id
+    _COGNITIVE_AVAILABLE = True
+except ImportError:
+    ReasoningBank = None
+    ReasoningTrajectory = None
+    generate_trajectory_id = None
+    _COGNITIVE_AVAILABLE = False
 from utils import atomic_json_write, env_var_enabled
 
 
@@ -778,10 +786,11 @@ class AIAgent:
         self._anthropic_image_fallback_cache: Dict[str, str] = {}
 
         # Initialize ReasoningBank for learning capabilities
-        self.enable_learning = enable_learning
+        # 修复: cognitive模块不可用时跳过ReasoningBank初始化
+        self.enable_learning = enable_learning and _COGNITIVE_AVAILABLE
         self._reasoning_bank = reasoning_bank
         self._learning_initialized = False
-        if self.enable_learning and self._reasoning_bank is None:
+        if self.enable_learning and self._reasoning_bank is None and _COGNITIVE_AVAILABLE:
             # Lazy initialization - will be initialized on first use
             self._reasoning_bank = ReasoningBank()
 

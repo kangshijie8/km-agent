@@ -37,7 +37,6 @@ import math
 import os
 import re
 import sys
-import tempfile
 import threading
 import time
 from collections import Counter, defaultdict
@@ -46,10 +45,10 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
-from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS
+from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS, utc_now_iso  # 整合: 使用统一时间戳函数 [T1]
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from utils import file_lock, _extract_tokens
+from utils import file_lock, _extract_tokens, atomic_json_write  # 整合: 使用统一原子写入，消除本地 _save_json 重复实现 [J1]
 
 logger = logging.getLogger(__name__)
 
@@ -104,25 +103,12 @@ def _load_json(path: Path, default: Any = None) -> Any:
         return default if default is not None else {}
 
 
-def _save_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".dst_")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, str(path))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+# 整合: 删除本地 _save_json()，使用 utils.atomic_json_write [J1]
+# 原定义: def _save_json(path, data) — tempfile + fsync + os.replace，与 atomic_json_write 功能完全等价
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+# 整合: 删除本地 _now_iso()，使用 kunming_constants.utc_now_iso [T1]
+# 原定义: def _now_iso() -> str: return datetime.now(timezone.utc).isoformat()
 
 
 def _today_str() -> str:
@@ -222,7 +208,7 @@ def record_signal(
             entry["signal_count"] = entry.get("signal_count", 0) + 1
             entry["total_score"] = entry.get("total_score", 0.0) + score
             entry["max_score"] = max(entry.get("max_score", 0.0), score)
-            entry["last_seen"] = _now_iso()
+            entry["last_seen"] = utc_now_iso()  # 整合: 使用统一时间戳函数 [T1]
             days = set(entry.get("seen_days", []))
             days.add(today)
             entry["seen_days"] = sorted(days)[-16:]
@@ -242,16 +228,16 @@ def record_signal(
                 "signal_count": 1,
                 "total_score": score,
                 "max_score": score,
-                "first_seen": _now_iso(),
-                "last_seen": _now_iso(),
+                "first_seen": utc_now_iso(),  # 整合: 使用统一时间戳函数 [T1]
+                "last_seen": utc_now_iso(),  # 整合: 使用统一时间戳函数 [T1]
                 "seen_days": [today],
                 "query_hashes": [hashlib.sha256(query.encode()).hexdigest()[:16]] if query else [],
                 "concept_tags": _extract_concept_tags(snippet),
                 "sources": [source],
             }
 
-        signals["updated_at"] = _now_iso()
-        _save_json(signals_path, signals)
+        signals["updated_at"] = utc_now_iso()  # 整合: 使用统一时间戳函数 [T1]
+        atomic_json_write(signals_path, signals)  # 整合: 使用统一原子写入 [J1]
 
 
 def _score_candidates(
@@ -484,12 +470,12 @@ def _mark_promoted(keys: List[str]) -> None:
     with file_lock(str(signals_path)):
         signals = _load_json(signals_path, {"version": 1, "entries": {}})
         entries = signals.get("entries", {})
-        now = _now_iso()
+        now = utc_now_iso()  # 整合: 使用统一时间戳函数 [T1]
         for key in keys:
             if key in entries:
                 entries[key]["promoted_at"] = now
         signals["updated_at"] = now
-        _save_json(signals_path, signals)
+        atomic_json_write(signals_path, signals)  # 整合: 使用统一原子写入 [J1]
 
 
 def _ingest_session_transcripts(lookback_days: int = 7) -> int:
@@ -700,7 +686,7 @@ def run_distillation(config: Optional[Dict[str, Any]] = None, verbose: bool = Fa
         state = _load_json(state_path, {"version": 1, "runs": []})
         runs = state.setdefault("runs", [])
         runs.append({
-            "timestamp": _now_iso(),
+            "timestamp": utc_now_iso(),  # 整合: 使用统一时间戳函数 [T1]
             "duration_ms": int((time.monotonic() - start) * 1000),
             "signals_count": len(entries),
             "candidates_scored": len(candidates),
@@ -709,7 +695,7 @@ def run_distillation(config: Optional[Dict[str, Any]] = None, verbose: bool = Fa
         })
         runs = runs[-50:]
         state["runs"] = runs
-        _save_json(state_path, state)
+        atomic_json_write(state_path, state)  # 整合: 使用统一原子写入 [J1]
 
     if verbose:
         logger.info(

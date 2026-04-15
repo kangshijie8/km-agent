@@ -57,24 +57,10 @@ from agent.credential_pool import load_pool
 # 优化: 从轻量kunming_constants导入，避免触发config.py的重量级初始化 [M17]
 from kunming_constants import get_kunming_home
 from kunming_constants import OPENROUTER_BASE_URL
+# 整合: 从 kunming_constants 导入统一 PROVIDER_ALIASES，消除本地重复定义 [M3]
+from kunming_constants import PROVIDER_ALIASES as _PROVIDER_ALIASES
 
 logger = logging.getLogger(__name__)
-
-_PROVIDER_ALIASES = {
-    "google": "gemini",
-    "google-gemini": "gemini",
-    "google-ai-studio": "gemini",
-    "glm": "zai",
-    "z-ai": "zai",
-    "z.ai": "zai",
-    "zhipu": "zai",
-    "kimi": "kimi-coding",
-    "moonshot": "kimi-coding",
-    "minimax-china": "minimax-cn",
-    "minimax_cn": "minimax-cn",
-    "claude": "anthropic",
-    "claude-code": "anthropic",
-}
 
 
 def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False) -> str:

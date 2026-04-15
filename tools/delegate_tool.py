@@ -627,6 +627,11 @@ def delegate_task(
     import model_tools as _model_tools
     _parent_tool_names = list(_model_tools._get_resolved_tool_names())
 
+    # 修复: 保存父代理的 _tool_failure_counts 快照，防止子代理的工具失败影响父代理的工具可用性 [D1]
+    # _tool_failure_counts 是进程级字典，不受 threading.local() 保护，子代理运行期间的
+    # 工具失败会计入此字典，可能导致父代理的工具被错误禁用
+    _saved_failure_counts = dict(_model_tools._tool_failure_counts)
+
     # Build all child agents on the main thread (thread-safe construction)
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
@@ -650,6 +655,9 @@ def delegate_task(
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._set_resolved_tool_names(_parent_tool_names)
+        # 修复: 恢复父代理的 _tool_failure_counts，防止子代理的工具失败影响父代理 [D1]
+        _model_tools._tool_failure_counts.clear()
+        _model_tools._tool_failure_counts.update(_saved_failure_counts)
         # If building failed partway, remove already-built children from
         # _active_children so they don't leak (they were never run).
         if len(children) < n_tasks and hasattr(parent_agent, '_active_children'):
