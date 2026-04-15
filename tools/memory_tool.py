@@ -45,23 +45,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from kunming_constants import get_kunming_home
 from typing import Dict, Any, List, Optional, Tuple
+from utils import _extract_tokens
 
 try:
     import fcntl
 except ImportError:
     fcntl = None
-
-_CJK_RE = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]')
-
-
-def _extract_tokens(text: str) -> set:
-    tokens = set(re.findall(r'[a-zA-Z][\w.-]+[\w]|\d+', text.lower()))
-    cjk_chars = _CJK_RE.findall(text)
-    tokens.update(cjk_chars)
-    for i in range(len(cjk_chars) - 1):
-        tokens.add(cjk_chars[i] + cjk_chars[i + 1])
-    return tokens
-
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +198,7 @@ class MemoryStore:
             with open(self._meta_path, "w", encoding="utf-8") as f:
                 json.dump(self._meta, f)
         except Exception:
-            pass
+            logger.debug("Memory metadata save failed", exc_info=True)
 
     def _init_meta(self, target: str, content: str) -> None:
         """Initialize metadata for a new entry."""
@@ -423,38 +412,42 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions
-            self._reload_target(target)
+        try:
+            with self._file_lock(self._path_for(target)):
+                # Re-read from disk under lock to pick up writes from other sessions
+                self._reload_target(target)
 
-            entries = self._entries_for(target)
-            limit = self._char_limit(target)
+                entries = self._entries_for(target)
+                limit = self._char_limit(target)
 
-            # Reject exact duplicates
-            if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                # Reject exact duplicates
+                if content in entries:
+                    return self._success_response(target, "Entry already exists (no duplicate added).")
 
-            # Calculate what the new total would be
-            new_entries = entries + [content]
-            new_total = len(ENTRY_DELIMITER.join(new_entries))
+                # Calculate what the new total would be
+                new_entries = entries + [content]
+                new_total = len(ENTRY_DELIMITER.join(new_entries))
 
-            if new_total > limit:
-                current = self._char_count(target)
-                return {
-                    "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
-                    ),
-                    "current_entries": entries,
-                    "usage": f"{current:,}/{limit:,}",
-                }
+                if new_total > limit:
+                    current = self._char_count(target)
+                    return {
+                        "success": False,
+                        "error": (
+                            f"Memory at {current:,}/{limit:,} chars. "
+                            f"Adding this entry ({len(content)} chars) would exceed the limit. "
+                            f"Replace or remove existing entries first."
+                        ),
+                        "current_entries": entries,
+                        "usage": f"{current:,}/{limit:,}",
+                    }
 
-            entries.append(content)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
-            self._init_meta(target, content)
+                entries.append(content)
+                self._set_entries(target, entries)
+                self.save_to_disk(target)
+                self._init_meta(target, content)
+        except TimeoutError:
+            logger.error("Failed to acquire file lock for memory add operation")
+            return {"success": False, "error": "Failed to acquire file lock. Please try again."}
 
         try:
             from agent.memory_distillation import record_signal
@@ -478,55 +471,59 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+        try:
+            with self._file_lock(self._path_for(target)):
+                self._reload_target(target)
 
-            entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+                entries = self._entries_for(target)
+                matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
-            if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+                if not matches:
+                    return {"success": False, "error": f"No entry matched '{old_text}'."}
 
-            if len(matches) > 1:
-                # If all matches are identical (exact duplicates), operate on the first one
-                unique_texts = set(e for _, e in matches)
-                if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                if len(matches) > 1:
+                    # If all matches are identical (exact duplicates), operate on the first one
+                    unique_texts = set(e for _, e in matches)
+                    if len(unique_texts) > 1:
+                        previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                        return {
+                            "success": False,
+                            "error": f"Multiple entries matched '{old_text}'. Be more specific.",
+                            "matches": previews,
+                        }
+                    # All identical -- safe to replace just the first
+
+                idx = matches[0][0]
+                old_entry = entries[idx]
+                limit = self._char_limit(target)
+
+                # Check that replacement doesn't blow the budget
+                test_entries = entries.copy()
+                test_entries[idx] = new_content
+                new_total = len(ENTRY_DELIMITER.join(test_entries))
+
+                if new_total > limit:
                     return {
                         "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                        "matches": previews,
+                        "error": (
+                            f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
+                            f"Shorten the new content or remove other entries first."
+                        ),
                     }
-                # All identical -- safe to replace just the first
 
-            idx = matches[0][0]
-            old_entry = entries[idx]
-            limit = self._char_limit(target)
-
-            # Check that replacement doesn't blow the budget
-            test_entries = entries.copy()
-            test_entries[idx] = new_content
-            new_total = len(ENTRY_DELIMITER.join(test_entries))
-
-            if new_total > limit:
-                return {
-                    "success": False,
-                    "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content or remove other entries first."
-                    ),
-                }
-
-            old_meta = self._get_meta(target, old_entry)
-            entries[idx] = new_content
-            self._set_entries(target, entries)
-            if old_meta:
-                old_meta["last_accessed"] = time.time()
-                old_meta["access_count"] = old_meta.get("access_count", 0) + 1
-                self._set_meta(target, new_content, old_meta)
-                old_key = self._entry_key(old_entry)
-                self._meta.get(target, {}).pop(old_key, None)
-            self.save_to_disk(target)
+                old_meta = self._get_meta(target, old_entry)
+                entries[idx] = new_content
+                self._set_entries(target, entries)
+                if old_meta:
+                    old_meta["last_accessed"] = time.time()
+                    old_meta["access_count"] = old_meta.get("access_count", 0) + 1
+                    self._set_meta(target, new_content, old_meta)
+                    old_key = self._entry_key(old_entry)
+                    self._meta.get(target, {}).pop(old_key, None)
+                self.save_to_disk(target)
+        except TimeoutError:
+            logger.error("Failed to acquire file lock for memory replace operation")
+            return {"success": False, "error": "Failed to acquire file lock. Please try again."}
 
         return self._success_response(target, "Entry replaced.")
 
@@ -536,34 +533,38 @@ class MemoryStore:
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
 
-        with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+        try:
+            with self._file_lock(self._path_for(target)):
+                self._reload_target(target)
 
-            entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+                entries = self._entries_for(target)
+                matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
-            if not matches:
-                return {"success": False, "error": f"No entry matched '{old_text}'."}
+                if not matches:
+                    return {"success": False, "error": f"No entry matched '{old_text}'."}
 
-            if len(matches) > 1:
-                # If all matches are identical (exact duplicates), remove the first one
-                unique_texts = set(e for _, e in matches)
-                if len(unique_texts) > 1:
-                    previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
-                    return {
-                        "success": False,
-                        "error": f"Multiple entries matched '{old_text}'. Be more specific.",
-                        "matches": previews,
-                    }
-                # All identical -- safe to remove just the first
+                if len(matches) > 1:
+                    # If all matches are identical (exact duplicates), remove the first one
+                    unique_texts = set(e for _, e in matches)
+                    if len(unique_texts) > 1:
+                        previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
+                        return {
+                            "success": False,
+                            "error": f"Multiple entries matched '{old_text}'. Be more specific.",
+                            "matches": previews,
+                        }
+                    # All identical -- safe to remove just the first
 
-            idx = matches[0][0]
-            old_entry = entries[idx]
-            old_key = self._entry_key(old_entry)
-            self._meta.get(target, {}).pop(old_key, None)
-            entries.pop(idx)
-            self._set_entries(target, entries)
-            self.save_to_disk(target)
+                idx = matches[0][0]
+                old_entry = entries[idx]
+                old_key = self._entry_key(old_entry)
+                self._meta.get(target, {}).pop(old_key, None)
+                entries.pop(idx)
+                self._set_entries(target, entries)
+                self.save_to_disk(target)
+        except TimeoutError:
+            logger.error("Failed to acquire file lock for memory remove operation")
+            return {"success": False, "error": "Failed to acquire file lock. Please try again."}
 
         return self._success_response(target, "Entry removed.")
 
@@ -593,6 +594,7 @@ class MemoryStore:
         query_words = _extract_tokens(query_lower)
         query_hash = self._simhash(query_lower)
         results = []
+        touched = False
 
         for target in VALID_TARGETS:
             for entry in self._entries.get(target, []):
@@ -609,6 +611,7 @@ class MemoryStore:
                         "vector_score": round(vector_score, 4),
                     })
                     self._touch_meta(target, entry)
+                    touched = True
 
         if touched:
             self._save_meta()
