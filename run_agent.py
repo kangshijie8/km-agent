@@ -175,7 +175,7 @@ class IterationBudget:
     Each agent (parent or subagent) gets its own ``IterationBudget``.
     The parent's budget is capped at ``max_iterations`` (default 90).
     Each subagent gets an independent budget capped at
-    ``delegation.max_iterations`` (default 50) ?this means total
+    ``delegation.max_iterations`` (default 50) — this means total
     iterations across parent + subagents can exceed the parent's cap.
     Users control the per-subagent limit via ``delegation.max_iterations``
     in config.yaml.
@@ -184,13 +184,15 @@ class IterationBudget:
     :meth:`refund` so they don't eat into the budget.
     """
 
-    def __init__(self, max_total: int):
+    def __init__(self, max_total: int, warn_threshold: float = 0.8):
         self.max_total = max_total
         self._used = 0
         self._lock = threading.Lock()
+        self.warn_threshold = warn_threshold
+        self._warned = False
 
     def consume(self) -> bool:
-        """Try to consume one iteration.  Returns True if allowed."""
+        """Try to consume one iteration. Returns True if allowed."""
         with self._lock:
             if self._used >= self.max_total:
                 return False
@@ -203,6 +205,17 @@ class IterationBudget:
             if self._used > 0:
                 self._used -= 1
 
+    def should_warn(self) -> bool:
+        """Check if budget is running low and warning should be issued."""
+        with self._lock:
+            if self._warned:
+                return False
+            usage_ratio = self._used / self.max_total if self.max_total > 0 else 0
+            if usage_ratio >= self.warn_threshold:
+                self._warned = True
+                return True
+            return False
+
     @property
     def used(self) -> int:
         return self._used
@@ -211,6 +224,11 @@ class IterationBudget:
     def remaining(self) -> int:
         with self._lock:
             return max(0, self.max_total - self._used)
+
+    @property
+    def usage_percent(self) -> float:
+        with self._lock:
+            return (self._used / self.max_total * 100) if self.max_total > 0 else 0
 
 
 # Tools that must never run concurrently (interactive / user-facing).
@@ -1158,6 +1176,11 @@ class AIAgent:
                 self._tool_timeout = _DEFAULT_TOOL_TIMEOUT
         except (TypeError, ValueError):
             self._tool_timeout = _DEFAULT_TOOL_TIMEOUT
+
+        # Track the in-flight request client so interrupt() can forcibly close
+        # the underlying HTTP connection when the agent thread is stuck in a
+        # Windows GIL-holding C extension (e.g. httpx stream reads).
+        self._current_request_client = None
 
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
@@ -2643,6 +2666,28 @@ class AIAgent:
         self._interrupt_message = message
         # Signal all tools to abort any in-flight operations immediately
         _set_interrupt(True)
+        # Forcibly close any in-flight HTTP request client.  On Windows the
+        # agent thread may be blocked inside a C extension (httpx SSE read)
+        # that holds the GIL, so t.join(timeout) never returns.  Closing the
+        # underlying socket unblocks the stuck thread immediately.
+        try:
+            with self._openai_client_lock():
+                in_flight = getattr(self, "_current_request_client", None)
+                if in_flight is not None:
+                    self._close_request_openai_client(in_flight, reason="interrupt_kill")
+                    self._current_request_client = None
+        except Exception:
+            pass
+        # Also nuke the primary shared client if one exists; its connection
+        # pool may hold the dead socket.
+        try:
+            with self._openai_client_lock():
+                primary = getattr(self, "client", None)
+                if primary is not None:
+                    self._close_openai_client(primary, reason="interrupt_kill_primary")
+                    self.client = None
+        except Exception:
+            pass
         # Propagate interrupt to any running child agents (subagent delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
@@ -4373,6 +4418,8 @@ class AIAgent:
             try:
                 if self.api_mode == "codex_responses":
                     request_client_holder["client"] = self._create_request_openai_client(reason="codex_stream_request")
+                    with self._openai_client_lock():
+                        self._current_request_client = request_client_holder["client"]
                     result["response"] = self._run_codex_stream(
                         api_kwargs,
                         client=request_client_holder["client"],
@@ -4382,6 +4429,8 @@ class AIAgent:
                     result["response"] = self._anthropic_messages_create(api_kwargs)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
+                    with self._openai_client_lock():
+                        self._current_request_client = request_client_holder["client"]
                     result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
             except Exception as e:
                 result["error"] = e
@@ -4389,6 +4438,8 @@ class AIAgent:
                 request_client = request_client_holder.get("client")
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="request_complete")
+                with self._openai_client_lock():
+                    self._current_request_client = None
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
@@ -4543,6 +4594,8 @@ class AIAgent:
             request_client_holder["client"] = self._create_request_openai_client(
                 reason="chat_completion_stream_request"
             )
+            with self._openai_client_lock():
+                self._current_request_client = request_client_holder["client"]
             # Reset stale-stream timer so the detector measures from this
             # attempt's start, not a previous attempt's last chunk.
             last_chunk_time["t"] = time.time()
@@ -4731,6 +4784,8 @@ class AIAgent:
 
             # Reset stale-stream timer for this attempt
             last_chunk_time["t"] = time.time()
+            with self._openai_client_lock():
+                self._current_request_client = self._anthropic_client
             # Use the Anthropic SDK's streaming context manager
             with self._anthropic_client.messages.stream(**api_kwargs) as stream:
                 for event in stream:
@@ -4903,6 +4958,8 @@ class AIAgent:
                 request_client = request_client_holder.get("client")
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
+                with self._openai_client_lock():
+                    self._current_request_client = None
 
         _stream_stale_timeout_base = float(os.getenv("KUNMING_STREAM_STALE_TIMEOUT", 180.0))
         # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
