@@ -6207,6 +6207,10 @@ class KunmingCLI:
                     _cprint(f"\n{_DIM}  █Skipped{_RST}")
                 return result
             except queue.Empty:
+                # CRITICAL FIX 2026-04-15: Same as clarify_callback. If the user
+                # sends a new message while the sudo prompt is open, interrupt()
+                # must be able to break this wait immediately. Without this check
+                # the agent thread hangs forever waiting for a queue response.
                 if self.agent and getattr(self.agent, '_interrupt_requested', False):
                     break
                 remaining = self._sudo_deadline - _time.monotonic()
@@ -6264,6 +6268,10 @@ class KunmingCLI:
                     self._invalidate()
                     return result
                 except queue.Empty:
+                    # CRITICAL FIX 2026-04-15: Same interrupt-gate pattern as
+                    # clarify_callback and _sudo_password_callback. Prevents the
+                    # agent thread from blocking forever on an approval prompt
+                    # when the user has already sent a new message.
                     if self.agent and getattr(self.agent, '_interrupt_requested', False):
                         break
                     remaining = self._approval_deadline - _time.monotonic()
@@ -6657,6 +6665,12 @@ class KunmingCLI:
 
             # Wait for agent thread to finish, but cap the wait so a stuck
             # tool (e.g. an unresponsive MCP call) cannot freeze the CLI forever.
+            # NOTE 2026-04-15: On Windows, if the agent thread is blocked inside
+            # a C extension (httpx SSE read) that holds the GIL, this join()
+            # can also hang regardless of timeout.  The definitive fix is in
+            # run_agent.py interrupt(), which closes the underlying HTTP socket
+            # to force the blocked thread to wake up.  This 30s cap is the
+            # last-resort safety net when even that socket-kill fails.
             agent_thread.join(timeout=30)
             if agent_thread.is_alive():
                 _cprint(f"\n{_DIM}[System] Agent thread is stuck and did not terminate within 30s after interrupt. Forcing recovery...{_RST}")

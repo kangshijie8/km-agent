@@ -45,6 +45,10 @@ def clarify_callback(cli, question, choices):
             cli._clarify_deadline = 0
             return result
         except queue.Empty:
+            # CRITICAL FIX 2026-04-15: If the user sent a new message while
+            # a clarify prompt is open, the CLI calls agent.interrupt().
+            # Without this check, clarify_callback would block forever waiting
+            # for a queue item that will never arrive, freezing the agent thread.
             if getattr(cli, 'agent', None) and getattr(cli.agent, '_interrupt_requested', False):
                 break
             remaining = cli._clarify_deadline - _time.monotonic()

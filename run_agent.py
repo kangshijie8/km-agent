@@ -2666,10 +2666,21 @@ class AIAgent:
         self._interrupt_message = message
         # Signal all tools to abort any in-flight operations immediately
         _set_interrupt(True)
-        # Forcibly close any in-flight HTTP request client.  On Windows the
-        # agent thread may be blocked inside a C extension (httpx SSE read)
-        # that holds the GIL, so t.join(timeout) never returns.  Closing the
-        # underlying socket unblocks the stuck thread immediately.
+        # ------------------------------------------------------------------
+        # CRITICAL FIX 2026-04-15: Windows GIL deadlock escape hatch.
+        #
+        # On Windows, when the agent thread is inside httpx's C extension
+        # reading an SSE stream, it holds the Python GIL.  Thread.join()
+        # in the main thread cannot acquire the GIL, so timeout=30 becomes
+        # an infinite wait.  Setting flags (_interrupt_requested) does not
+        # help because the blocked thread never gets a chance to check them.
+        #
+        # The ONLY reliable way to unblock the agent thread is to close the
+        # underlying HTTP socket from the outside.  This causes the blocked
+        # read() to raise an exception, release the GIL, and let the agent
+        # thread exit gracefully.  We track the active request client in
+        # _current_request_client so we can murder it on demand.
+        # ------------------------------------------------------------------
         try:
             with self._openai_client_lock():
                 in_flight = getattr(self, "_current_request_client", None)
@@ -4418,6 +4429,8 @@ class AIAgent:
             try:
                 if self.api_mode == "codex_responses":
                     request_client_holder["client"] = self._create_request_openai_client(reason="codex_stream_request")
+                    # Track the in-flight client so interrupt() can forcibly close
+                    # its socket. See interrupt() for the Windows GIL deadlock story.
                     with self._openai_client_lock():
                         self._current_request_client = request_client_holder["client"]
                     result["response"] = self._run_codex_stream(
@@ -4448,9 +4461,14 @@ class AIAgent:
         while t.is_alive():
             t.join(timeout=0.3)
             if self._interrupt_requested:
-                # Force-close the in-flight worker-local HTTP connection to stop
-                # token generation without poisoning the shared client used to
-                # seed future retries.
+                # On Windows, the agent thread may be blocked inside a C extension
+                # (httpx reading the SSE stream) that holds the GIL. In that case
+                # t.join() never returns regardless of timeout, because the main
+                # thread cannot acquire the GIL. The only reliable escape hatch is
+                # to close the underlying HTTP socket from the OUTSIDE, which causes
+                # the blocked read() to raise and release the GIL immediately.
+                # This is handled by interrupt() via _current_request_client.
+                # The code below is kept as a historical fallback.
                 try:
                     if self.api_mode == "anthropic_messages":
                         from agent.anthropic_adapter import build_anthropic_client
@@ -4635,6 +4653,12 @@ class AIAgent:
                     # Usage comes in the final chunk with empty choices
                     if hasattr(chunk, "usage") and chunk.usage:
                         usage_obj = chunk.usage
+                    # CRITICAL FIX 2026-04-15: We intentionally do NOT update
+                    # last_chunk_time here. OpenAI-compatible providers (including
+                    # MiniMax) send SSE keep-alive pings with empty choices to
+                    # keep the connection alive. If we refreshed the stale timer
+                    # on every ping, a stalled model stream could stay "alive"
+                    # forever, causing the CLI to freeze for 240s+.
                     continue
 
                 # Only real data chunks reset the stale detector.
@@ -6316,7 +6340,22 @@ class AIAgent:
         effective_task_id: str,
         timeout: float = 30.0,
     ) -> str:
-        """Run a tool in a background thread so interrupts/timeouts abort promptly."""
+        """Run a tool in a background thread so interrupts/timeouts abort promptly.
+
+        WHY THIS EXISTS:
+        On Windows, certain synchronous tools (terminal subprocesses, MCP calls)
+        can ignore Python's threading.Event and block the agent thread forever.
+        When the user types a new message, the CLI calls interrupt(), but if the
+        agent thread is stuck in handle_function_call(), it never checks the flag
+        and t.join(timeout=30) in cli.py waits forever.
+
+        HOW IT WORKS:
+        We spawn the actual tool invocation in a daemon thread. The main agent
+        thread polls it every 300ms. If the user interrupts, we break early and
+        only wait 5s for cleanup (instead of the full 30s), so cli.py's own
+        30s recovery timeout never fires. If the tool is still alive, we return
+        a controlled error string rather than freezing the UI.
+        """
         result_container = [None]
         exc_container = [None]
 
@@ -6529,7 +6568,19 @@ class AIAgent:
         results = [None] * num_tools
 
         def _run_tool(index, tool_call, function_name, function_args):
-            """Worker function executed in a thread."""
+            """Worker function executed in a thread.
+
+            CRITICAL FIX 2026-04-15: Previously this worker called _invoke_tool()
+            directly, meaning a single stuck external tool (e.g. terminal or MCP)
+            could block its ThreadPoolExecutor worker forever. Even after the user
+            interrupted, executor.shutdown(wait=False) could not reclaim the
+            blocked thread promptly, causing the CLI to hang.
+
+            Now each worker goes through _invoke_tool_interruptible(), which
+            spawns yet another daemon thread and enforces a hard timeout.
+            This double-wrapping ensures no individual tool can hold the pool
+            hostage, and the CLI returns control to the user within seconds.
+            """
             start = time.time()
             try:
                 result = self._invoke_tool_interruptible(
@@ -6857,6 +6908,12 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:
                         self._vprint(f"  {cute_msg}")
+            # CRITICAL FIX 2026-04-15: All external tools (terminal, browser,
+            # MCP, web_search, etc.) go through _invoke_tool_interruptible so
+            # that a blocked subprocess or unresponsive network call cannot
+            # freeze the main agent thread. Internal agent tools (todo, memory,
+            # clarify, delegate_task) are kept synchronous because they only
+            # touch in-memory Python state and return instantly.
             elif self.quiet_mode:
                 try:
                     function_result = self._invoke_tool_interruptible(

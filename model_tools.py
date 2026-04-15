@@ -476,8 +476,16 @@ def handle_function_call(
             }, ensure_ascii=False)
 
     try:
-        # Fast-path abort: if the agent has been interrupted, do not start
-        # long-running synchronous work (especially MCP calls).
+        # CRITICAL FIX 2026-04-15: Fast-path abort before starting any tool.
+        #
+        # Race condition: interrupt() sets _interrupt_requested, but if the
+        # agent thread is already inside handle_function_call() and about to
+        # call registry.dispatch(), the flag alone doesn't stop the new tool
+        # from starting.  This is especially dangerous for MCP calls and
+        # terminal commands, which can spawn subprocesses that ignore Python
+        # signals.  By checking the global interrupt gate here, we prevent
+        # new long-running work from beginning after the user has already
+        # requested a stop.
         from tools.interrupt import is_interrupted
         if is_interrupted():
             return json.dumps({
