@@ -158,7 +158,9 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
                 return " ".join(proc.cmdline())
             except ImportError:
                 pass
-            
+            except psutil.NoSuchProcess:
+                return None
+
             return None
         except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError, OSError):
             return None
