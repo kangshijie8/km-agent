@@ -45,7 +45,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from kunming_constants import get_kunming_home
 from typing import Dict, Any, List, Optional, Tuple
-from utils import _extract_tokens
+from utils import _extract_tokens, simhash, file_lock
 
 try:
     import fcntl
@@ -314,39 +314,7 @@ class MemoryStore:
             except (OSError, IOError) as e:
                 logger.warning("Failed to migrate MEMORY.md -> FACTS.md: %s", e)
 
-    @staticmethod
-    @contextmanager
-    def _file_lock(path: Path):
-        lock_path = path.with_suffix(path.suffix + ".lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = open(lock_path, "w")
-        try:
-            if fcntl is not None:
-                fcntl.flock(fd, fcntl.LOCK_EX)
-            else:
-                import msvcrt
-                deadline = time.monotonic() + 10
-                fd.seek(0)
-                while time.monotonic() < deadline:
-                    try:
-                        msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
-                        break
-                    except (OSError, IOError):
-                        time.sleep(0.05)
-                else:
-                    raise TimeoutError("File lock acquisition timed out")
-            yield
-        finally:
-            if fcntl is not None:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            else:
-                import msvcrt
-                try:
-                    fd.seek(0)
-                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
-                    pass
-            fd.close()
+
 
     @staticmethod
     def _path_for(target: str) -> Path:
@@ -420,7 +388,7 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         try:
-            with self._file_lock(self._path_for(target)):
+            with file_lock(self._path_for(target)):
                 # Re-read from disk under lock to pick up writes from other sessions
                 self._reload_target(target)
 
@@ -479,7 +447,7 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         try:
-            with self._file_lock(self._path_for(target)):
+            with file_lock(self._path_for(target)):
                 self._reload_target(target)
 
                 entries = self._entries_for(target)
@@ -541,7 +509,7 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
 
         try:
-            with self._file_lock(self._path_for(target)):
+            with file_lock(self._path_for(target)):
                 self._reload_target(target)
 
                 entries = self._entries_for(target)
@@ -620,7 +588,7 @@ class MemoryStore:
 
         query_lower = query.lower().strip()
         query_words = _extract_tokens(query_lower)
-        query_hash = self._simhash(query_lower)
+        query_hash = simhash(query_lower)
         results = []
         touched = False
 
@@ -632,7 +600,7 @@ class MemoryStore:
                 if cache_key in self._simhash_cache:
                     entry_hash = self._simhash_cache[cache_key]
                 else:
-                    entry_hash = self._simhash(entry_lower)
+                    entry_hash = simhash(entry_lower)
                     self._simhash_cache[cache_key] = entry_hash
                 
                 fts_score = self._fts_score(entry_lower, query_lower, query_words)
@@ -679,32 +647,6 @@ class MemoryStore:
         density = len(overlap) / max(len(text_words), 1)
         exact_bonus = 1.0 if query_lower in text else 0.0
         return min(1.0, coverage * 0.6 + density * 0.2 + exact_bonus * 0.2)
-
-    @staticmethod
-    def _simhash(text: str, hashbits: int = 64) -> int:
-        """Compute SimHash fingerprint for approximate similarity detection.
-
-        Zero-dependency vector-like similarity using hash-based feature extraction.
-        """
-        v = [0] * hashbits
-        compound_pattern = re.compile(r'[a-zA-Z][\w.-]+[\w]')
-        cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,}')
-        tokens = [m.group() for m in compound_pattern.finditer(text.lower())]
-        tokens += [m.group() for m in cjk_pattern.finditer(text)]
-        if not tokens:
-            return 0
-        for token in tokens:
-            h = int(hashlib.md5(token.encode()).hexdigest(), 16)
-            for i in range(hashbits):
-                if h & (1 << i):
-                    v[i] += 1
-                else:
-                    v[i] -= 1
-        fingerprint = 0
-        for i in range(hashbits):
-            if v[i] > 0:
-                fingerprint |= (1 << i)
-        return fingerprint
 
     @staticmethod
     def _simhash_similarity(hash1: int, hash2: int, hashbits: int = 64) -> float:

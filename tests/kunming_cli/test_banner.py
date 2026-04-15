@@ -10,20 +10,20 @@ import tools.mcp_tool
 
 
 def test_display_toolset_name_strips_legacy_suffix():
-    assert banner._display_toolset_name("homeassistant_tools") == "homeassistant"
+    assert banner._display_toolset_name("homeassistant_tools") == "智能家居"
     assert banner._display_toolset_name("honcho_tools") == "honcho"
-    assert banner._display_toolset_name("web_tools") == "web"
+    assert banner._display_toolset_name("web_tools") == "网络"
 
 
 def test_display_toolset_name_preserves_clean_names():
-    assert banner._display_toolset_name("browser") == "browser"
-    assert banner._display_toolset_name("file") == "file"
-    assert banner._display_toolset_name("terminal") == "terminal"
+    assert banner._display_toolset_name("browser") == "浏览器"
+    assert banner._display_toolset_name("file") == "文件"
+    assert banner._display_toolset_name("terminal") == "终端"
 
 
 def test_display_toolset_name_handles_empty():
-    assert banner._display_toolset_name("") == "unknown"
-    assert banner._display_toolset_name(None) == "unknown"
+    assert banner._display_toolset_name("") == "其他"
+    assert banner._display_toolset_name(None) == "其他"
 
 
 def test_build_welcome_banner_uses_normalized_toolset_names():
@@ -62,9 +62,9 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
         )
 
     output = console.export_text()
-    assert "homeassistant:" in output
+    assert "智能家居:" in output
     assert "honcho:" in output
-    assert "web:" in output
+    assert "网络:" in output
     assert "homeassistant_tools:" not in output
     assert "honcho_tools:" not in output
     assert "web_tools:" not in output

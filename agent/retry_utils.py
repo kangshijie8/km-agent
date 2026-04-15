@@ -52,6 +52,7 @@ def jittered_backoff(
     # Seed from time + counter for decorrelation even with coarse clocks.
     seed = (time.time_ns() ^ (tick * 0x9E3779B9)) & 0xFFFFFFFF
     rng = random.Random(seed)
-    jitter = rng.uniform(0, jitter_ratio * delay)
+    # Use decorrelated jitter: range is [base_delay, delay * 3] to better spread retries
+    jittered = rng.uniform(base_delay, delay * 3)
 
-    return min(delay + jitter, max_delay)
+    return min(jittered, max_delay)

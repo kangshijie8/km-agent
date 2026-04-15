@@ -15,7 +15,7 @@ import hashlib
 import json
 import logging
 import os
-import re
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -26,10 +26,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from kunming_constants import get_kunming_home
 from utils import _extract_tokens
 
-try:
-    import fcntl
-except ImportError:
-    fcntl = None
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils import simhash, simhash_similarity, file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -55,33 +53,8 @@ def _error_log_path() -> Path:
 def _error_lock():
     lock_path = _error_log_path().with_suffix(".json.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = open(lock_path, "w")
-    try:
-        if fcntl is not None:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        else:
-            import msvcrt
-            _deadline = time.monotonic() + 10
-            while time.monotonic() < _deadline:
-                try:
-                    msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError:
-                    time.sleep(0.05)
-            else:
-                fd.close()
-                raise TimeoutError("Error log lock acquisition timed out")
+    with file_lock(lock_path, timeout=10.0):
         yield
-    finally:
-        if fcntl is not None:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        else:
-            try:
-                import msvcrt
-                msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except OSError:
-                pass
-        fd.close()
 
 
 def _load_error_log() -> Dict[str, Any]:
@@ -227,34 +200,7 @@ def _promote_error_to_models(error_entry: Dict[str, Any]) -> None:
     logger.info("Promoted recurring error to models: %s", rule[:80])
 
 
-def _simhash(text: str, hashbits: int = 64) -> int:
-    v = [0] * hashbits
-    compound_pattern = re.compile(r'[a-zA-Z][\w.-]+[\w]')
-    cjk_pattern = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]{1,}')
-    tokens = [m.group() for m in compound_pattern.finditer(text.lower())]
-    tokens += [m.group() for m in cjk_pattern.finditer(text)]
-    if not tokens:
-        return 0
-    for token in tokens:
-        h = int(hashlib.md5(token.encode()).hexdigest(), 16)
-        for i in range(hashbits):
-            if h & (1 << i):
-                v[i] += 1
-            else:
-                v[i] -= 1
-    fingerprint = 0
-    for i in range(hashbits):
-        if v[i] > 0:
-            fingerprint |= (1 << i)
-    return fingerprint
 
-
-def _simhash_similarity(hash1: int, hash2: int, hashbits: int = 64) -> float:
-    if hash1 == 0 and hash2 == 0:
-        return 0.0
-    xor = hash1 ^ hash2
-    diff_bits = bin(xor).count('1')
-    return 1.0 - (diff_bits / hashbits)
 
 
 def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]:
@@ -269,7 +215,7 @@ def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]
 
     query_lower = query.lower()
     query_words = _extract_tokens(query_lower)
-    query_hash = _simhash(query_lower)
+    query_hash = simhash(query_lower)
 
     scored = []
     for key, entry in errors.items():
@@ -285,7 +231,7 @@ def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]
         if query_lower in entry_text:
             keyword_score += 0.3
 
-        sem_score = _simhash_similarity(query_hash, _simhash(entry_text))
+        sem_score = simhash_similarity(query_hash, simhash(entry_text))
 
         combined = 0.6 * keyword_score + 0.4 * sem_score
         combined += min(0.3, entry.get("occurrence_count", 1) * 0.1)

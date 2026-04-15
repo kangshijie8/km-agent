@@ -45,6 +45,8 @@ def clarify_callback(cli, question, choices):
             cli._clarify_deadline = 0
             return result
         except queue.Empty:
+            if getattr(cli, 'agent', None) and getattr(cli.agent, '_interrupt_requested', False):
+                break
             remaining = cli._clarify_deadline - _time.monotonic()
             if remaining <= 0:
                 break
@@ -56,6 +58,11 @@ def clarify_callback(cli, question, choices):
     cli._clarify_deadline = 0
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
+    if getattr(cli, 'agent', None) and getattr(cli.agent, '_interrupt_requested', False):
+        cprint(f"\n{_DIM}(clarify interrupted - agent will stop and wait){_RST}")
+        return (
+            "The user cancelled the request. Stop and wait for the next instruction."
+        )
     cprint(f"\n{_DIM}(clarify timed out after {timeout}s -agent will decide){_RST}")
     return (
         "The user did not provide a response within the time limit. "
@@ -80,7 +87,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
             value = ""
 
         if not value:
-            cprint(f"\n{_DIM}  â?Secret entry cancelled{_RST}")
+            cprint(f"\n{_DIM}  [Cancelled] Secret entry cancelled{_RST}")
             return {
                 "success": True,
                 "reason": "cancelled",
@@ -133,7 +140,7 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
                 cli._app.invalidate()
 
             if not value:
-                cprint(f"\n{_DIM}  â?Secret entry cancelled{_RST}")
+                cprint(f"\n{_DIM}  [Cancelled] Secret entry cancelled{_RST}")
                 return {
                     "success": True,
                     "reason": "cancelled",
@@ -152,6 +159,8 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
                 "message": "Secret stored securely. The secret value was not exposed to the model.",
             }
         except queue.Empty:
+            if getattr(cli, 'agent', None) and getattr(cli.agent, '_interrupt_requested', False):
+                break
             remaining = cli._secret_deadline - _time.monotonic()
             if remaining <= 0:
                 break
@@ -172,7 +181,17 @@ def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:
             pass
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
-    cprint(f"\n{_DIM}  â?Timeout -secret capture cancelled{_RST}")
+    if getattr(cli, 'agent', None) and getattr(cli.agent, '_interrupt_requested', False):
+        cprint(f"\n{_DIM}  [Interrupted] Secret capture cancelled{_RST}")
+        return {
+            "success": True,
+            "reason": "interrupted",
+            "stored_as": var_name,
+            "validated": False,
+            "skipped": True,
+            "message": "Secret setup was interrupted.",
+        }
+    cprint(f"\n{_DIM}  [Timeout] Secret capture cancelled{_RST}")
     return {
         "success": True,
         "reason": "timeout",
@@ -238,5 +257,5 @@ def approval_callback(cli, command: str, description: str) -> str:
         cli._approval_deadline = 0
         if hasattr(cli, "_app") and cli._app:
             cli._app.invalidate()
-        cprint(f"\n{_DIM}  â?Timeout -denying command{_RST}")
+        cprint(f"\n{_DIM}  [Timeout] Denying command{_RST}")
         return "deny"

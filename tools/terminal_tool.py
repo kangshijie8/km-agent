@@ -108,8 +108,28 @@ def _check_disk_usage_warning():
         return False
 
 
-# Session-cached sudo password (persists until CLI exits)
-_cached_sudo_password: str = ""
+# Session-cached sudo password (persists until CLI exits).
+# Security: stored in a process-local environment variable rather than a Python
+# global so it is not trivially readable via object introspection, debugger
+# attachment, or accidental logging.  This is NOT encryption — the value is
+# still in process memory — but it raises the bar above a bare string global.
+# Call _clear_cached_sudo_password() on exit to scrub the env var.
+_SUDO_PASSWORD_ENV_KEY = "_KM_SUDO_PASS"
+
+
+def _cache_sudo_password(password: str) -> None:
+    """Store sudo password in a process-local env var (not on disk)."""
+    os.environ[_SUDO_PASSWORD_ENV_KEY] = password
+
+
+def _get_cached_sudo_password() -> str:
+    """Retrieve the cached sudo password, or empty string if none."""
+    return os.environ.get(_SUDO_PASSWORD_ENV_KEY, "")
+
+
+def _clear_cached_sudo_password() -> None:
+    """Remove the cached sudo password from the environment."""
+    os.environ.pop(_SUDO_PASSWORD_ENV_KEY, None)
 
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
@@ -373,7 +393,6 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     If SUDO_PASSWORD is not set and NOT interactive:
       Command runs as-is (fails gracefully with "sudo: a password is required").
     """
-    global _cached_sudo_password
     import re
 
     # Check if command even contains sudo
@@ -384,7 +403,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
         return command, None  # No sudo in command, nothing to do
 
     # Try to get password from: env var -> session cache -> interactive prompt
-    sudo_password = os.getenv("SUDO_PASSWORD", "") or _cached_sudo_password
+    sudo_password = os.getenv("SUDO_PASSWORD", "") or _get_cached_sudo_password()
 
     if not sudo_password:
         # No password configured - check if we're in interactive mode
@@ -392,7 +411,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
             # Prompt user for password
             sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
             if sudo_password:
-                _cached_sudo_password = sudo_password  # Cache for session
+                _cache_sudo_password(sudo_password)  # Cache for session
 
     if not sudo_password:
         return command, None  # No password, let it fail gracefully

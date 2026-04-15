@@ -11,19 +11,11 @@ from kunming_cli.config import get_project_root, get_kunming_home, get_env_path
 from kunming_constants import display_kunming_home
 
 PROJECT_ROOT = get_project_root()
-KUNMING_HOME = get_kunming_home()
-_DHH = display_kunming_home()  # user-facing display path (e.g. ~/.kunming or ~/.kunming/profiles/coder)
+# Note: KUNMING_HOME and _DHH are now computed inside run_doctor() to support profile switching
 
 # Load environment variables from ~/.kunming/.env so API key checks work
-from dotenv import load_dotenv
-_env_path = get_env_path()
-if _env_path.exists():
-    try:
-        load_dotenv(_env_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(_env_path, encoding="latin-1")
-# Also try project .env as dev fallback
-load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
+from kunming_cli.env_loader import load_kunming_dotenv
+load_kunming_dotenv()
 
 from kunming_cli.colors import Colors, color
 from kunming_constants import OPENROUTER_MODELS_URL
@@ -137,6 +129,10 @@ def run_doctor(args):
     # Doctor runs from the interactive CLI, so CLI-gated tool availability
     # checks (like cronjob management) should see the same context as `km`.
     os.environ.setdefault("KUNMING_INTERACTIVE", "1")
+    
+    # Dynamically get KUNMING_HOME to support profile switching
+    KUNMING_HOME = get_kunming_home()
+    _DHH = display_kunming_home()
     
     issues = []
     manual_issues = []  # issues that can't be auto-fixed
@@ -419,17 +415,39 @@ def run_doctor(args):
             check_ok(f"Created {_DHH}/SOUL.md with basic template")
             fixed_count += 1
     
-    # Check memory directory
+    # Check memory directory (three-layer architecture: FACTS.md, EXPERIENCES.md, MODELS.md, USER.md)
     memories_dir = kunming_home / "memories"
     if memories_dir.exists():
         check_ok(f"{_DHH}/memories/ directory exists")
-        memory_file = memories_dir / "MEMORY.md"
+        # Check new three-layer memory files
+        facts_file = memories_dir / "FACTS.md"
+        experiences_file = memories_dir / "EXPERIENCES.md"
+        models_file = memories_dir / "MODELS.md"
         user_file = memories_dir / "USER.md"
-        if memory_file.exists():
-            size = len(memory_file.read_text(encoding="utf-8").strip())
-            check_ok(f"MEMORY.md exists ({size} chars)")
+        # Backward compatibility: also check old MEMORY.md
+        memory_file = memories_dir / "MEMORY.md"
+        
+        if facts_file.exists():
+            size = len(facts_file.read_text(encoding="utf-8").strip())
+            check_ok(f"FACTS.md exists ({size} chars)")
         else:
-            check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
+            check_info("FACTS.md not created yet (will be created when the agent first writes a memory)")
+            # Check for legacy MEMORY.md for migration hint
+            if memory_file.exists():
+                check_info("Legacy MEMORY.md found - it will be auto-migrated to FACTS.md on first use")
+        
+        if experiences_file.exists():
+            size = len(experiences_file.read_text(encoding="utf-8").strip())
+            check_ok(f"EXPERIENCES.md exists ({size} chars)")
+        else:
+            check_info("EXPERIENCES.md not created yet")
+            
+        if models_file.exists():
+            size = len(models_file.read_text(encoding="utf-8").strip())
+            check_ok(f"MODELS.md exists ({size} chars)")
+        else:
+            check_info("MODELS.md not created yet")
+        
         if user_file.exists():
             size = len(user_file.read_text(encoding="utf-8").strip())
             check_ok(f"USER.md exists ({size} chars)")

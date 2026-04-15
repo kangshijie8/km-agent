@@ -9,10 +9,14 @@ Routes messages to the appropriate destination based on:
 """
 
 import logging
+import os
+import random
+import tempfile
+import time
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Callable
 
 from kunming_cli.config import get_kunming_home
 
@@ -20,6 +24,82 @@ logger = logging.getLogger(__name__)
 
 MAX_PLATFORM_OUTPUT = 4000
 TRUNCATED_VISIBLE = 3800
+
+# Retry configuration
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BASE_DELAY = 1.0  # seconds
+DEFAULT_MAX_DELAY = 60.0  # seconds
+
+
+def _exponential_backoff_with_jitter(
+    attempt: int,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+) -> float:
+    """
+    Calculate delay with exponential backoff and jitter.
+    
+    Formula: delay = min(base_delay * (2 ** attempt), max_delay) + jitter
+    Jitter is a random value between 0 and base_delay to avoid thundering herd.
+    """
+    exponential_delay = min(base_delay * (2 ** attempt), max_delay)
+    jitter = random.uniform(0, base_delay)
+    return exponential_delay + jitter
+
+
+def _retry_with_backoff(
+    operation: Callable,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    base_delay: float = DEFAULT_BASE_DELAY,
+    max_delay: float = DEFAULT_MAX_DELAY,
+    task_id: Optional[str] = None,
+) -> Any:
+    """
+    Execute an operation with exponential backoff retry logic.
+    
+    Args:
+        operation: Callable to execute (should raise on failure)
+        max_retries: Maximum number of retry attempts
+        base_delay: Initial delay in seconds
+        max_delay: Maximum delay in seconds
+        task_id: Optional task ID for logging
+    
+    Returns:
+        Result of the operation
+    
+    Raises:
+        Exception: The last exception after all retries are exhausted
+    """
+    last_exception = None
+    
+    for attempt in range(max_retries + 1):
+        try:
+            return operation()
+        except Exception as e:
+            last_exception = e
+            
+            if attempt >= max_retries:
+                logger.error(
+                    "[delivery] Operation failed after %d retries%s: %s",
+                    max_retries,
+                    f" (task: {task_id})" if task_id else "",
+                    str(e),
+                )
+                raise last_exception
+            
+            delay = _exponential_backoff_with_jitter(attempt, base_delay, max_delay)
+            logger.warning(
+                "[delivery] Operation failed (attempt %d/%d)%s: %s. Retrying in %.2fs...",
+                attempt + 1,
+                max_retries + 1,
+                f" (task: {task_id})" if task_id else "",
+                str(e),
+                delay,
+            )
+            time.sleep(delay)
+    
+    # This should never be reached, but just in case
+    raise last_exception if last_exception else RuntimeError("Unknown error in retry logic")
 
 from .config import Platform, GatewayConfig
 from .session import SessionSource
@@ -220,7 +300,7 @@ class DeliveryRouter:
         job_name: Optional[str],
         metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Save content to local files."""
+        """Save content to local files with atomic write and retry logic."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         if job_id:
@@ -252,7 +332,39 @@ class DeliveryRouter:
         lines.append("")
         lines.append(content)
         
-        output_path.write_text("\n".join(lines))
+        content_str = "\n".join(lines)
+        
+        # Atomic write with retry logic
+        def _atomic_write():
+            # Create a temporary file in the same directory for atomic rename
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(output_path.parent),
+                suffix=".tmp",
+                prefix=f".{output_path.stem}_",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content_str)
+                    f.flush()
+                    os.fsync(f.fileno())
+                # Atomic replace: this is guaranteed to be atomic on POSIX and Windows
+                os.replace(tmp_path, output_path)
+            except BaseException:
+                # Clean up temp file on any failure
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        
+        # Execute with retry logic
+        _retry_with_backoff(
+            operation=_atomic_write,
+            max_retries=DEFAULT_MAX_RETRIES,
+            base_delay=DEFAULT_BASE_DELAY,
+            max_delay=DEFAULT_MAX_DELAY,
+            task_id=job_id,
+        )
         
         return {
             "path": str(output_path),
@@ -274,7 +386,7 @@ class DeliveryRouter:
         content: str,
         metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Deliver content to a messaging platform."""
+        """Deliver content to a messaging platform with retry logic."""
         adapter = self.adapters.get(target.platform)
         
         if not adapter:
@@ -296,7 +408,128 @@ class DeliveryRouter:
         send_metadata = dict(metadata or {})
         if target.thread_id and "thread_id" not in send_metadata:
             send_metadata["thread_id"] = target.thread_id
-        return await adapter.send(target.chat_id, content, metadata=send_metadata or None)
+        
+        # Async retry wrapper for platform delivery
+        return await self._retry_async_with_backoff(
+            operation=lambda: adapter.send(target.chat_id, content, metadata=send_metadata or None),
+            max_retries=DEFAULT_MAX_RETRIES,
+            base_delay=DEFAULT_BASE_DELAY,
+            max_delay=DEFAULT_MAX_DELAY,
+            task_id=(metadata or {}).get("job_id"),
+        )
+
+    async def _deliver_webhook(
+        self,
+        webhook_url: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Deliver content to a webhook endpoint with retry logic.
+        
+        Args:
+            webhook_url: The webhook URL to send to
+            content: The content to send
+            metadata: Additional metadata to include in the payload
+            headers: Optional custom headers
+        
+        Returns:
+            Dict with delivery result
+        """
+        import aiohttp
+        
+        payload = {
+            "content": content,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if metadata:
+            payload.update(metadata)
+        
+        default_headers = {
+            "Content-Type": "application/json",
+        }
+        if headers:
+            default_headers.update(headers)
+        
+        async def _send_request():
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    webhook_url,
+                    json=payload,
+                    headers=default_headers,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as response:
+                    response.raise_for_status()
+                    return {
+                        "status": response.status,
+                        "webhook_url": webhook_url,
+                    }
+        
+        return await self._retry_async_with_backoff(
+            operation=_send_request,
+            max_retries=DEFAULT_MAX_RETRIES,
+            base_delay=DEFAULT_BASE_DELAY,
+            max_delay=DEFAULT_MAX_DELAY,
+            task_id=(metadata or {}).get("job_id"),
+        )
+
+    async def _retry_async_with_backoff(
+        self,
+        operation: Callable,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        base_delay: float = DEFAULT_BASE_DELAY,
+        max_delay: float = DEFAULT_MAX_DELAY,
+        task_id: Optional[str] = None,
+    ) -> Any:
+        """
+        Execute an async operation with exponential backoff retry logic.
+        
+        Args:
+            operation: Async callable to execute (should raise on failure)
+            max_retries: Maximum number of retry attempts
+            base_delay: Initial delay in seconds
+            max_delay: Maximum delay in seconds
+            task_id: Optional task ID for logging
+        
+        Returns:
+            Result of the operation
+        
+        Raises:
+            Exception: The last exception after all retries are exhausted
+        """
+        import asyncio
+        
+        last_exception = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                return await operation()
+            except Exception as e:
+                last_exception = e
+                
+                if attempt >= max_retries:
+                    logger.error(
+                        "[delivery] Async operation failed after %d retries%s: %s",
+                        max_retries,
+                        f" (task: {task_id})" if task_id else "",
+                        str(e),
+                    )
+                    raise last_exception
+                
+                delay = _exponential_backoff_with_jitter(attempt, base_delay, max_delay)
+                logger.warning(
+                    "[delivery] Async operation failed (attempt %d/%d)%s: %s. Retrying in %.2fs...",
+                    attempt + 1,
+                    max_retries + 1,
+                    f" (task: {task_id})" if task_id else "",
+                    str(e),
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        
+        # This should never be reached, but just in case
+        raise last_exception if last_exception else RuntimeError("Unknown error in async retry logic")
 
 
 def parse_deliver_spec(

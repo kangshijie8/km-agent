@@ -992,24 +992,29 @@ def estimate_tokens_rough(text: str) -> int:
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
-    """Rough token estimate for a message list (pre-flight only)."""
-    total_chars = 0
+    """Rough token estimate for a message list (pre-flight only).
+    
+    Uses CJK-aware estimation to avoid underestimating for non-Latin text.
+    """
+    total_tokens = 0
     for msg in messages:
         content = msg.get("content")
         if isinstance(content, str):
-            total_chars += len(content)
+            total_tokens += estimate_tokens_rough(content)
         elif isinstance(content, list):
             for block in content:
                 if isinstance(block, dict):
-                    total_chars += len(block.get("text", "")) + len(str(block.get("tool_use_id", "")))
+                    total_tokens += estimate_tokens_rough(block.get("text", ""))
+                    total_tokens += len(str(block.get("tool_use_id", ""))) // 4
         for tc in msg.get("tool_calls") or []:
             if isinstance(tc, dict):
                 fn = tc.get("function", {})
-                total_chars += len(fn.get("name", "")) + len(fn.get("arguments", ""))
+                total_tokens += estimate_tokens_rough(fn.get("name", ""))
+                total_tokens += estimate_tokens_rough(fn.get("arguments", ""))
         reasoning = msg.get("reasoning") or msg.get("reasoning_content")
         if reasoning:
-            total_chars += len(reasoning) if isinstance(reasoning, str) else len(str(reasoning))
-    return total_chars // 4
+            total_tokens += estimate_tokens_rough(reasoning) if isinstance(reasoning, str) else len(str(reasoning)) // 4
+    return total_tokens
 
 
 def estimate_request_tokens_rough(

@@ -8,6 +8,7 @@ persistence via bind mounts.
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -534,28 +535,56 @@ class DockerEnvironment(BaseEnvironment):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
         if self._container_id:
             try:
-                # Stop in background so cleanup doesn't block
-                stop_cmd = (
-                    f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
-                    f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
-                    if sys.platform != "win32" else
-                    f"start /b cmd /c \"{self._docker_exe} stop {self._container_id} >NUL 2>NUL & {self._docker_exe} rm -f {self._container_id}\""
-                )
-                subprocess.Popen(stop_cmd, shell=True)
+                # Stop in background so cleanup doesn't block.
+                # Use list-form args (no shell=True) to prevent injection via container_id.
+                if sys.platform != "win32":
+                    # Unix: fire-and-forget stop; if it fails, schedule a forced rm.
+                    # start_new_session=True detaches the child so it won't block us.
+                    try:
+                        subprocess.Popen(
+                            ["timeout", "60", self._docker_exe, "stop", self._container_id],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True,
+                        )
+                    except Exception:
+                        subprocess.Popen(
+                            [self._docker_exe, "rm", "-f", self._container_id],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True,
+                        )
+                else:
+                    # Windows: use `start /b` via cmd.exe to run detached.
+                    # container_id is passed as a separate arg to cmd /c, not interpolated
+                    # into a shell string.
+                    subprocess.Popen(
+                        ["cmd", "/c", self._docker_exe, "stop", self._container_id],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    )
             except Exception as e:
                 logger.warning("Failed to stop container %s: %s", self._container_id, e)
 
             if not self._persistent:
                 # Also schedule removal (stop only leaves it as stopped)
                 try:
-                    subprocess.Popen(
-                        (
-                            f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &"
-                            if sys.platform != "win32" else
-                            f"start /b cmd /c \"ping -n 4 127.0.0.1 >NUL & {self._docker_exe} rm -f {self._container_id} >NUL 2>NUL\""
-                        ),
-                        shell=True,
-                    )
+                    if sys.platform != "win32":
+                        # Unix: brief sleep then forced remove, all detached.
+                        # Use a small helper script passed via -c to keep it atomic
+                        # while still avoiding shell interpolation of container_id.
+                        subprocess.Popen(
+                            ["/bin/sh", "-c",
+                             f"sleep 3 && exec {shlex.quote(self._docker_exe)} rm -f {shlex.quote(self._container_id)}"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True,
+                        )
+                    else:
+                        # Windows: ping -n 4 is a common 3-second delay trick.
+                        subprocess.Popen(
+                            ["cmd", "/c",
+                             f"ping -n 4 127.0.0.1 >NUL & {self._docker_exe} rm -f {self._container_id} >NUL 2>NUL"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                        )
                 except Exception:
                     pass
             self._container_id = None

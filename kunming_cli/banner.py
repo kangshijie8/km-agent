@@ -69,19 +69,12 @@ def _skin_branding(key: str, fallback: str) -> str:
 
 from kunming_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
 
-KUNMING_AGENT_LOGO = """
-[bold #FFD700]  ┌──────────────────────────────────────────────┐[/]
-[bold #FFD700]  │[/]  [bold #FFBF00] __  __       _   ___ _    _ __     [/]        [bold #FFD700]│[/]
-[bold #FFD700]  │[/]  [bold #FFBF00] \\ \\/ /_ __ (_) | __| |__| '_ \\_   [/]        [bold #FFD700]│[/]
-[bold #FFD700]  │[/]  [bold #FFBF00]  >  < |  _|/| || _|| / /| |_) |  [/]         [bold #FFD700]│[/]
-[bold #FFD700]  │[/]  [bold #FFBF00] /_/\\_\\_|  |_| |_|\\__,_|\\_\\\\_| .__/\\__/|_|  [/]          [bold #FFD700]│[/]
-[bold #FFD700]  │[/]  [bold #FFBF00]               |_|                      [/]      [bold #FFD700]│[/]
-[bold #FFD700]  │[/]                                                      [bold #FFD700]│[/]
-[bold #FFD700]  │[/]  [bold #CD7F32]  ooo`o   .-.   .--.  o  o   .-.   .-.   [/]        [bold #FFD700]│[/]
-[bold #FFD700]  │[/]  [bold #CD7F32]   8   `-/  -) /   ) /  /   /   ) (/  [/]         [bold #FFD700]│[/]
-[bold #FFD700]  │[/]  [bold #CD7F32]  ooo    `-' `--'`-'  `-`  `-(  -'  [/]           [bold #FFD700]│[/]
-[bold #FFD700]  └──────────────────────────────────────────────┘[/]
-"""
+KUNMING_AGENT_LOGO = """[bold #FFD700]ââ> ââââââââââââââââââ ââââ   ââââââââââââââââââââ       ââââââ  ââââââ>ââââââââââââ   ââââââââââââ[/]
+[bold #FFD700]ââ> ââââââââââââââââââââââââ ââââââââââââââââââââ>     ââââââââââââââââ ââââââââââââ> ââââââââââââ[/]
+[#FFBF00]ââââââââââââââ  ââââââââââââââââââââââââ> ââââââââââââââââââââââââ> ââââââââââ  ââââââ ââ>  âââ[/]
+[#FFBF00]ââââââââââââââ  ââââââââââââââââââââââââ> ââââââââââââââââââââââââ>  ââââââââ> ââââââââââ   âââ[/]
+[#CD7F32]ââ> ââââââââââââââ  ââââââ ââ>ââââââââââââââââââ>     ââ> ââââââââââââââââââââââ>ââââââ   âââ[/]
+[#CD7F32]ââ> ââââââââââââââ  ââââââ     ââââââââââââââââââ>     ââ> ââ>ââââââ>ââââââââââ> ââââ>  âââ[/]"""
 
 KUNMING_CADUCEUS = """
 [bold #FFD700]              ◆
@@ -97,22 +90,29 @@ KUNMING_CADUCEUS = """
 """
 
 KM_AGENT_LOGO = """
-[bold #FFD700]    ┌────────────────────────────────────────────┐[/]
-[bold #FFD700]    │[/]  [bold #FFBF00]  _    ___ _ __   ___  ___  _ __     [/]      [bold #FFD700]│[/]
-[bold #FFD700]    │[/]  [bold #FFBF00] | |  / _ \\ '_ \\ / _ \\/ _ \\| '_ \\    [/]     [bold #FFD700]│[/]
-[bold #FFD700]    │[/]  [bold #FFBF00] | |_| (_) | | | |  __/ (_) | | | |   [/]    [bold #FFD700]│[/]
-[bold #FFD700]    │[/]  [bold #FFBF00]  \\___\\___/|_| |_|\\___|\\___/|_| |_|   [/]    [bold #FFD700]│[/]
-[bold #FFD700]    │[/]  [bold #CD7F32]                                              [/][bold #FFD700]│[/]
-[bold #FFD700]    │[/]  [bold #CD7F32]   (    )   (   (   .-.   /  \\   (   [/]        [bold #FFD700]│[/]
-[bold #FFD700]    │[/]  [bold #CD7F32]    \\  /     \\  `--' /   )  `-`  -'  [/]       [bold #FFD700]│[/]
-[bold #FFD700]    │[/]  [bold #CD7F32]     `-'      `---'`--'  `--'  `-'   [/]         [bold #FFD700]│[/]
-[bold #FFD700]    └────────────────────────────────────────────┘[/]
+[bold #FFD700]    ╔═══════════════════════════════════════════════════════════════╗[/]
+[bold #FFD700]    ║[/]                                                               [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]              [bold #FFBF00]██╗  ██╗███╗   ███╗[/]                           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]              [bold #FFBF00]██║ ██╔╝████╗ ████║[/]                           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]              [bold #FFBF00]█████╔╝ ██╔████╔██║[/]                           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]              [bold #FFBF00]██╔═██╗ ██║╚██╔╝██║[/]                           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]              [bold #FFBF00]██║  ██╗██║ ╚═╝ ██║[/]                           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]              [bold #FFBF00]╚═╝  ╚═╝╚═╝     ╚═╝[/]                           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]                                                               [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]   [bold #CD7F32]╔═══╗ ╔╗      ╔═══╗╔═══╗╔═══╗╔╗╔╗╔═══╗╔═══╗[/]           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]   [bold #CD7F32]║╔═╗║╔╝╚╗     ║╔═╗║║╔═╗║║╔═╗║║║║║║╔══╝║╔═╗║[/]           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]   [bold #CD7F32]║║ ║║╚╗╔╝     ║║ ║║║╚═╝║║║ ╚╝║║║║║╚══╗║╚═╝║[/]           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]   [bold #CD7F32]║╚═╝║ ║║      ║╚═╝║║╔╗╔╝║║ ╔╗║╚╝║║╔══╝║╔╗╔╝[/]           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]   [bold #CD7F32]║╔═╗║ ║╚╗     ║╔═╗║║║║╚╗║╚═╝║╚╗╔╝║╚══╗║║║╚╗[/]           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]   [bold #CD7F32]╚╝ ╚╝ ╚═╝     ╚╝ ╚╝╚╝╚═╝╚═══╝ ╚╝ ╚═══╝╚╝╚═╝[/]           [bold #FFD700]║[/]
+[bold #FFD700]    ║[/]                                                               [bold #FFD700]║[/]
+[bold #FFD700]    ╚═══════════════════════════════════════════════════════════════╝[/]
 """
 
 COMPACT_BANNER = """
-[bold #FFD700]┌────────────────────────────────────────────────────┐[/]
-[bold #FFD700]│[/] [bold #FFBF00]◈ km agent[/] [dim #B8860B]· AI Agent Framework[/]          [bold #FFD700]│[/]
-[bold #FFD700]└────────────────────────────────────────────────────┘[/]
+[bold #FFD700]╔═══════════════════════════════════════════════════════════╗[/]
+[bold #FFD700]║  [/][bold #FFBF00]◈ km agent[/] [dim #B8860B]· AI Agent Framework[/]                    [bold #FFD700]║[/]
+[bold #FFD700]╚═══════════════════════════════════════════════════════════╝[/]
 """
 
 
@@ -383,9 +383,9 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         else:
             disabled_tools.update(tools_in_ts)
 
-    layout_table = Table.grid(padding=(0, 2), expand=True)
-    layout_table.add_column("left", justify="center", width=34, ratio=1)
-    layout_table.add_column("right", justify="left", ratio=3)
+    layout_table = Table.grid(padding=(0, 2))
+    layout_table.add_column("left", justify="center")
+    layout_table.add_column("right", justify="left")
 
     # Resolve skin colors once for the entire banner
     accent = _skin_color("banner_accent", "#FFBF00")
@@ -417,7 +417,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
         left_lines.append(f"[dim {session_color}]{_T('banner.session')}: {session_id}[/]")
     left_content = "\n".join(left_lines)
 
-    right_lines = [f"[bold {accent}]┌─ {_T('banner.available_tools')}[/]"]
+    right_lines = [f"[bold {accent}]{_T('banner.available_tools')}[/]"]
     toolsets_dict: Dict[str, list] = {}
 
     for tool in tools:
@@ -450,12 +450,11 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                 colored_names.append(f"[{text}]{name}[/]")
 
         tools_str = ", ".join(colored_names)
-        max_line_len = 48
-        if len(", ".join(sorted(tool_names))) > max_line_len:
+        if len(", ".join(sorted(tool_names))) > 45:
             short_names = []
             length = 0
             for name in sorted(tool_names):
-                if length + len(name) + 2 > max_line_len:
+                if length + len(name) + 2 > 42:
                     short_names.append("...")
                     break
                 short_names.append(name)
@@ -472,7 +471,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
                     colored_names.append(f"[{text}]{name}[/]")
             tools_str = ", ".join(colored_names)
 
-        right_lines.append(f"[bold {accent}]▸ {toolset}[/]  [dim]{tools_str}[/]")
+        right_lines.append(f"[dim {dim}]{toolset}:[/] {tools_str}")
 
     if remaining_toolsets > 0:
         right_lines.append(f"[dim {dim}]{_T('banner.more_toolsets', remaining=remaining_toolsets)}[/]")
@@ -516,7 +515,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     except Exception:
         pass  # Never break the banner over a profiles.py bug
 
-    right_lines.append(f"[dim {dim}]└─ {' · '.join(summary_parts)}[/]")
+    right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
     # Update check -use prefetched result if available
     try:
@@ -546,14 +545,15 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     console.print()
     term_width = shutil.get_terminal_size().columns
-    if term_width >= 80:
+    if term_width >= 85:
+        # Use new km agent logo for wide terminals
         try:
             _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else KM_AGENT_LOGO
         except NameError:
             _logo = KM_AGENT_LOGO
         console.print(_logo)
         console.print()
-    elif term_width >= 56:
+    elif term_width >= 60:
         # Use compact banner for medium terminals
         console.print(COMPACT_BANNER)
     console.print(outer_panel)

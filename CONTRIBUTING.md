@@ -8,13 +8,13 @@ Thank you for contributing to Kunming Agent! This guide covers everything you ne
 
 We value contributions in this order:
 
-1. **Bug fixes** �?crashes, incorrect behavior, data loss. Always top priority.
-2. **Cross-platform compatibility** �?Windows, macOS, different Linux distros, different terminal emulators. We want km to work everywhere.
-3. **Security hardening** �?shell injection, prompt injection, path traversal, privilege escalation. See [Security](#security-considerations).
-4. **Performance and robustness** �?retry logic, error handling, graceful degradation.
-5. **New skills** �?but only broadly useful ones. See [Should it be a Skill or a Tool?](#should-it-be-a-skill-or-a-tool)
-6. **New tools** �?rarely needed. Most capabilities should be skills. See below.
-7. **Documentation** �?fixes, clarifications, new examples.
+1. **Bug fixes** -- crashes, incorrect behavior, data loss. Always top priority.
+2. **Cross-platform compatibility** -- Windows, macOS, different Linux distros, different terminal emulators. We want km to work everywhere.
+3. **Security hardening** -- shell injection, prompt injection, path traversal, privilege escalation. See [Security](#security-considerations).
+4. **Performance and robustness** -- retry logic, error handling, graceful degradation.
+5. **New skills** -- but only broadly useful ones. See [Should it be a Skill or a Tool?](#should-it-be-a-skill-or-a-tool)
+6. **New tools** -- rarely needed. Most capabilities should be skills. See below.
+7. **Documentation** -- fixes, clarifications, new examples.
 
 ---
 
@@ -43,9 +43,9 @@ Bundled skills (in `skills/`) ship with every km install. They should be **broad
 - Document handling, web research, common dev workflows, system administration
 - Used regularly by a wide range of people
 
-If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** �?it ships with the repo but isn't activated by default. Users can discover it via `km skills browse` (labeled "official") and install it with `km skills install` (no third-party warning, builtin trust).
+If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** -- it ships with the repo but isn't activated by default. Users can discover it via `km skills browse` (labeled "official") and install it with `km skills install` (no third-party warning, builtin trust).
 
-If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a skills registry. Users can install it with `km skills install`.
+If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** -- upload it to a skills registry. Users can install it with `km skills install`.
 
 ---
 
@@ -58,7 +58,7 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 | **Git** | With `--recurse-submodules` support |
 | **Python 3.11+** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 18+** | Optional �?needed for browser tools and WhatsApp bridge |
+| **Node.js 18+** | Optional -- needed for browser tools and WhatsApp bridge |
 
 ### Clone and install
 
@@ -115,62 +115,62 @@ pytest tests/ -v
 
 ```
 kunming-agent/
-├── run_agent.py              # AIAgent class �?core conversation loop, tool dispatch, session persistence
-├── cli.py                    # KunmingCLI class �?interactive TUI, prompt_toolkit integration
+├── run_agent.py              # AIAgent class -- core conversation loop, tool dispatch, session persistence
+├── cli.py                    # KunmingCLI class -- interactive TUI, prompt_toolkit integration
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 ├── toolsets.py               # Tool groupings and presets (kunming-cli, kunming-telegram, etc.)
 ├── kunming_state.py           # SQLite session database with FTS5 full-text search, session titles
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
-�?├── agent/                    # Agent internals (extracted modules)
-�?  ├── prompt_builder.py         # System prompt assembly (identity, skills, context files, memory)
-�?  ├── context_compressor.py     # Auto-summarization when approaching context limits
-�?  ├── auxiliary_client.py       # Resolves auxiliary OpenAI clients (summarization, vision)
-�?  ├── display.py                # KawaiiSpinner, tool progress formatting
-�?  ├── model_metadata.py         # Model context lengths, token estimation
-�?  └── trajectory.py             # Trajectory saving helpers
-�?├── kunming_cli/               # CLI command implementations
-�?  ├── main.py                   # Entry point, argument parsing, command dispatch
-�?  ├── config.py                 # Config management, migration, env var definitions
-�?  ├── setup.py                  # Interactive setup wizard
-�?  ├── auth.py                   # Provider resolution, OAuth, Nous Portal
-�?  ├── models.py                 # OpenRouter model selection lists
-�?  ├── banner.py                 # Welcome banner, ASCII art
-�?  ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
-�?  ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
-�?  ├── doctor.py                 # Diagnostics
-�?  ├── skills_hub.py             # Skills Hub CLI + /skills slash command
-�?  └── skin_engine.py            # Skin/theme engine �?data-driven CLI visual customization
-�?├── tools/                    # Tool implementations (self-registering)
-�?  ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
-�?  ├── approval.py               # Dangerous command detection + per-session approval
-�?  ├── terminal_tool.py          # Terminal orchestration (sudo, env lifecycle, backends)
-�?  ├── file_operations.py        # read_file, write_file, search, patch, etc.
-�?  ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
-�?  ├── vision_tools.py           # Image analysis via multimodal models
-�?  ├── delegate_tool.py          # Subagent spawning and parallel task execution
-�?  ├── code_execution_tool.py    # Sandboxed Python with RPC tool access
-�?  ├── session_search_tool.py    # Search past conversations with FTS5 + summarization
-�?  ├── cronjob_tools.py          # Scheduled task management
-�?  ├── skills_tool.py           # Skill search, load, manage
-�?  └── environments/             # Terminal execution backends
-�?      ├── base.py                   # BaseEnvironment ABC
-�?      ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
-�?├── gateway/                  # Messaging gateway
-�?  ├── run.py                    # GatewayRunner �?platform lifecycle, message routing, cron
-�?  ├── config.py                 # Platform configuration resolution
-�?  ├── session.py                # Session store, context prompts, reset policies
-�?  └── platforms/                # Platform adapters
-�?      ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
-�?├── scripts/                  # Installer and bridge scripts
-�?  ├── install.sh                # Linux/macOS installer
-�?  ├── install.ps1               # Windows PowerShell installer
-�?  └── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
-�?├── skills/                   # Bundled skills (copied to ~/.kunming/skills/ on install)
+├── agent/                    # Agent internals (extracted modules)
+│   ├── prompt_builder.py         # System prompt assembly (identity, skills, context files, memory)
+│   ├── context_compressor.py     # Auto-summarization when approaching context limits
+│   ├── auxiliary_client.py       # Resolves auxiliary OpenAI clients (summarization, vision)
+│   ├── display.py                # KawaiiSpinner, tool progress formatting
+│   ├── model_metadata.py         # Model context lengths, token estimation
+│   └── trajectory.py             # Trajectory saving helpers
+├── kunming_cli/               # CLI command implementations
+│   ├── main.py                   # Entry point, argument parsing, command dispatch
+│   ├── config.py                 # Config management, migration, env var definitions
+│   ├── setup.py                  # Interactive setup wizard
+│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal
+│   ├── models.py                 # OpenRouter model selection lists
+│   ├── banner.py                 # Welcome banner, ASCII art
+│   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
+│   ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
+│   ├── doctor.py                 # Diagnostics
+│   ├── skills_hub.py             # Skills Hub CLI + /skills slash command
+│   └── skin_engine.py            # Skin/theme engine -- data-driven CLI visual customization
+├── tools/                    # Tool implementations (self-registering)
+│   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
+│   ├── approval.py               # Dangerous command detection + per-session approval
+│   ├── terminal_tool.py          # Terminal orchestration (sudo, env lifecycle, backends)
+│   ├── file_operations.py        # read_file, write_file, search, patch, etc.
+│   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
+│   ├── vision_tools.py           # Image analysis via multimodal models
+│   ├── delegate_tool.py          # Subagent spawning and parallel task execution
+│   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access
+│   ├── session_search_tool.py    # Search past conversations with FTS5 + summarization
+│   ├── cronjob_tools.py          # Scheduled task management
+│   ├── skills_tool.py           # Skill search, load, manage
+│   └── environments/             # Terminal execution backends
+│       ├── base.py                   # BaseEnvironment ABC
+│       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
+├── gateway/                  # Messaging gateway
+│   ├── run.py                    # GatewayRunner -- platform lifecycle, message routing, cron
+│   ├── config.py                 # Platform configuration resolution
+│   ├── session.py                # Session store, context prompts, reset policies
+│   └── platforms/                # Platform adapters
+│       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
+├── scripts/                  # Installer and bridge scripts
+│   ├── install.sh                # Linux/macOS installer
+│   ├── install.ps1               # Windows PowerShell installer
+│   └── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
+├── skills/                   # Bundled skills (copied to ~/.kunming/skills/ on install)
 ├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)
 ├── environments/             # RL training environments (Atropos integration)
 ├── tests/                    # Test suite
 ├── website/                  # Documentation site (kunming-agent.kunming.dev)
-�?├── cli-config.yaml.example   # Example configuration (copied to ~/.kunming/config.yaml)
+├── cli-config.yaml.example   # Example configuration (copied to ~/.kunming/config.yaml)
 └── AGENTS.md                 # Development guide for AI coding assistants
 ```
 
@@ -195,17 +195,17 @@ kunming-agent/
 ### Core Loop
 
 ```
-User message �?AIAgent._run_agent_loop()
+User message -> AIAgent._run_agent_loop()
   ├── Build system prompt (prompt_builder.py)
   ├── Build API kwargs (model, messages, tools, reasoning config)
   ├── Call LLM (OpenAI-compatible API)
   ├── If tool_calls in response:
-  �?    ├── Execute each tool via registry dispatch
-  �?    ├── Add tool results to conversation
-  �?    └── Loop back to LLM call
+  │     ├── Execute each tool via registry dispatch
+  │     ├── Add tool results to conversation
+  │     └── Loop back to LLM call
   ├── If text response:
-  �?    ├── Persist session to DB
-  �?    └── Return final_response
+  │     ├── Persist session to DB
+  │     └── Return final_response
   └── Context compression if approaching token limit
 ```
 
@@ -223,8 +223,8 @@ User message �?AIAgent._run_agent_loop()
 ## Code Style
 
 - **PEP 8** with practical exceptions (we don't enforce strict line length)
-- **Comments**: Only when explaining non-obvious intent, trade-offs, or API quirks. Don't narrate what the code does �?`# increment counter` adds nothing
-- **Error handling**: Catch specific exceptions. Log with `logger.warning()`/`logger.error()` �?use `exc_info=True` for unexpected errors so stack traces appear in logs
+- **Comments**: Only when explaining non-obvious intent, trade-offs, or API quirks. Don't narrate what the code does -- `# increment counter` adds nothing
+- **Error handling**: Catch specific exceptions. Log with `logger.warning()`/`logger.error()` -- use `exc_info=True` for unexpected errors so stack traces appear in logs
 - **Cross-platform**: Never assume Unix. See [Cross-Platform Compatibility](#cross-platform-compatibility)
 
 ---
@@ -236,7 +236,7 @@ Before writing a tool, ask: [should this be a skill instead?](#should-it-be-a-sk
 Tools self-register with the central registry. Each tool file co-locates its schema, handler, and registration:
 
 ```python
-"""my_tool �?Brief description of what this tool does."""
+"""my_tool -- Brief description of what this tool does."""
 
 import json
 from tools.registry import registry
@@ -299,15 +299,15 @@ Bundled skills live in `skills/` organized by category. Official optional skills
 ```
 skills/
 ├── research/
-�?  └── arxiv/
-�?      ├── SKILL.md              # Required: main instructions
-�?      └── scripts/              # Optional: helper scripts
-�?          └── search_arxiv.py
+│   └── arxiv/
+│       ├── SKILL.md              # Required: main instructions
+│       └── scripts/              # Optional: helper scripts
+│           └── search_arxiv.py
 ├── productivity/
-�?  └── ocr-and-documents/
-�?      ├── SKILL.md
-�?      ├── scripts/
-�?      └── references/
+│   └── ocr-and-documents/
+│       ├── SKILL.md
+│       ├── scripts/
+│       └── references/
 └── ...
 ```
 
@@ -320,10 +320,10 @@ description: Brief description (shown in skill search results)
 version: 1.0.0
 author: Your Name
 license: MIT
-platforms: [macos, linux]          # Optional �?restrict to specific OS platforms
+platforms: [macos, linux]          # Optional -- restrict to specific OS platforms
                                    #   Valid: macos, linux, windows
                                    #   Omit to load on all platforms (default)
-required_environment_variables:    # Optional �?secure setup-on-load metadata
+required_environment_variables:    # Optional -- secure setup-on-load metadata
   - name: MY_API_KEY
     prompt: API key
     help: Where to get it
@@ -335,8 +335,8 @@ metadata:
   kunming:
     tags: [Category, Subcategory, Keywords]
     related_skills: [other-skill-name]
-    fallback_for_toolsets: [web]       # Optional �?show only when toolset is unavailable
-    requires_toolsets: [terminal]      # Optional �?show only when toolset is available
+    fallback_for_toolsets: [web]       # Optional -- show only when toolset is unavailable
+    requires_toolsets: [terminal]      # Optional -- show only when toolset is available
 ---
 
 # Skill Title
@@ -344,7 +344,7 @@ metadata:
 Brief intro.
 
 ## When to Use
-Trigger conditions �?when should the agent load this skill?
+Trigger conditions -- when should the agent load this skill?
 
 ## Quick Reference
 Table of common commands or API calls.
@@ -373,7 +373,7 @@ If the field is omitted or empty, the skill loads on all platforms (backward com
 
 ### Conditional skill activation
 
-Skills can declare conditions that control when they appear in the system prompt, based on which tools and toolsets are available in the current session. This is primarily used for **fallback skills** �?alternatives that should only be shown when a primary tool is unavailable.
+Skills can declare conditions that control when they appear in the system prompt, based on which tools and toolsets are available in the current session. This is primarily used for **fallback skills** -- alternatives that should only be shown when a primary tool is unavailable.
 
 Four fields are supported under `metadata.kunming`:
 
@@ -395,17 +395,17 @@ metadata:
 **Examples:**
 
 ```yaml
-# DuckDuckGo search �?shown when Firecrawl (web toolset) is unavailable
+# DuckDuckGo search -- shown when Firecrawl (web toolset) is unavailable
 metadata:
   kunming:
     fallback_for_toolsets: [web]
 
-# Smart home skill �?only useful when terminal is available
+# Smart home skill -- only useful when terminal is available
 metadata:
   kunming:
     requires_toolsets: [terminal]
 
-# Local browser fallback �?shown when Browserbase is unavailable
+# Local browser fallback -- shown when Browserbase is unavailable
 metadata:
   kunming:
     fallback_for_toolsets: [browser]
@@ -425,7 +425,7 @@ required_environment_variables:
     required_for: full functionality
 ```
 
-The user may skip setup and keep loading the skill. km only exposes metadata (`stored_as`, `skipped`, `validated`) to the model �?never the secret value.
+The user may skip setup and keep loading the skill. km only exposes metadata (`stored_as`, `skipped`, `validated`) to the model -- never the secret value.
 
 Legacy `prerequisites.env_vars` remains supported and is normalized into the new representation.
 
@@ -451,14 +451,14 @@ See `skills/gifs/gif-search/` and `skills/email/himalaya/` for examples.
 
 - **No external dependencies unless absolutely necessary.** Prefer stdlib Python, curl, and existing km tools (`web_extract`, `terminal`, `read_file`).
 - **Progressive disclosure.** Put the most common workflow first. Edge cases and advanced usage go at the bottom.
-- **Include helper scripts** for XML/JSON parsing or complex logic �?don't expect the LLM to write parsers inline every time.
+- **Include helper scripts** for XML/JSON parsing or complex logic -- don't expect the LLM to write parsers inline every time.
 - **Test it.** Run `km --toolsets skills -q "Use the X skill to do Y"` and verify the agent follows the instructions correctly.
 
 ---
 
 ## Adding a Skin / Theme
 
-km uses a data-driven skin system �?no code changes needed to add a new skin.
+km uses a data-driven skin system -- no code changes needed to add a new skin.
 
 **Option A: User skin (YAML file)**
 
@@ -477,22 +477,22 @@ colors:
   response_border: "#HEX"   # Response box border
 
 spinner:
-  waiting_faces: ["(�?", "(�?"]
-  thinking_faces: ["(�?", "(�?"]
+  waiting_faces: ["(o_o)", "(-_-)", "(^_^)"]
+  thinking_faces: ["(o_o)", "(-_-)", "(^_^)"]
   thinking_verbs: ["forging", "plotting"]
   wings:                     # Optional left/right decorations
-    - ["⟪⚔", "⚔⟫"]
+    - ["<<", ">>"]
 
 branding:
   agent_name: "My Agent"
   welcome: "Welcome message"
-  response_label: " �?Agent "
-  prompt_symbol: "�?�?"
+  response_label: " Agent "
+  prompt_symbol: "#"
 
-tool_prefix: "�?             # Tool output line prefix
+tool_prefix: ">"             # Tool output line prefix
 ```
 
-All fields are optional �?missing values inherit from the default skin.
+All fields are optional -- missing values inherit from the default skin.
 
 **Option B: Built-in skin**
 
@@ -642,7 +642,7 @@ test(tools): add unit tests for file_operations
 
 ## Community
 
-- **Discord**: [discord.gg/kunming](https://discord.gg/kunming) �?for questions, showcasing projects, and sharing skills
+- **Discord**: [discord.gg/kunming](https://discord.gg/kunming) -- for questions, showcasing projects, and sharing skills
 - **GitHub Discussions**: For design proposals and architecture discussions
 - **Skills Hub**: Upload specialized skills to a registry and share them with the community
 

@@ -645,8 +645,27 @@ DEFAULT_CONFIG = {
 
     "gateway": {},
 
+    # UI language: "zh" (Chinese, default), "en" (English)
+    "language": "zh",
+
+    # MCP tool configuration — global limits and filtering for MCP servers
+    "mcp": {
+        "enabled": True,              # Global MCP enable/disable switch
+        "max_tools": 50,              # Maximum number of MCP tools to load (0 = unlimited)
+        "max_description_length": 500, # Maximum length for tool descriptions (0 = unlimited)
+        "tool_filter": {
+            # Global include/exclude patterns for MCP tools
+            # These work alongside per-server tools.include/exclude configs
+            # Format: list of strings or regex patterns
+            "include": [],  # Only load tools matching these patterns (empty = all)
+            "exclude": [],  # Exclude tools matching these patterns (empty = none)
+        },
+        # Per-server overrides (merged with global settings)
+        "servers": {},
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 12,
+    "_config_version": 13,
 }
 
 # =============================================================================
@@ -1456,7 +1475,7 @@ _KNOWN_ROOT_KEYS = {
     "privacy", "approvals", "command_allowlist", "quick_commands",
     "personalities", "security", "cron", "logging", "honcho",
     "timezone", "discord", "whatsapp", "skills", "smart_model_routing",
-    "prefill_messages_file",
+    "prefill_messages_file", "language",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -1635,9 +1654,9 @@ def validate_critical_config(config: dict) -> list:
     elif "/" not in str(model) and not str(model).startswith("gpt") and not str(model).startswith("claude"):
         warnings.append(f"Model name '{model}' may be invalid. Expected format: 'provider/model' (e.g. 'anthropic/claude-sonnet-4-20250514').")
 
-    max_iter = config.get("max_iterations", 0)
-    if isinstance(max_iter, (int, float)) and max_iter <= 0:
-        warnings.append(f"max_iterations is {max_iter}, should be positive.")
+    max_turns = config.get("agent", {}).get("max_turns", 0)
+    if isinstance(max_turns, (int, float)) and max_turns <= 0:
+        warnings.append(f"agent.max_turns is {max_turns}, should be positive.")
 
     model_str = str(model).lower()
     if "anthropic" in model_str and not os.getenv("ANTHROPIC_API_KEY"):
@@ -1785,6 +1804,28 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     for key in list(providers_dict.keys())[-migrated_count:]:
                         ep = providers_dict[key]
                         print(f"    ↑{key}: {ep.get('api', '')}")
+
+    # -- Version 12 ↑13: add MCP tool configuration section --
+    if current_ver < 13:
+        config = load_config()
+        if "mcp" not in config:
+            config["mcp"] = {
+                "enabled": True,
+                "max_tools": 50,
+                "max_description_length": 500,
+                "tool_filter": {
+                    "include": [],
+                    "exclude": [],
+                },
+                "servers": {},
+            }
+            save_config(config)
+            if not quiet:
+                print("  ✓Added MCP tool configuration section")
+                print("    - mcp.enabled: True (global MCP enable/disable)")
+                print("    - mcp.max_tools: 50 (limit to prevent CLI blocking)")
+                print("    - mcp.max_description_length: 500 (reduce token usage)")
+                print("    - mcp.tool_filter: {} (global include/exclude patterns)")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} ↑{latest_ver}")

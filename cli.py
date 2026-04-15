@@ -890,7 +890,14 @@ def _cprint(text: str):
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
     """
-    _pt_print(_PT_ANSI(text))
+    try:
+        _pt_print(_PT_ANSI(text))
+    except Exception:
+        # Fallback to raw print if prompt_toolkit fails (e.g., app closing)
+        try:
+            print(text)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -970,14 +977,18 @@ class ChatConsole:
         )
 
     def print(self, *args, **kwargs):
-        self._buffer.seek(0)
-        self._buffer.truncate()
-        # Read terminal width at render time so panels adapt to current size
-        self._inner.width = shutil.get_terminal_size((80, 24)).columns
-        self._inner.print(*args, **kwargs)
-        output = self._buffer.getvalue()
-        for line in output.rstrip("\n").split("\n"):
-            _cprint(line)
+        try:
+            self._buffer.seek(0)
+            self._buffer.truncate()
+            # Read terminal width at render time so panels adapt to current size
+            self._inner.width = shutil.get_terminal_size((80, 24)).columns
+            self._inner.print(*args, **kwargs)
+            output = self._buffer.getvalue()
+            for line in output.rstrip("\n").split("\n"):
+                _cprint(line)
+        except Exception:
+            # Silently ignore console output errors to prevent UI freezing
+            pass
 
 # ASCII Art - KUNMING-AGENT logo (full width, single line - requires ~95 char terminal)
 KUNMING_AGENT_LOGO = """[bold #FFD700]███ ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████████████╗███╗   ██╗████████╗[/]
@@ -1425,7 +1436,11 @@ class KunmingCLI:
         now = _time.monotonic()
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
-            self._app.invalidate()
+            try:
+                self._app.invalidate()
+            except Exception:
+                # App may be closing or in an invalid state; ignore refresh errors
+                pass
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -1728,10 +1743,14 @@ class KunmingCLI:
 
     def _on_thinking(self, text: str) -> None:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
-        if not text:
-            self._flush_reasoning_preview(force=True)
-        self._spinner_text = text or ""
-        self._invalidate()
+        try:
+            if not text:
+                self._flush_reasoning_preview(force=True)
+            self._spinner_text = text or ""
+            self._invalidate()
+        except Exception:
+            # Prevent UI freezing on callback errors
+            pass
 
     # -- Streaming display ------------------------------------------------
 
@@ -2007,11 +2026,13 @@ class KunmingCLI:
             try:
                 from kunming_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
-                label = _skin.get_branding("response_label", "◆ Kunming")
+                label = _skin.get_branding("response_label", "█Kunming")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
-                label = "◆ Kunming"
+                label = "█Kunming"
                 _text_hex = "#FFF8DC"
+            # Build a true-color ANSI escape for the response text color
+            # so streamed content matches the Rich Panel appearance.
             try:
                 _r = int(_text_hex[1:3], 16)
                 _g = int(_text_hex[3:5], 16)
@@ -2020,8 +2041,8 @@ class KunmingCLI:
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
             w = shutil.get_terminal_size().columns
-            fill = max(w - len(label) - 4, 2)
-            _cprint(f"\n{_GOLD}╭─{label}{'─' * fill}╮{_RST}")
+            fill = w - 2 - len(label)
+            _cprint(f"\n{_GOLD}╭-{label}{'-' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text
 
@@ -2044,7 +2065,7 @@ class KunmingCLI:
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+            _cprint(f"{_GOLD}╰{'-' * (w - 2)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -2093,7 +2114,7 @@ class KunmingCLI:
         self._command_status = status
         self._invalidate(min_interval=0.0)
         try:
-            print(f"█{status}")
+            _cprint(f"█{status}")
             yield
         finally:
             self._command_running = False
@@ -2145,11 +2166,11 @@ class KunmingCLI:
                     base_url, _source,
                 )
             else:
-                print("\n[!]  Provider resolver returned an empty API key. "
+                _cprint("\n[!]  Provider resolver returned an empty API key. "
                       "Set OPENROUTER_API_KEY or run: km setup")
                 return False
         if not isinstance(base_url, str) or not base_url:
-            print("\n[!]  Provider resolver returned an empty base URL. "
+            _cprint("\n[!]  Provider resolver returned an empty base URL. "
                   "Check your provider config or run: km setup")
             return False
 
@@ -2660,14 +2681,14 @@ class KunmingCLI:
         from tools.checkpoint_manager import format_checkpoint_list
 
         if not hasattr(self, 'agent') or not self.agent:
-            print("  No active agent session.")
+            _cprint("  No active agent session.")
             return
 
         mgr = self.agent._checkpoint_mgr
         if not mgr.enabled:
-            print("  Checkpoints are not enabled.")
-            print("  Enable with: km --checkpoints")
-            print("  Or in config.yaml: checkpoints: { enabled: true }")
+            _cprint("  Checkpoints are not enabled.")
+            _cprint("  Enable with: km --checkpoints")
+            _cprint("  Or in config.yaml: checkpoints: { enabled: true }")
             return
 
         cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -2677,17 +2698,17 @@ class KunmingCLI:
         if not args:
             # List checkpoints
             checkpoints = mgr.list_checkpoints(cwd)
-            print(format_checkpoint_list(checkpoints, cwd))
+            _cprint(format_checkpoint_list(checkpoints, cwd))
             return
 
         # Handle /rollback diff <N>
         if args[0].lower() == "diff":
             if len(args) < 2:
-                print("  Usage: /rollback diff <N>")
+                _cprint("  Usage: /rollback diff <N>")
                 return
             checkpoints = mgr.list_checkpoints(cwd)
             if not checkpoints:
-                print(f"  No checkpoints found for {cwd}")
+                _cprint(f"  No checkpoints found for {cwd}")
                 return
             target_hash = self._resolve_checkpoint_ref(args[1], checkpoints)
             if not target_hash:
@@ -2697,26 +2718,26 @@ class KunmingCLI:
                 stat = result.get("stat", "")
                 diff = result.get("diff", "")
                 if not stat and not diff:
-                    print("  No changes since this checkpoint.")
+                    _cprint("  No changes since this checkpoint.")
                 else:
                     if stat:
-                        print(f"\n{stat}")
+                        _cprint(f"\n{stat}")
                     if diff:
                         # Limit diff output to avoid terminal flood
                         diff_lines = diff.splitlines()
                         if len(diff_lines) > 80:
-                            print("\n".join(diff_lines[:80]))
-                            print(f"\n  ... ({len(diff_lines) - 80} more lines, showing first 80)")
+                            _cprint("\n".join(diff_lines[:80]))
+                            _cprint(f"\n  ... ({len(diff_lines) - 80} more lines, showing first 80)")
                         else:
-                            print(f"\n{diff}")
+                            _cprint(f"\n{diff}")
             else:
-                print(f"  █{result['error']}")
+                _cprint(f"  █{result['error']}")
             return
 
         # Resolve checkpoint reference (number or hash)
         checkpoints = mgr.list_checkpoints(cwd)
         if not checkpoints:
-            print(f"  No checkpoints found for {cwd}")
+            _cprint(f"  No checkpoints found for {cwd}")
             return
 
         target_hash = self._resolve_checkpoint_ref(args[0], checkpoints)
@@ -2729,18 +2750,18 @@ class KunmingCLI:
         result = mgr.restore(cwd, target_hash, file_path=file_path)
         if result["success"]:
             if file_path:
-                print(f"  █Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
+                _cprint(f"  █Restored {file_path} from checkpoint {result['restored_to']}: {result['reason']}")
             else:
-                print(f"  █Restored to checkpoint {result['restored_to']}: {result['reason']}")
-            print("  A pre-rollback snapshot was saved automatically.")
+                _cprint(f"  █Restored to checkpoint {result['restored_to']}: {result['reason']}")
+            _cprint("  A pre-rollback snapshot was saved automatically.")
 
             # Also undo the last conversation turn so the agent's context
             # matches the restored filesystem state
             if self.conversation_history:
                 self.undo_last()
-                print("  Chat turn undone to match restored file state.")
+                _cprint("  Chat turn undone to match restored file state.")
         else:
-            print(f"  █{result['error']}")
+            _cprint(f"  █{result['error']}")
 
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
         """Resolve a checkpoint number or hash to a full commit hash."""
@@ -2749,7 +2770,7 @@ class KunmingCLI:
             if 0 <= idx < len(checkpoints):
                 return checkpoints[idx]["hash"]
             else:
-                print(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
+                _cprint(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
                 return None
         except ValueError:
             # Treat as a git hash
@@ -2766,12 +2787,12 @@ class KunmingCLI:
         running = [p for p in processes if p.get("status") == "running"]
 
         if not running:
-            print("  No running background processes.")
+            _cprint("  No running background processes.")
             return
 
-        print(f"  Stopping {len(running)} background process(es)...")
+        _cprint(f"  Stopping {len(running)} background process(es)...")
         killed = process_registry.kill_all()
-        print(f"  █Stopped {killed} process(es).")
+        _cprint(f"  █Stopped {killed} process(es).")
 
     def _handle_paste_command(self):
         """Handle /paste █explicitly check clipboard for an image.
@@ -5255,10 +5276,14 @@ class KunmingCLI:
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
-        if not reasoning_text:
-            return
-        self._reasoning_preview_buf = getattr(self, "_reasoning_preview_buf", "") + reasoning_text
-        self._flush_reasoning_preview(force=False)
+        try:
+            if not reasoning_text:
+                return
+            self._reasoning_preview_buf = getattr(self, "_reasoning_preview_buf", "") + reasoning_text
+            self._flush_reasoning_preview(force=False)
+        except Exception:
+            # Prevent UI freezing on callback errors
+            pass
 
     def _manual_compress(self):
         """Manually trigger context compression on the current conversation."""
@@ -5646,19 +5671,23 @@ class KunmingCLI:
         is doing during tool execution (fills the gap between thinking
         spinner and next response).  Also plays audio cue in voice mode.
         """
-        # Only act on tool.started; ignore tool.completed, reasoning.available, etc.
-        if event_type != "tool.started":
-            return
-        if function_name and not function_name.startswith("_"):
-            from agent.display import get_tool_emoji
-            emoji = get_tool_emoji(function_name)
-            label = preview or function_name
-            from agent.display import get_tool_preview_max_len
-            _pl = get_tool_preview_max_len()
-            if _pl > 0 and len(label) > _pl:
-                label = label[:_pl - 3] + "..."
-            self._spinner_text = f"{emoji} {label}"
-            self._invalidate()
+        try:
+            # Only act on tool.started; ignore tool.completed, reasoning.available, etc.
+            if event_type != "tool.started":
+                return
+            if function_name and not function_name.startswith("_"):
+                from agent.display import get_tool_emoji
+                emoji = get_tool_emoji(function_name)
+                label = preview or function_name
+                from agent.display import get_tool_preview_max_len
+                _pl = get_tool_preview_max_len()
+                if _pl > 0 and len(label) > _pl:
+                    label = label[:_pl - 3] + "..."
+                self._spinner_text = f"{emoji} {label}"
+                self._invalidate()
+        except Exception:
+            # Prevent UI freezing on any callback errors
+            pass
 
         if not self._voice_mode:
             return
@@ -6178,6 +6207,8 @@ class KunmingCLI:
                     _cprint(f"\n{_DIM}  █Skipped{_RST}")
                 return result
             except queue.Empty:
+                if self.agent and getattr(self.agent, '_interrupt_requested', False):
+                    break
                 remaining = self._sudo_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
@@ -6186,7 +6217,10 @@ class KunmingCLI:
         self._sudo_state = None
         self._sudo_deadline = 0
         self._invalidate()
-        _cprint(f"\n{_DIM}  █Timeout █continuing without sudo{_RST}")
+        if self.agent and getattr(self.agent, '_interrupt_requested', False):
+            _cprint(f"\n{_DIM}  █Interrupted █continuing without sudo{_RST}")
+        else:
+            _cprint(f"\n{_DIM}  █Timeout █continuing without sudo{_RST}")
         return ""
 
     def _approval_callback(self, command: str, description: str,
@@ -6230,6 +6264,8 @@ class KunmingCLI:
                     self._invalidate()
                     return result
                 except queue.Empty:
+                    if self.agent and getattr(self.agent, '_interrupt_requested', False):
+                        break
                     remaining = self._approval_deadline - _time.monotonic()
                     if remaining <= 0:
                         break
@@ -6241,7 +6277,10 @@ class KunmingCLI:
             self._approval_state = None
             self._approval_deadline = 0
             self._invalidate()
-            _cprint(f"\n{_DIM}  █Timeout █denying command{_RST}")
+            if self.agent and getattr(self.agent, '_interrupt_requested', False):
+                _cprint(f"\n{_DIM}  █Interrupted █denying command{_RST}")
+            else:
+                _cprint(f"\n{_DIM}  █Timeout █denying command{_RST}")
             return "deny"
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True) -> list[str]:
@@ -6511,9 +6550,9 @@ class KunmingCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
-                        label = " ◆Kunming "
-                        fill = max(w - len(label) - 4, 2)
-                        _cprint(f"\n{_GOLD}╭─{label}{'─' * fill}╮{_RST}")
+                        label = " █Kunming "
+                        fill = w - 2 - len(label)
+                        _cprint(f"\n{_GOLD}╭-{label}{'-' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(sentence.rstrip())
 
                 tts_thread = threading.Thread(
@@ -6586,7 +6625,7 @@ class KunmingCLI:
                             # But if it does (race condition), don't interrupt.
                             if self._clarify_state or self._clarify_freetext:
                                 continue
-                            print("\n█New message detected, interrupting...")
+                            _cprint("\n█New message detected, interrupting...")
                             # Signal TTS to stop on interrupt
                             if stop_event is not None:
                                 stop_event.set()
@@ -6610,12 +6649,35 @@ class KunmingCLI:
                         # StdoutProxy buffer only flushes on renderer passes
                         # triggered by input events █on macOS this causes
                         # the CLI to appear frozen until the user types. (#1624)
-                        self._invalidate(min_interval=0.15)
+                        # Increased interval to reduce CPU load (was 0.15s)
+                        self._invalidate(min_interval=0.3)
                 else:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
 
-            agent_thread.join()  # Ensure agent thread completes
+            # Wait for agent thread to finish, but cap the wait so a stuck
+            # tool (e.g. an unresponsive MCP call) cannot freeze the CLI forever.
+            agent_thread.join(timeout=30)
+            if agent_thread.is_alive():
+                _cprint(f"\n{_DIM}[System] Agent thread is stuck and did not terminate within 30s after interrupt. Forcing recovery...{_RST}")
+                try:
+                    _dbg = _kunming_home / "interrupt_debug.log"
+                    with open(_dbg, "a") as _f:
+                        import time as _t
+                        _f.write(f"{_t.strftime('%H:%M:%S')} AGENT_THREAD_STUCK after interrupt, left behind\n")
+                except Exception:
+                    pass
+                # Nuke the current agent instance so the next turn starts fresh
+                # and does not race with the orphaned thread.
+                self.agent = None
+                result = {
+                    "final_response": "Agent execution was forcefully interrupted because a tool did not respond within 30 seconds.",
+                    "messages": [],
+                    "api_calls": 0,
+                    "completed": False,
+                    "failed": True,
+                    "error": "Agent thread did not terminate after interrupt.",
+                }
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
@@ -6715,11 +6777,11 @@ class KunmingCLI:
                 try:
                     from kunming_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
-                    label = _skin.get_branding("response_label", "◆ Kunming")
+                    label = _skin.get_branding("response_label", "█Kunming")
                     _resp_color = _skin.get_color("response_border", "#CD7F32")
                     _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                 except Exception:
-                    label = "◆ Kunming"
+                    label = "█Kunming"
                     _resp_color = "#CD7F32"
                     _resp_text = "#FFF8DC"
 
@@ -7047,8 +7109,8 @@ class KunmingCLI:
         except Exception:
             _welcome_text = "km agent ready"
             _welcome_color = "#FFF8DC"
-        self.console.print(f"[{_welcome_color}]  ✨  {_welcome_text}[/]")
-        self.console.print(f"[dim]  💡 {_T('banner.help_command')} · 或直接开始对话[/]")
+        self.console.print(f"[{_welcome_color}]✨ {_welcome_text}[/]")
+        self.console.print(f"[dim]💡 {_T('banner.help_command')}，或直接开始对话[/]")
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)
             self.console.print(
@@ -8214,8 +8276,9 @@ class KunmingCLI:
                     _time.sleep(0.1)
                     continue
                 if self._command_running:
-                    self._invalidate(min_interval=0.1)
-                    _time.sleep(0.1)
+                    # Reduced refresh rate to prevent UI freezing (was 0.1s)
+                    self._invalidate(min_interval=0.5)
+                    _time.sleep(0.2)
                 else:
                     now = _time.monotonic()
                     if now - last_idle_refresh >= 1.0:

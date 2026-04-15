@@ -2652,7 +2652,7 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:
-            print("\n?Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
+            self._safe_print("\n?Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
     
     def clear_interrupt(self) -> None:
         """Clear any pending interrupt request and the global tool interrupt signal."""
@@ -2766,6 +2766,7 @@ class AIAgent:
         # Try SOUL.md as primary identity (unless context files are skipped)
         _soul_loaded = False
         if not self.skip_context_files:
+            self._touch_activity("loading SOUL.md identity")
             _soul_content = load_soul_md()
             if _soul_content:
                 prompt_parts = [_soul_content]
@@ -2889,6 +2890,7 @@ class AIAgent:
             # dir, so os.getcwd() would pick up the repo's AGENTS.md and
             # other dev files ?inflating token usage by ~10k for no benefit.
             _context_cwd = os.getenv("TERMINAL_CWD") or None
+            self._touch_activity("loading context files")
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
@@ -4390,6 +4392,8 @@ class AIAgent:
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
+        _api_call_start = time.monotonic()
+        _api_hard_timeout = float(os.getenv("KUNMING_API_TIMEOUT", 1800.0))
         while t.is_alive():
             t.join(timeout=0.3)
             if self._interrupt_requested:
@@ -4412,6 +4416,14 @@ class AIAgent:
                 except Exception:
                     pass
                 raise InterruptedError("Agent interrupted during API call")
+            if time.monotonic() - _api_call_start > _api_hard_timeout:
+                try:
+                    request_client = request_client_holder.get("client")
+                    if request_client is not None:
+                        self._close_request_openai_client(request_client, reason="hard_timeout")
+                except Exception:
+                    pass
+                raise RuntimeError(f"API call did not complete within {_api_hard_timeout} seconds")
         if result["error"] is not None:
             raise result["error"]
         return result["response"]
@@ -4947,6 +4959,18 @@ class AIAgent:
                 # Reset the timer so we don't kill repeatedly while
                 # the inner thread processes the closure.
                 last_chunk_time["t"] = time.time()
+                # Hard fallback: if closing the connection didn't unblock the
+                # thread, abandon it so the agent thread doesn't hang forever.
+                t.join(timeout=30)
+                if t.is_alive():
+                    logger.error(
+                        "Streaming thread stuck for %.0fs even after connection kill; abandoning.",
+                        _stale_elapsed,
+                    )
+                    result["error"] = RuntimeError(
+                        f"Streaming API call stuck for {_stale_elapsed:.0f}s and did not respond to connection kill"
+                    )
+                    break
 
             if self._interrupt_requested:
                 try:
@@ -6099,7 +6123,7 @@ class AIAgent:
                             store=self._memory_store,
                         )
                         if not self.quiet_mode:
-                            print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
+                            self._safe_print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
                     except Exception as e:
                         logger.debug("Memory flush tool call failed: %s", e)
         except Exception as e:
@@ -6120,6 +6144,7 @@ class AIAgent:
         Returns:
             (compressed_messages, new_system_prompt) tuple
         """
+        self._touch_activity("compressing context")
         _pre_msg_count = len(messages)
         logger.info(
             "context compression started: session=%s messages=%d tokens=~%s model=%s",
@@ -6222,6 +6247,42 @@ class AIAgent:
         )
         return compressed, new_system_prompt
 
+    def _invoke_tool_interruptible(
+        self,
+        function_name: str,
+        function_args: dict,
+        tool_call_id: Optional[str],
+        effective_task_id: str,
+        timeout: float = 30.0,
+    ) -> str:
+        """Run a tool in a background thread so interrupts/timeouts abort promptly."""
+        result_container = [None]
+        exc_container = [None]
+
+        def _run():
+            try:
+                result_container[0] = self._invoke_tool(
+                    function_name, function_args, effective_task_id, tool_call_id
+                )
+            except Exception as exc:
+                exc_container[0] = exc
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        while t.is_alive():
+            t.join(timeout=0.3)
+            if self._interrupt_requested:
+                break
+        t.join(timeout=timeout)
+        if t.is_alive():
+            return (
+                f"Error executing tool '{function_name}': "
+                f"Tool execution did not respond to interrupt within {int(timeout)} seconds."
+            )
+        if exc_container[0] is not None:
+            raise exc_container[0]
+        return result_container[0]
+
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.
 
@@ -6319,7 +6380,7 @@ class AIAgent:
 
         # -- Pre-flight: interrupt check ----------------------------------
         if self._interrupt_requested:
-            print(f"{self.log_prefix}?Interrupt: skipping {num_tools} tool call(s)")
+            self._safe_print(f"{self.log_prefix}?Interrupt: skipping {num_tools} tool call(s)")
             for tc in tool_calls:
                 messages.append({
                     "role": "tool",
@@ -6373,15 +6434,15 @@ class AIAgent:
         # -- Logging / callbacks ------------------------------------------
         tool_names_str = ", ".join(name for _, name, _ in parsed_calls)
         if not self.quiet_mode:
-            print(f"  ?Concurrent: {num_tools} tool calls ?{tool_names_str}")
+            self._safe_print(f"  ?Concurrent: {num_tools} tool calls ?{tool_names_str}")
             for i, (tc, name, args) in enumerate(parsed_calls, 1):
                 args_str = json.dumps(args, ensure_ascii=False)
                 if self.verbose_logging:
-                    print(f"  📞 Tool {i}: {name}({list(args.keys())})")
-                    print(f"     Args: {args_str}")
+                    self._safe_print(f"  📞 Tool {i}: {name}({list(args.keys())})")
+                    self._safe_print(f"     Args: {args_str}")
                 else:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                    print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
+                    self._safe_print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
 
         for tc, name, args in parsed_calls:
             if self.tool_progress_callback:
@@ -6406,7 +6467,10 @@ class AIAgent:
             """Worker function executed in a thread."""
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id)
+                result = self._invoke_tool_interruptible(
+                    function_name, function_args, tool_call.id, effective_task_id,
+                    timeout=_TOOL_TIMEOUT_OVERRIDES.get(function_name, self._tool_timeout),
+                )
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -6425,29 +6489,37 @@ class AIAgent:
             spinner = KawaiiSpinner(f"{face} ?running {num_tools} tools concurrently", spinner_type='dots', print_fn=self._print_fn)
             spinner.start()
 
+        executor = None
         try:
             max_workers = min(num_tools, _MAX_TOOL_WORKERS)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {}
-                for i, (tc, name, args) in enumerate(parsed_calls):
-                    f = executor.submit(_run_tool, i, tc, name, args)
-                    futures[f] = (i, tc, name, args)
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+            futures = {}
+            for i, (tc, name, args) in enumerate(parsed_calls):
+                f = executor.submit(_run_tool, i, tc, name, args)
+                futures[f] = (i, tc, name, args)
 
-                # Wait for all to complete with timeout control
-                for future in concurrent.futures.as_completed(futures):
-                    i, tc, name, args = futures[future]
-                    _tool_timeout = _TOOL_TIMEOUT_OVERRIDES.get(name, self._tool_timeout)
+            # Wait for all to complete with timeout control
+            while futures:
+                if self._interrupt_requested:
+                    unfinished = list(futures.values())
+                    if unfinished:
+                        self._vprint(f"{self.log_prefix}?Interrupt: abandoning {len(unfinished)} unfinished concurrent tool call(s)", force=True)
+                    break
+                done, _ = concurrent.futures.wait(
+                    futures.keys(), timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for future in done:
+                    i, tc, name, args = futures.pop(future)
                     try:
-                        # Wait for this specific future with timeout
-                        future.result(timeout=_tool_timeout)
+                        future.result()
                     except concurrent.futures.TimeoutError:
-                        # Timeout occurred - mark as error
-                        elapsed = _tool_timeout
-                        timeout_msg = f"Error executing tool '{name}': Tool execution timed out after {_tool_timeout} seconds"
-                        logger.error("Tool %s timed out after %ds", name, _tool_timeout)
+                        elapsed = _TOOL_TIMEOUT_OVERRIDES.get(name, self._tool_timeout)
+                        timeout_msg = f"Error executing tool '{name}': Tool execution timed out after {elapsed} seconds"
+                        logger.error("Tool %s timed out after %ds", name, elapsed)
                         results[i] = (name, args, timeout_msg, elapsed, True)
-                        # Cancel the future if possible
                         future.cancel()
+                    except concurrent.futures.CancelledError:
+                        results[i] = (name, args, f"Error executing tool '{name}': Tool execution was cancelled", 0.0, True)
                     except Exception:
                         # Other exceptions are already handled inside _run_tool
                         pass
@@ -6457,6 +6529,10 @@ class AIAgent:
                 completed = sum(1 for r in results if r is not None)
                 total_dur = sum(r[3] for r in results if r is not None)
                 spinner.stop(f"?{completed}/{num_tools} tools completed in {total_dur:.1f}s total")
+            if executor is not None:
+                # Do NOT wait for stuck threads (e.g. unresponsive MCP calls).
+                # cancel_futures=True prevents not-yet-started work from running.
+                executor.shutdown(wait=False, cancel_futures=True)
 
         # -- Post-execution: display per-tool results ---------------------
         for i, (tc, name, args) in enumerate(parsed_calls):
@@ -6491,11 +6567,11 @@ class AIAgent:
                 self._safe_print(f"  {cute_msg}")
             elif not self.quiet_mode:
                 if self.verbose_logging:
-                    print(f"  ?Tool {i+1} completed in {tool_duration:.2f}s")
-                    print(f"     Result: {function_result}")
+                    self._safe_print(f"  ?Tool {i+1} completed in {tool_duration:.2f}s")
+                    self._safe_print(f"     Result: {function_result}")
                 else:
                     response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
-                    print(f"  ?Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
+                    self._safe_print(f"  ?Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
             self._current_tool = None
             self._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
@@ -6546,7 +6622,7 @@ class AIAgent:
             if not self.quiet_mode:
                 remaining = self.max_iterations - api_call_count
                 tier = "[!]  WARNING" if remaining <= self.max_iterations * 0.1 else "💡 CAUTION"
-                print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
+                self._safe_print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
 
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
@@ -6587,11 +6663,11 @@ class AIAgent:
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
                 if self.verbose_logging:
-                    print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
-                    print(f"     Args: {args_str}")
+                    self._safe_print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
+                    self._safe_print(f"     Args: {args_str}")
                 else:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
-                    print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+                    self._safe_print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
             self._current_tool = function_name
             self._touch_activity(f"executing tool: {function_name}")
@@ -6716,68 +6792,23 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:
                         self._vprint(f"  {cute_msg}")
-            elif self._memory_manager and self._memory_manager.has_tool(function_name):
-                # Memory provider tools (hindsight_retain, honcho_search, etc.)
-                # These are not in the tool registry ?route through MemoryManager.
-                spinner = None
-                if self.quiet_mode and not self.tool_progress_callback:
-                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-                    emoji = _get_tool_emoji(function_name)
-                    preview = _build_tool_preview(function_name, function_args) or function_name
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
-                    spinner.start()
-                _mem_result = None
-                try:
-                    function_result = self._memory_manager.handle_tool_call(function_name, function_args)
-                    _mem_result = function_result
-                except Exception as tool_error:
-                    function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
-                    logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                finally:
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    elif self.quiet_mode:
-                        self._vprint(f"  {cute_msg}")
             elif self.quiet_mode:
-                spinner = None
-                if not self.tool_progress_callback:
-                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
-                    emoji = _get_tool_emoji(function_name)
-                    preview = _build_tool_preview(function_name, function_args) or function_name
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
-                    spinner.start()
-                _spinner_result = None
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    function_result = self._invoke_tool_interruptible(
+                        function_name, function_args, tool_call.id, effective_task_id
                     )
-                    _spinner_result = function_result
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
-                finally:
-                    tool_duration = time.time() - tool_start_time
-                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
-                    if spinner:
-                        spinner.stop(cute_msg)
-                    else:
-                        self._vprint(f"  {cute_msg}")
+                    logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+                tool_duration = time.time() - tool_start_time
             else:
                 try:
-                    function_result = handle_function_call(
-                        function_name, function_args, effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=self.session_id or "",
-                        enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                    function_result = self._invoke_tool_interruptible(
+                        function_name, function_args, tool_call.id, effective_task_id
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
-                    logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                    logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
             result_preview = function_result if self.verbose_logging else (
@@ -6835,11 +6866,11 @@ class AIAgent:
 
             if not self.quiet_mode:
                 if self.verbose_logging:
-                    print(f"  ?Tool {i} completed in {tool_duration:.2f}s")
-                    print(f"     Result: {function_result}")
+                    self._safe_print(f"  ?Tool {i} completed in {tool_duration:.2f}s")
+                    self._safe_print(f"     Result: {function_result}")
                 else:
                     response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
-                    print(f"  ?Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
+                    self._safe_print(f"  ?Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
                 remaining = len(assistant_message.tool_calls) - i
@@ -6881,7 +6912,7 @@ class AIAgent:
             if not self.quiet_mode:
                 remaining = self.max_iterations - api_call_count
                 tier = "[!]  WARNING" if remaining <= self.max_iterations * 0.1 else "💡 CAUTION"
-                print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
+                self._safe_print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
 
     def _get_budget_warning(self, api_call_count: int) -> Optional[str]:
         """Return a budget pressure string, or None if not yet needed.
@@ -7167,6 +7198,7 @@ class AIAgent:
         self._incomplete_scratchpad_retries = 0
         self._codex_incomplete_retries = 0
         self._thinking_prefill_retries = 0
+        self._length_continue_retries = 0
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._surrogate_sanitized = False
@@ -7292,6 +7324,7 @@ class AIAgent:
             stored_prompt = None
             if conversation_history and self._session_db:
                 try:
+                    self._touch_activity("loading system prompt from session DB")
                     session_row = self._session_db.get_session(self.session_id)
                     if session_row:
                         stored_prompt = session_row.get("system_prompt") or None
@@ -7304,6 +7337,7 @@ class AIAgent:
                 self._cached_system_prompt = stored_prompt
             else:
                 # First turn of a new session ?build from scratch.
+                self._touch_activity("building system prompt")
                 self._cached_system_prompt = self._build_system_prompt(system_message, user_message)
                 # Plugin hook: on_session_start
                 # Fired once when a brand-new session is created (not on
@@ -7341,6 +7375,7 @@ class AIAgent:
             and len(messages) > self.context_compressor.protect_first_n
                                 + self.context_compressor.protect_last_n + 1
         ):
+            self._touch_activity("checking context size")
             # Include tool schema tokens ?with many tools these can add
             # 20-30K+ tokens that the old sys+msg estimate missed entirely.
             _preflight_tokens = estimate_request_tokens_rough(

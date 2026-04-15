@@ -36,6 +36,7 @@ import logging
 import math
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -47,10 +48,8 @@ from typing import Dict, List, Optional, Any, Tuple
 
 from kunming_constants import get_kunming_home
 
-try:
-    import fcntl
-except ImportError:
-    fcntl = None
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils import file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -92,37 +91,7 @@ def _state_path() -> Path:
     return _distill_dir() / _STATE_FILE
 
 
-@contextmanager
-def _json_lock(path: Path):
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = open(lock_path, "w")
-    try:
-        if fcntl is not None:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        else:
-            import msvcrt
-            _deadline = time.monotonic() + 30
-            while time.monotonic() < _deadline:
-                try:
-                    msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
-                    break
-                except OSError:
-                    time.sleep(0.1)
-            else:
-                fd.close()
-                raise TimeoutError("Failed to acquire lock within 30s")
-        yield
-    finally:
-        if fcntl is not None:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        else:
-            try:
-                import msvcrt
-                msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except OSError:
-                pass
-        fd.close()
+
 
 
 def _load_json(path: Path, default: Any = None) -> Any:
@@ -235,7 +204,7 @@ def record_signal(
         return
 
     signals_path = _signals_path()
-    with _json_lock(signals_path):
+    with file_lock(str(signals_path)):
         signals = _load_json(signals_path, {"version": 1, "entries": {}})
         entries = signals.setdefault("entries", {})
 
@@ -491,7 +460,7 @@ def _promote_to_memory(
 def _mark_promoted(keys: List[str]) -> None:
     """Mark signals as promoted so they aren't re-promoted in future runs."""
     signals_path = _signals_path()
-    with _json_lock(signals_path):
+    with file_lock(str(signals_path)):
         signals = _load_json(signals_path, {"version": 1, "entries": {}})
         entries = signals.get("entries", {})
         now = _now_iso()
@@ -686,7 +655,7 @@ def run_distillation(config: Optional[Dict[str, Any]] = None, verbose: bool = Fa
         result["decay"] = decay_results
 
     state_path = _state_path()
-    with _json_lock(state_path):
+    with file_lock(str(state_path)):
         state = _load_json(state_path, {"version": 1, "runs": []})
         runs = state.setdefault("runs", [])
         runs.append({

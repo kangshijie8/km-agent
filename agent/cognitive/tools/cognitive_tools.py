@@ -58,7 +58,7 @@ def check_cognitive_core_requirements() -> bool:
     """检查Cognitive Core集成是否可用"""
     try:
         # 检查核心适配器模块是否可导入
-        from ..adapters import get_hybrid_memory_provider
+        from ..adapters import get_smart_delegator
         return True
     except ImportError as e:
         logger.debug(f"Cognitive Core not available: {e}")
@@ -135,141 +135,6 @@ def _safe_truncate(text: str, max_length: int = 200) -> str:
     while truncated and (ord(truncated[-1]) & 0xC0) == 0x80:
         truncated = truncated[:-1]
     return truncated + "..."
-
-
-# ============ 记忆系统工具 ============
-
-def cognitive_memory_search(
-    query: str,
-    k: int = 10,
-    use_hybrid: bool = True,
-    task_id: str = None
-) -> str:
-    """
-    使用Cognitive Core增强的混合记忆搜索
-    
-    结合Kunming的FTS5和Cognitive Core的HNSW向量索引，提供150x-12,500x更快的语义搜索
-    
-    Args:
-        query: 搜索查询
-        k: 返回结果数量
-        use_hybrid: 是否使用混合搜索（FTS5 + HNSW）
-    """
-    # 参数验证
-    valid, error_msg = _validate_string_param(query, "query", required=True, max_length=1000)
-    if not valid:
-        return json.dumps({"success": False, "error": error_msg})
-    
-    valid, k_val, error_msg = _validate_int_param(k, "k", default=10, min_val=1, max_val=100)
-    if not valid:
-        return json.dumps({"success": False, "error": error_msg})
-    
-    valid, use_hybrid_val, error_msg = _validate_bool_param(use_hybrid, "use_hybrid", default=True)
-    if not valid:
-        return json.dumps({"success": False, "error": error_msg})
-    
-    try:
-        from ..adapters import get_hybrid_memory_provider
-        
-        provider = get_hybrid_memory_provider()
-        
-        # 确保初始化
-        if not provider._initialized:
-            provider.initialize()
-        
-        # 执行搜索
-        results = _run_async(provider.search(query, k=k_val, use_hybrid=use_hybrid_val))
-        
-        # 格式化结果
-        formatted = []
-        for r in results:
-            formatted.append({
-                "id": r.id,
-                "content": _safe_truncate(r.content, 200),
-                "memory_type": r.memory_type,
-                "hybrid_score": round(r.hybrid_score, 4),
-                "fts_score": round(r.fts_score, 4),
-                "vector_score": round(r.vector_score, 4)
-            })
-        
-        return json.dumps({
-            "success": True,
-            "query": query,
-            "result_count": len(formatted),
-            "results": formatted
-        }, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        logger.error(f"cognitive_memory_search failed: {e}", exc_info=True)
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        })
-
-
-def cognitive_memory_store(
-    content: str,
-    memory_type: str = "episodic",
-    metadata: str = "{}",
-    task_id: str = None
-) -> str:
-    """
-    存储记忆到Cognitive Core的统一记忆系统
-    
-    同时存入HNSW向量索引和持久化存储
-    
-    Args:
-        content: 记忆内容
-        memory_type: 记忆类型 (episodic/semantic/procedural/working)
-        metadata: JSON格式的元数据
-    """
-    # 参数验证
-    valid, error_msg = _validate_string_param(content, "content", required=True, max_length=100000)
-    if not valid:
-        return json.dumps({"success": False, "error": error_msg})
-    
-    valid, error_msg = _validate_string_param(memory_type, "memory_type", required=False, max_length=50)
-    if not valid:
-        return json.dumps({"success": False, "error": error_msg})
-    
-    valid, meta, error_msg = _validate_json_param(metadata, "metadata", default={})
-    if not valid:
-        return json.dumps({"success": False, "error": error_msg})
-    
-    # 验证memory_type枚举值
-    valid_types = ["episodic", "semantic", "procedural", "working"]
-    if memory_type not in valid_types:
-        return json.dumps({
-            "success": False, 
-            "error": f"Invalid memory_type '{memory_type}'. Must be one of: {', '.join(valid_types)}"
-        })
-    
-    try:
-        from ..adapters import get_hybrid_memory_provider
-        
-        provider = get_hybrid_memory_provider()
-        
-        if not provider._initialized:
-            provider.initialize()
-        
-        memory_id = _run_async(provider.store(
-            content=content,
-            memory_type=memory_type,
-            metadata=meta
-        ))
-        
-        return json.dumps({
-            "success": True,
-            "memory_id": memory_id,
-            "memory_type": memory_type
-        })
-        
-    except Exception as e:
-        logger.error(f"cognitive_memory_store failed: {e}", exc_info=True)
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        })
 
 
 # ============ 专家系统工具 ============
@@ -563,31 +428,11 @@ def cognitive_core_learn_from_trajectory(
     if not valid:
         return json.dumps({"success": False, "error": error_msg})
     
-    try:
-        from ..adapters import get_unified_learning
-        
-        learning = get_unified_learning()
-        
-        if not learning._initialized:
-            _run_async(learning.initialize())
-        
-        result = _run_async(learning.learn_from_trajectory(
-            trajectory=trajectory,
-            task_type=task_type
-        ))
-        
-        return json.dumps({
-            "success": True,
-            "task_type": task_type,
-            "result": result
-        }, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        logger.error(f"cognitive_core_learn_from_trajectory failed: {e}", exc_info=True)
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        })
+    # 注意：learning_adapter 已被删除，使用主系统的 error_learning 替代
+    return json.dumps({
+        "success": False,
+        "error": "cognitive_core_learn_from_trajectory is deprecated. Use the main system's memory_tool and error_learning instead."
+    })
 
 
 def cognitive_core_create_skill(
@@ -625,54 +470,20 @@ def cognitive_core_create_skill(
     if not valid:
         return json.dumps({"success": False, "error": error_msg})
     
-    try:
-        from ..adapters import get_unified_learning
-        
-        learning = get_unified_learning()
-        
-        if not learning._initialized:
-            _run_async(learning.initialize())
-        
-        result = _run_async(learning.create_skill(
-            name=name,
-            description=description,
-            content=content,
-            auto_improve=auto_improve_val
-        ))
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        logger.error(f"cognitive_core_create_skill failed: {e}", exc_info=True)
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        })
+    # 注意：learning_adapter 已被删除，使用主系统的 skill_commands 替代
+    return json.dumps({
+        "success": False,
+        "error": "cognitive_core_create_skill is deprecated. Use the main system's skill_commands instead."
+    })
 
 
 def cognitive_core_learning_stats(task_id: str = None) -> str:
     """获取学习系统统计"""
-    try:
-        from ..adapters import get_unified_learning
-        
-        learning = get_unified_learning()
-        
-        if not learning._initialized:
-            _run_async(learning.initialize())
-        
-        stats = _run_async(learning.get_learning_stats())
-        
-        return json.dumps({
-            "success": True,
-            "stats": stats
-        }, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        logger.error(f"cognitive_core_learning_stats failed: {e}", exc_info=True)
-        return json.dumps({
-            "success": False,
-            "error": str(e)
-        })
+    # 注意：learning_adapter 已被删除
+    return json.dumps({
+        "success": False,
+        "error": "cognitive_core_learning_stats is deprecated. Use the main system's memory_tool instead."
+    })
 
 
 # ============ 系统状态工具 ============
@@ -680,28 +491,14 @@ def cognitive_core_learning_stats(task_id: str = None) -> str:
 def cognitive_core_system_status(task_id: str = None) -> str:
     """获取Cognitive Core集成系统状态"""
     status = {
-        "memory_system": {"available": False, "initialized": False},
+        "memory_system": {"available": False, "initialized": False, "note": "Use main system's memory_tool instead"},
         "expert_system": {"available": False, "initialized": False},
         "swarm_system": {"available": False, "initialized": False},
-        "learning_system": {"available": False, "initialized": False}
+        "learning_system": {"available": False, "initialized": False, "note": "Use main system's error_learning instead"}
     }
     
     try:
-        from ..adapters import (
-            get_hybrid_memory_provider,
-            get_smart_delegator,
-            get_unified_learning
-        )
-        
-        # 检查记忆系统
-        try:
-            mem = get_hybrid_memory_provider()
-            status["memory_system"] = {
-                "available": True,
-                "initialized": mem._initialized
-            }
-        except Exception as e:
-            status["memory_system"]["error"] = str(e)
+        from ..adapters import get_smart_delegator
         
         # 检查专家系统
         try:
@@ -713,20 +510,10 @@ def cognitive_core_system_status(task_id: str = None) -> str:
         except Exception as e:
             status["expert_system"]["error"] = str(e)
         
-        # 检查学习系统
-        try:
-            learning = get_unified_learning()
-            status["learning_system"] = {
-                "available": True,
-                "initialized": learning._initialized
-            }
-        except Exception as e:
-            status["learning_system"]["error"] = str(e)
-        
         # 蜂群系统随专家系统一起
         status["swarm_system"] = status["expert_system"].copy()
         
-        all_ready = all(s.get("available", False) for s in status.values())
+        all_ready = all(s.get("available", False) for s in [status["expert_system"], status["swarm_system"]])
         
         return json.dumps({
             "success": True,
@@ -747,57 +534,6 @@ def cognitive_core_system_status(task_id: str = None) -> str:
 
 def register_cognitive_tools():
     """注册所有Cognitive Core集成工具"""
-    
-    # 记忆系统
-    registry.register(
-        name="cognitive_memory_search",
-        toolset="Cognitive Core",
-        schema={
-            "name": "cognitive_memory_search",
-            "description": "使用Cognitive Core增强的混合记忆搜索（FTS5 + HNSW向量索引，150x-12,500x更快）",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索查询"},
-                    "k": {"type": "integer", "description": "返回结果数量", "default": 10},
-                    "use_hybrid": {"type": "boolean", "description": "是否使用混合搜索", "default": True}
-                },
-                "required": ["query"]
-            }
-        },
-        handler=lambda args, **kw: cognitive_memory_search(
-            query=args.get("query"),
-            k=args.get("k", 10),
-            use_hybrid=args.get("use_hybrid", True),
-            task_id=kw.get("task_id")
-        ),
-        check_fn=check_cognitive_core_requirements
-    )
-    
-    registry.register(
-        name="cognitive_memory_store",
-        toolset="Cognitive Core",
-        schema={
-            "name": "cognitive_memory_store",
-            "description": "存储记忆到Cognitive Core的统一记忆系统",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "content": {"type": "string", "description": "记忆内容"},
-                    "memory_type": {"type": "string", "description": "记忆类型", "default": "episodic"},
-                    "metadata": {"type": "string", "description": "JSON元数据", "default": "{}"}
-                },
-                "required": ["content"]
-            }
-        },
-        handler=lambda args, **kw: cognitive_memory_store(
-            content=args.get("content"),
-            memory_type=args.get("memory_type", "episodic"),
-            metadata=args.get("metadata", "{}"),
-            task_id=kw.get("task_id")
-        ),
-        check_fn=check_cognitive_core_requirements
-    )
     
     # 专家系统
     registry.register(
@@ -897,68 +633,6 @@ def register_cognitive_tools():
         check_fn=check_cognitive_core_requirements
     )
     
-    # 学习系统
-    registry.register(
-        name="cognitive_core_learn_from_trajectory",
-        toolset="Cognitive Core",
-        schema={
-            "name": "cognitive_core_learn_from_trajectory",
-            "description": "从执行轨迹学习（整合SONA学习系统）",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "trajectory_json": {"type": "string", "description": "执行轨迹JSON"},
-                    "task_type": {"type": "string", "description": "任务类型", "default": "general"}
-                },
-                "required": ["trajectory_json"]
-            }
-        },
-        handler=lambda args, **kw: cognitive_core_learn_from_trajectory(
-            trajectory_json=args.get("trajectory_json"),
-            task_type=args.get("task_type", "general"),
-            task_id=kw.get("task_id")
-        ),
-        check_fn=check_cognitive_core_requirements
-    )
-    
-    registry.register(
-        name="cognitive_core_create_skill",
-        toolset="Cognitive Core",
-        schema={
-            "name": "cognitive_core_create_skill",
-            "description": "创建可复用技能（自动优化）",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "技能名称"},
-                    "description": {"type": "string", "description": "技能描述"},
-                    "content": {"type": "string", "description": "技能内容"},
-                    "auto_improve": {"type": "boolean", "description": "自动改进", "default": True}
-                },
-                "required": ["name", "description", "content"]
-            }
-        },
-        handler=lambda args, **kw: cognitive_core_create_skill(
-            name=args.get("name"),
-            description=args.get("description"),
-            content=args.get("content"),
-            auto_improve=args.get("auto_improve", True),
-            task_id=kw.get("task_id")
-        ),
-        check_fn=check_cognitive_core_requirements
-    )
-    
-    registry.register(
-        name="cognitive_core_learning_stats",
-        toolset="Cognitive Core",
-        schema={
-            "name": "cognitive_core_learning_stats",
-            "description": "获取学习系统统计"
-        },
-        handler=lambda args, **kw: cognitive_core_learning_stats(task_id=kw.get("task_id")),
-        check_fn=check_cognitive_core_requirements
-    )
-    
     # 系统状态
     registry.register(
         name="cognitive_core_system_status",
@@ -977,7 +651,7 @@ def ensure_registered():
     """确保工具已注册（幂等操作）"""
     try:
         # 检查是否已注册
-        if "cognitive_memory_search" not in registry.list_tools():
+        if "cognitive_core_delegate" not in registry.list_tools():
             register_cognitive_tools()
     except Exception as e:
         logger.warning(f"Failed to register cognitive tools: {e}")

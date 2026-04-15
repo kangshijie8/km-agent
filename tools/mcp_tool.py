@@ -1191,11 +1191,30 @@ def _run_on_mcp_loop(coro, timeout: float = 120):
             raise RuntimeError("MCP event loop is not running")
         future = asyncio.run_coroutine_threadsafe(coro, loop)
     try:
-        return future.result(timeout=timeout)
-    except TimeoutError:
+        # Poll in 1-second slices so we can abort early when the agent is
+        # interrupted, instead of blocking for the full timeout.
+        from tools.interrupt import is_interrupted
+        elapsed = 0.0
+        slice_ = 1.0
+        while elapsed < timeout:
+            wait_for = min(slice_, timeout - elapsed)
+            try:
+                return future.result(timeout=wait_for)
+            except TimeoutError:
+                elapsed += wait_for
+                if is_interrupted():
+                    future.cancel()
+                    _cancelled_tasks.add(future)
+                    raise TimeoutError(
+                        "MCP tool call was cancelled because the agent was interrupted"
+                    )
         future.cancel()
         _cancelled_tasks.add(future)
         raise TimeoutError(f"MCP tool call timed out after {timeout}s")
+    except TimeoutError:
+        future.cancel()
+        _cancelled_tasks.add(future)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1590,13 +1609,97 @@ def sanitize_mcp_name_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", str(value or ""))
 
 
-def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
+def _load_mcp_global_config() -> dict:
+    """Load global MCP configuration from config.yaml.
+
+    Returns a dict with keys: enabled, max_tools, max_description_length,
+    tool_filter (with include/exclude lists).
+    """
+    try:
+        from kunming_cli.config import load_config
+        config = load_config()
+        mcp_config = config.get("mcp", {})
+        return {
+            "enabled": mcp_config.get("enabled", True),
+            "max_tools": mcp_config.get("max_tools", 50),
+            "max_description_length": mcp_config.get("max_description_length", 500),
+            "tool_filter": mcp_config.get("tool_filter", {}),
+        }
+    except Exception as exc:
+        logger.debug("Failed to load MCP global config: %s", exc)
+        return {
+            "enabled": True,
+            "max_tools": 50,
+            "max_description_length": 500,
+            "tool_filter": {},
+        }
+
+
+def _truncate_description(description: str, max_length: int) -> str:
+    """Truncate description to max_length, preserving sentence boundaries."""
+    if not max_length or not description or len(description) <= max_length:
+        return description or ""
+
+    # Try to truncate at sentence boundary
+    truncated = description[:max_length]
+    # Look for sentence endings (. ! ?)
+    for i in range(len(truncated) - 1, max(0, len(truncated) - 100), -1):
+        if truncated[i] in ".!?":
+            return truncated[:i + 1].strip()
+    # Fallback: truncate at word boundary
+    last_space = truncated.rfind(" ")
+    if last_space > max_length * 0.8:  # Only if we keep at least 80%
+        return truncated[:last_space].strip() + "..."
+    return truncated.strip() + "..."
+
+
+def _matches_filter_patterns(tool_name: str, patterns: list) -> bool:
+    """Check if tool_name matches any of the filter patterns.
+
+    Supports exact string match and simple wildcard patterns (* and ?).
+    """
+    if not patterns:
+        return False
+
+    for pattern in patterns:
+        if not pattern:
+            continue
+        pattern_str = str(pattern)
+        # Simple wildcard matching
+        if "*" in pattern_str or "?" in pattern_str:
+            import fnmatch
+            if fnmatch.fnmatch(tool_name, pattern_str):
+                return True
+        elif pattern_str.lower() in tool_name.lower():
+            return True
+    return False
+
+
+def _should_load_tool_globally(tool_name: str, global_config: dict) -> bool:
+    """Check if a tool should be loaded based on global filter config."""
+    tool_filter = global_config.get("tool_filter", {})
+    include_patterns = tool_filter.get("include", [])
+    exclude_patterns = tool_filter.get("exclude", [])
+
+    # If include patterns are specified, tool must match one of them
+    if include_patterns and not _matches_filter_patterns(tool_name, include_patterns):
+        return False
+
+    # If tool matches any exclude pattern, skip it
+    if exclude_patterns and _matches_filter_patterns(tool_name, exclude_patterns):
+        return False
+
+    return True
+
+
+def _convert_mcp_schema(server_name: str, mcp_tool, global_config: dict = None) -> dict:
     """Convert an MCP tool listing to the Kunming registry schema format.
 
     Args:
         server_name: The logical server name for prefixing.
         mcp_tool:    An MCP ``Tool`` object with ``.name``, ``.description``,
                      and ``.inputSchema``.
+        global_config: Optional global MCP config for description truncation.
 
     Returns:
         A dict suitable for ``registry.register(schema=...)``.
@@ -1604,9 +1707,15 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
     safe_server_name = sanitize_mcp_name_component(server_name)
     prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
+
+    # Truncate description if configured
+    max_desc_len = (global_config or {}).get("max_description_length", 0) if global_config else 0
+    description = mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
+    description = _truncate_description(description, max_desc_len)
+
     return {
         "name": prefixed_name,
-        "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
+        "description": description,
         "parameters": _normalize_mcp_input_schema(mcp_tool.inputSchema),
     }
 
@@ -1801,12 +1910,13 @@ def _select_utility_schemas(server_name: str, server: MCPServerTask, config: dic
 def _existing_tool_names() -> List[str]:
     """Return tool names for all currently connected servers."""
     names: List[str] = []
+    global_config = _load_mcp_global_config()
     for _sname, server in _servers.items():
         if hasattr(server, "_registered_tool_names"):
             names.extend(server._registered_tool_names)
             continue
         for mcp_tool in server._tools:
-            schema = _convert_mcp_schema(server.name, mcp_tool)
+            schema = _convert_mcp_schema(server.name, mcp_tool, global_config)
             names.append(schema["name"])
     return names
 
@@ -1828,6 +1938,14 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
 
+    # Load global MCP configuration
+    global_config = _load_mcp_global_config()
+
+    # Check if MCP is globally disabled
+    if not global_config.get("enabled", True):
+        logger.info("MCP server '%s': MCP is globally disabled, skipping tool registration", name)
+        return registered_names
+
     # Selective tool loading: honour include/exclude lists from config.
     # Rules (matching issue #690 spec):
     #   tools.include — whitelist: only these tool names are registered
@@ -1839,17 +1957,34 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     exclude_set = _normalize_name_filter(tools_filter.get("exclude"), f"mcp_servers.{name}.tools.exclude")
 
     def _should_register(tool_name: str) -> bool:
+        # Check per-server include/exclude first
         if include_set:
-            return tool_name in include_set
-        if exclude_set:
-            return tool_name not in exclude_set
-        return True
+            if tool_name not in include_set:
+                return False
+        elif exclude_set:
+            if tool_name in exclude_set:
+                return False
+        # Then check global filters
+        return _should_load_tool_globally(tool_name, global_config)
+
+    # Track total registered tools for max_tools limit
+    total_registered = 0
+    max_tools = global_config.get("max_tools", 0)
 
     for mcp_tool in server._tools:
+        # Check max_tools limit
+        if max_tools and total_registered >= max_tools:
+            logger.warning(
+                "MCP server '%s': reached global max_tools limit (%d), "
+                "skipping remaining %d tools. Consider increasing mcp.max_tools in config.",
+                name, max_tools, len(server._tools) - total_registered
+            )
+            break
+
         if not _should_register(mcp_tool.name):
             logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, mcp_tool.name)
             continue
-        schema = _convert_mcp_schema(name, mcp_tool)
+        schema = _convert_mcp_schema(name, mcp_tool, global_config)
         tool_name_prefixed = schema["name"]
 
         # Guard against collisions with built-in (non-MCP) tools.
@@ -1871,6 +2006,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             is_async=False,
         )
         registered_names.append(tool_name_prefixed)
+        total_registered += 1
 
     # Register MCP Resources & Prompts utility tools, filtered by config and
     # only when the server actually supports the corresponding capability.

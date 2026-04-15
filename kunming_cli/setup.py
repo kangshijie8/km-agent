@@ -154,7 +154,7 @@ def _setup_copilot_reasoning_selection(
         return
 
     current_effort = _current_reasoning_effort(config)
-    choices = list(efforts) + ["Disable reasoning", f"Keep current ({current_effort or 'default'})"]
+    choices = list(efforts) + ["禁用推理", f"保持当前设置 ({current_effort or 'default'})"]
 
     if current_effort == "none":
         default_idx = len(efforts)
@@ -165,7 +165,7 @@ def _setup_copilot_reasoning_selection(
     else:
         default_idx = len(choices) - 1
 
-    effort_idx = prompt_choice("Select reasoning effort:", choices, default_idx)
+    effort_idx = prompt_choice("选择推理强度：", choices, default_idx)
     if effort_idx < len(efforts):
         _set_reasoning_effort(config, efforts[effort_idx])
     elif effort_idx == len(efforts):
@@ -231,14 +231,14 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
 
     if live_models:
         provider_models = live_models
-        print_info(f"Found {len(live_models)} model(s) from {pconfig.name} API")
+        print_info(f"从 {pconfig.name} API 发现 {len(live_models)} 个模型")
     else:
         fallback_provider_id = "copilot" if provider_id == "copilot-acp" else provider_id
         provider_models = _DEFAULT_PROVIDER_MODELS.get(fallback_provider_id, [])
         if provider_models:
             print_warning(
-                f"Could not auto-detect models from {pconfig.name} API -showing defaults.\n"
-                f"    Use \"Custom model\" if the model you expect isn't listed."
+                f"无法从 {pconfig.name} API 自动检测模型 -显示默认列表。\n"
+                f"    如果所需模型未列出，请选择\"自定义模型\"。"
             )
 
     if provider_id in {"opencode-zen", "opencode-go"}:
@@ -247,11 +247,11 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
         provider_models = list(dict.fromkeys(mid for mid in provider_models if mid))
 
     model_choices = list(provider_models)
-    model_choices.append("Custom model")
-    model_choices.append(f"Keep current ({current_model})")
+    model_choices.append("自定义模型")
+    model_choices.append(f"保持当前设置 ({current_model})")
 
     keep_idx = len(model_choices) - 1
-    model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
+    model_idx = prompt_choice("选择默认模型：", model_choices, keep_idx)
 
     selected_model = current_model
 
@@ -267,7 +267,7 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
             selected_model = normalize_opencode_model_id(provider_id, selected_model)
         _set_default_model(config, selected_model)
     elif model_idx == len(provider_models):
-        custom = prompt_fn("Enter model name")
+        custom = prompt_fn("输入模型名称")
         if custom:
             if is_copilot_catalog_provider:
                 selected_model = normalize_copilot_model_id(
@@ -286,9 +286,9 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
         # on direct-API providers and would silently break the gateway.
         if "/" in (current_model or "") and provider_models:
             print_warning(
-                f"Current model \"{current_model}\" looks like an OpenRouter model "
-                f"and won't work with {pconfig.name}. "
-                f"Switching to {provider_models[0]}."
+                f"当前模型 \"{current_model}\" 看起来像是 OpenRouter 模型，"
+                f"无法在 {pconfig.name} 上使用。"
+                f"正在切换到 {provider_models[0]}。"
             )
             selected_model = provider_models[0]
             _set_default_model(config, provider_models[0])
@@ -370,19 +370,19 @@ def is_interactive_stdin() -> bool:
 def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     """Print guidance for headless/non-interactive setup flows."""
     print()
-    print(color("[ON]km setup -Non-interactive mode", Colors.CYAN, Colors.BOLD))
+    print(color("[ON]km setup - 非交互模式", Colors.CYAN, Colors.BOLD))
     print()
     if reason:
         print_info(reason)
-    print_info("The interactive wizard cannot be used here.")
+    print_info("交互式向导无法在此环境中使用。")
     print()
-    print_info("Configure Kunming using environment variables or config commands:")
+    print_info("请使用环境变量或配置命令来配置 Kunming：")
     print_info("  km config set model.provider custom")
     print_info("  km config set model.base_url http://localhost:8080/v1")
     print_info("  km config set model.default your-model-name")
     print()
-    print_info("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.")
-    print_info("Run 'km setup' in an interactive terminal to use the full wizard.")
+    print_info("或在环境中设置 OPENROUTER_API_KEY / OPENAI_API_KEY。")
+    print_info("在交互式终端中运行 'km setup' 以使用完整向导。")
     print()
 
 
@@ -492,7 +492,7 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
     idx = _curses_prompt_choice(question, choices, default)
     if idx >= 0:
         if idx == default:
-            print_info("  Skipped (keeping current)")
+            print_info("  已跳过（保持当前设置）")
             print()
             return default
         print()
@@ -506,21 +506,21 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
         else:
             print(f"  {marker} {choice}")
 
-    print_info(f"  Enter for default ({default + 1})  Ctrl+C to exit")
+    print_info(f"  回车使用默认值 ({default + 1})  Ctrl+C 退出")
 
     while True:
         try:
             value = input(
-                color(f"  Select [1-{len(choices)}] ({default + 1}): ", Colors.DIM)
+                color(f"  选择 [1-{len(choices)}] ({default + 1}): ", Colors.DIM)
             )
             if not value:
                 return default
             idx = int(value) - 1
             if 0 <= idx < len(choices):
                 return idx
-            print_error(f"Please enter a number between 1 and {len(choices)}")
+            print_error(f"请输入 1 到 {len(choices)} 之间的数字")
         except ValueError:
-            print_error("Please enter a number")
+            print_error("请输入数字")
         except (KeyboardInterrupt, EOFError):
             print()
             sys.exit(1)
@@ -547,7 +547,7 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
             return True
         if value in ("n", "no"):
             return False
-        print_error("Please enter 'y' or 'n'")
+        print_error("请输入 'y' 或 'n'")
 
 
 def prompt_checklist(title: str, items: list, pre_selected: list = None) -> list:
@@ -584,15 +584,15 @@ def _prompt_api_key(var: dict):
     tools = var.get("tools", [])
     tools_str = ", ".join(tools[:3])
     if len(tools) > 3:
-        tools_str += f", +{len(tools) - 3} more"
+        tools_str += f" 等 {len(tools) - 3} 项"
 
     print()
     print(color(f"  --- {var.get('description', var['name'])} ---", Colors.CYAN))
     print()
     if tools_str:
-        print_info(f"  Enables: {tools_str}")
+        print_info(f"  启用工具: {tools_str}")
     if var.get("url"):
-        print_info(f"  Get your key at: {var['url']}")
+        print_info(f"  获取密钥: {var['url']}")
     print()
 
     if var.get("password"):
@@ -602,16 +602,16 @@ def _prompt_api_key(var: dict):
 
     if value:
         save_env_value(var["name"], value)
-        print_success("  [OK]Saved")
+        print_success("  [OK] 已保存")
     else:
-        print_warning("  Skipped (configure later with 'km setup')")
+        print_warning("  已跳过（稍后可通过 'km setup' 配置）")
 
 
 def _print_setup_summary(config: dict, kunming_home):
     """Print the setup completion summary."""
     # Tool availability summary
     print()
-    print_header("Tool Availability Summary")
+    print_header("工具可用性摘要")
 
     tool_status = []
     subscription_features = get_nous_subscription_features(config)
@@ -625,75 +625,75 @@ def _print_setup_summary(config: dict, kunming_home):
         _vision_backends = []
 
     if _vision_backends:
-        tool_status.append(("Vision (image analysis)", True, None))
+        tool_status.append(("视觉（图像分析）", True, None))
     else:
-        tool_status.append(("Vision (image analysis)", False, "run 'km setup' to configure"))
+        tool_status.append(("视觉（图像分析）", False, "运行 'km setup' 进行配置"))
 
     # Mixture of Agents -requires OpenRouter specifically (calls multiple models)
     if get_env_value("OPENROUTER_API_KEY"):
-        tool_status.append(("Mixture of Agents", True, None))
+        tool_status.append(("多模型混合", True, None))
     else:
-        tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
+        tool_status.append(("多模型混合", False, "OPENROUTER_API_KEY"))
 
     # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:
-        tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
+        tool_status.append(("网页搜索与提取（Nous 订阅）", True, None))
     elif subscription_features.web.available:
-        label = "Web Search & Extract"
+        label = "网页搜索与提取"
         if subscription_features.web.current_provider:
-            label = f"Web Search & Extract ({subscription_features.web.current_provider})"
+            label = f"网页搜索与提取（{subscription_features.web.current_provider}）"
         tool_status.append((label, True, None))
     else:
-        tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
+        tool_status.append(("网页搜索与提取", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL 或 TAVILY_API_KEY"))
 
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider
     if subscription_features.browser.managed_by_nous:
-        tool_status.append(("Browser Automation (Nous Browser Use)", True, None))
+        tool_status.append(("浏览器自动化（Nous Browser Use）", True, None))
     elif subscription_features.browser.available:
-        label = "Browser Automation"
+        label = "浏览器自动化"
         if browser_provider:
-            label = f"Browser Automation ({browser_provider})"
+            label = f"浏览器自动化（{browser_provider}）"
         tool_status.append((label, True, None))
     else:
-        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
+        missing_browser_hint = "npm install -g agent-browser，设置 CAMOFOX_URL，或配置 Browser Use 或 Browserbase"
         if browser_provider == "Browserbase":
             missing_browser_hint = (
-                "npm install -g agent-browser and set "
+                "npm install -g agent-browser 并设置 "
                 "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID"
             )
         elif browser_provider == "Browser Use":
             missing_browser_hint = (
-                "npm install -g agent-browser and set BROWSER_USE_API_KEY"
+                "npm install -g agent-browser 并设置 BROWSER_USE_API_KEY"
             )
         elif browser_provider == "Camofox":
             missing_browser_hint = "CAMOFOX_URL"
         elif browser_provider == "Local browser":
             missing_browser_hint = "npm install -g agent-browser"
         tool_status.append(
-            ("Browser Automation", False, missing_browser_hint)
+            ("浏览器自动化", False, missing_browser_hint)
         )
 
     # FAL (image generation)
     if subscription_features.image_gen.managed_by_nous:
-        tool_status.append(("Image Generation (Nous subscription)", True, None))
+        tool_status.append(("图像生成（Nous 订阅）", True, None))
     elif subscription_features.image_gen.available:
-        tool_status.append(("Image Generation", True, None))
+        tool_status.append(("图像生成", True, None))
     else:
-        tool_status.append(("Image Generation", False, "FAL_KEY"))
+        tool_status.append(("图像生成", False, "FAL_KEY"))
 
     # TTS -show configured provider
     tts_provider = config.get("tts", {}).get("provider", "edge")
     if subscription_features.tts.managed_by_nous:
-        tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
+        tool_status.append(("文字转语音（OpenAI via Nous 订阅）", True, None))
     elif tts_provider == "elevenlabs" and get_env_value("ELEVENLABS_API_KEY"):
-        tool_status.append(("Text-to-Speech (ElevenLabs)", True, None))
+        tool_status.append(("文字转语音（ElevenLabs）", True, None))
     elif tts_provider == "openai" and (
         get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
     ):
-        tool_status.append(("Text-to-Speech (OpenAI)", True, None))
+        tool_status.append(("文字转语音（OpenAI）", True, None))
     elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
-        tool_status.append(("Text-to-Speech (MiniMax)", True, None))
+        tool_status.append(("文字转语音（MiniMax）", True, None))
     elif tts_provider == "neutts":
         try:
             import importlib.util
@@ -701,54 +701,54 @@ def _print_setup_summary(config: dict, kunming_home):
         except Exception:
             neutts_ok = False
         if neutts_ok:
-            tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
+            tool_status.append(("文字转语音（NeuTTS 本地）", True, None))
         else:
-            tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'km setup tts'"))
+            tool_status.append(("文字转语音（NeuTTS — 未安装）", False, "运行 'km setup tts'"))
     else:
-        tool_status.append(("Text-to-Speech (Edge TTS)", True, None))
+        tool_status.append(("文字转语音（Edge TTS）", True, None))
 
     if subscription_features.modal.managed_by_nous:
-        tool_status.append(("Modal Execution (Nous subscription)", True, None))
+        tool_status.append(("Modal 执行（Nous 订阅）", True, None))
     elif config.get("terminal", {}).get("backend") == "modal":
         if subscription_features.modal.direct_override:
-            tool_status.append(("Modal Execution (direct Modal)", True, None))
+            tool_status.append(("Modal 执行（直接 Modal）", True, None))
         else:
-            tool_status.append(("Modal Execution", False, "run 'km setup terminal'"))
+            tool_status.append(("Modal 执行", False, "运行 'km setup terminal'"))
     elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
-        tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
+        tool_status.append(("Modal 执行（可选，via Nous 订阅）", True, None))
 
     # Tinker + WandB (RL training)
     if get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"):
-        tool_status.append(("RL Training (Tinker)", True, None))
+        tool_status.append(("RL 训练（Tinker）", True, None))
     elif get_env_value("TINKER_API_KEY"):
-        tool_status.append(("RL Training (Tinker)", False, "WANDB_API_KEY"))
+        tool_status.append(("RL 训练（Tinker）", False, "WANDB_API_KEY"))
     else:
-        tool_status.append(("RL Training (Tinker)", False, "TINKER_API_KEY"))
+        tool_status.append(("RL 训练（Tinker）", False, "TINKER_API_KEY"))
 
     # Home Assistant
     if get_env_value("HASS_TOKEN"):
-        tool_status.append(("Smart Home (Home Assistant)", True, None))
+        tool_status.append(("智能家居（Home Assistant）", True, None))
 
     # Skills Hub
     if get_env_value("GITHUB_TOKEN"):
-        tool_status.append(("Skills Hub (GitHub)", True, None))
+        tool_status.append(("技能中心（GitHub）", True, None))
     else:
-        tool_status.append(("Skills Hub (GitHub)", False, "GITHUB_TOKEN"))
+        tool_status.append(("技能中心（GitHub）", False, "GITHUB_TOKEN"))
 
     # Terminal (always available if system deps met)
-    tool_status.append(("Terminal/Commands", True, None))
+    tool_status.append(("终端/命令执行", True, None))
 
     # Task planning (always available, in-memory)
-    tool_status.append(("Task Planning (todo)", True, None))
+    tool_status.append(("任务规划（待办）", True, None))
 
     # Skills (always available -- bundled skills + user-created skills)
-    tool_status.append(("Skills (view, create, edit)", True, None))
+    tool_status.append(("技能（查看、创建、编辑）", True, None))
 
     # Print status
     available_count = sum(1 for _, avail, _ in tool_status if avail)
     total_count = len(tool_status)
 
-    print_info(f"{available_count}/{total_count} tool categories available:")
+    print_info(f"{available_count}/{total_count} 个工具类别可用：")
     print()
 
     for name, available, missing_var in tool_status:
@@ -756,7 +756,7 @@ def _print_setup_summary(config: dict, kunming_home):
             print(f"   {color('[OK]', Colors.GREEN)} {name}")
         else:
             print(
-                f"   {color('[X]', Colors.RED)} {name} {color(f'(missing {missing_var})', Colors.DIM)}"
+                f"   {color('[X]', Colors.RED)} {name} {color(f'(缺少 {missing_var})', Colors.DIM)}"
             )
 
     print()
@@ -764,10 +764,10 @@ def _print_setup_summary(config: dict, kunming_home):
     disabled_tools = [(name, var) for name, avail, var in tool_status if not avail]
     if disabled_tools:
         print_warning(
-            "Some tools are disabled. Run 'km setup tools' to configure them,"
+            "部分工具未启用。运行 'km setup tools' 进行配置，"
         )
         from kunming_constants import display_kunming_home as _dhh
-        print_warning(f"or edit {_dhh()}/.env directly to add the missing API keys.")
+        print_warning(f"或直接编辑 {_dhh()}/.env 添加缺少的 API 密钥。")
         print()
 
     # Done banner
@@ -780,7 +780,7 @@ def _print_setup_summary(config: dict, kunming_home):
     )
     print(
         color(
-            "|             [OK] Setup Complete!                        |",
+            "|             [OK] 设置完成！                              |",
             Colors.GREEN,
         )
     )
@@ -794,12 +794,12 @@ def _print_setup_summary(config: dict, kunming_home):
 
     # Show file locations prominently
     from kunming_constants import display_kunming_home as _dhh
-    print(color(f"[FILES] All your files are in {_dhh()}/:", Colors.CYAN, Colors.BOLD))
+    print(color(f"[FILES] 所有文件位于 {_dhh()}/:", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('Settings:', Colors.YELLOW)}  {get_config_path()}")
-    print(f"   {color('API Keys:', Colors.YELLOW)}  {get_env_path()}")
+    print(f"   {color('设置文件:', Colors.YELLOW)}  {get_config_path()}")
+    print(f"   {color('API 密钥:', Colors.YELLOW)}  {get_env_path()}")
     print(
-        f"   {color('Data:', Colors.YELLOW)}      {kunming_home}/cron/, sessions/, logs/"
+        f"   {color('数据:', Colors.YELLOW)}      {kunming_home}/cron/, sessions/, logs/"
     )
     print()
 
@@ -807,20 +807,20 @@ def _print_setup_summary(config: dict, kunming_home):
     print()
     print(color("ð To edit your configuration:", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('km setup', Colors.GREEN)}          Re-run the full wizard")
-    print(f"   {color('km setup model', Colors.GREEN)}    Change model/provider")
-    print(f"   {color('km setup terminal', Colors.GREEN)} Change terminal backend")
-    print(f"   {color('km setup gateway', Colors.GREEN)}  Configure messaging")
-    print(f"   {color('km setup tools', Colors.GREEN)}    Configure tool providers")
+    print(f"   {color('km setup', Colors.GREEN)}          重新运行完整向导")
+    print(f"   {color('km setup model', Colors.GREEN)}    更改模型/提供商")
+    print(f"   {color('km setup terminal', Colors.GREEN)} 更改终端后端")
+    print(f"   {color('km setup gateway', Colors.GREEN)}  配置消息平台")
+    print(f"   {color('km setup tools', Colors.GREEN)}    配置工具提供商")
     print()
-    print(f"   {color('km config', Colors.GREEN)}         View current settings")
+    print(f"   {color('km config', Colors.GREEN)}         查看当前设置")
     print(
-        f"   {color('km config edit', Colors.GREEN)}    Open config in your editor"
+        f"   {color('km config edit', Colors.GREEN)}    在编辑器中打开配置"
     )
     print(f"   {color('km config set <key> <value>', Colors.GREEN)}")
-    print("                          Set a specific value")
+    print("                          设置特定值")
     print()
-    print("   Or edit the files directly:")
+    print("   或直接编辑文件：")
     print(f"   {color(f'nano {get_config_path()}', Colors.DIM)}")
     print(f"   {color(f'nano {get_env_path()}', Colors.DIM)}")
     print()
@@ -829,9 +829,9 @@ def _print_setup_summary(config: dict, kunming_home):
     print()
     print(color("ð Ready to go!", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('km', Colors.GREEN)}              Start chatting")
-    print(f"   {color('km gateway', Colors.GREEN)}      Start messaging gateway")
-    print(f"   {color('km doctor', Colors.GREEN)}       Check for issues")
+    print(f"   {color('km', Colors.GREEN)}              开始对话")
+    print(f"   {color('km gateway', Colors.GREEN)}      启动消息网关")
+    print(f"   {color('km doctor', Colors.GREEN)}       检查问题")
     print()
 
 
@@ -840,21 +840,21 @@ def _prompt_container_resources(config: dict):
     terminal = config.setdefault("terminal", {})
 
     print()
-    print_info("Container Resource Settings:")
+    print_info("容器资源配置：")
 
     # Persistence
     current_persist = terminal.get("container_persistent", True)
     persist_label = "yes" if current_persist else "no"
-    print_info("  Persistent filesystem keeps files between sessions.")
-    print_info("  Set to 'no' for ephemeral sandboxes that reset each time.")
+    print_info("  持久化文件系统可在会话间保留文件。")
+    print_info("  设为 'no' 则使用每次重置的临时沙箱。")
     persist_str = prompt(
-        "  Persist filesystem across sessions? (yes/no)", persist_label
+        "  是否持久化文件系统？(yes/no)", persist_label
     )
     terminal["container_persistent"] = persist_str.lower() in ("yes", "true", "y", "1")
 
     # CPU
     current_cpu = terminal.get("container_cpu", 1)
-    cpu_str = prompt("  CPU cores", str(current_cpu))
+    cpu_str = prompt("  CPU 核心数", str(current_cpu))
     try:
         terminal["container_cpu"] = float(cpu_str)
     except ValueError:
@@ -862,7 +862,7 @@ def _prompt_container_resources(config: dict):
 
     # Memory
     current_mem = terminal.get("container_memory", 5120)
-    mem_str = prompt("  Memory in MB (5120 = 5GB)", str(current_mem))
+    mem_str = prompt("  内存（MB，5120 = 5GB）", str(current_mem))
     try:
         terminal["container_memory"] = int(mem_str)
     except ValueError:
@@ -870,7 +870,7 @@ def _prompt_container_resources(config: dict):
 
     # Disk
     current_disk = terminal.get("container_disk", 51200)
-    disk_str = prompt("  Disk in MB (51200 = 50GB)", str(current_disk))
+    disk_str = prompt("  磁盘（MB，51200 = 50GB）", str(current_disk))
     try:
         terminal["container_disk"] = int(disk_str)
     except ValueError:
@@ -900,9 +900,9 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     """
     from kunming_cli.config import load_config, save_config
 
-    print_header("Inference Provider")
-    print_info("Choose how to connect to your main chat model.")
-    print_info(f"   Guide: {_DOCS_BASE}/integrations/providers")
+    print_header("推理提供商")
+    print_info("选择如何连接到您的主聊天模型。")
+    print_info(f"   指南: {_DOCS_BASE}/integrations/providers")
     print()
 
     # Delegate to the shared km model flow -handles provider picker,
@@ -912,11 +912,11 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         select_provider_and_model()
     except (SystemExit, KeyboardInterrupt):
         print()
-        print_info("Provider setup skipped.")
+        print_info("提供商设置已跳过。")
     except Exception as exc:
         logger.debug("select_provider_and_model error during setup: %s", exc)
-        print_warning(f"Provider setup encountered an error: {exc}")
-        print_info("You can try again later with: km model")
+        print_warning(f"提供商设置遇到错误: {exc}")
+        print_info("稍后可以重试: km model")
 
     # Re-sync the wizard's config dict from what cmd_model saved to disk.
     # This is critical: cmd_model writes to disk via its own load/save cycle,
@@ -948,26 +948,26 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             manual_count = sum(1 for entry in entries if str(getattr(entry, "source", "")).startswith("manual"))
             auto_count = entry_count - manual_count
             print()
-            print_header("Same-Provider Fallback & Rotation")
+            print_header("同提供商凭据轮换")
             print_info(
-                "Kunming can keep multiple credentials for one provider and rotate between"
+                "Kunming 可以为同一提供商保存多个凭据，并在"
             )
             print_info(
-                "them when a credential is exhausted or rate-limited. This preserves"
+                "凭据耗尽或被限流时自动切换。这样可以保持"
             )
             print_info(
-                "your primary provider while reducing interruptions from quota issues."
+                "主提供商不变，同时减少配额问题导致的中断。"
             )
             print()
             if auto_count > 0:
                 print_info(
-                    f"Current pooled credentials for {selected_provider}: {entry_count} "
-                    f"({manual_count} manual, {auto_count} auto-detected from env/shared auth)"
+                    f"{selected_provider} 当前凭据池: {entry_count} 个 "
+                    f"({manual_count} 个手动, {auto_count} 个从环境变量/共享认证自动检测)"
                 )
             else:
-                print_info(f"Current pooled credentials for {selected_provider}: {entry_count}")
+                print_info(f"{selected_provider} 当前凭据池: {entry_count} 个")
 
-            while prompt_yes_no("Add another credential for same-provider fallback?", False):
+            while prompt_yes_no("是否添加同提供商的备用凭据？", False):
                 auth_add_command(
                     SimpleNamespace(
                         provider=selected_provider,
@@ -987,13 +987,13 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                 )
                 pool = load_pool(selected_provider)
                 entry_count = len(pool.entries())
-                print_info(f"Provider pool now has {entry_count} credential(s).")
+                print_info(f"提供商凭据池现有 {entry_count} 个凭据。")
 
             if entry_count > 1:
                 strategy_labels = [
-                    "Fill-first / sticky -keep using the first healthy credential until it is exhausted",
-                    "Round robin -rotate to the next healthy credential after each selection",
-                    "Random -pick a random healthy credential each time",
+                    "优先填充/粘性 -持续使用第一个健康凭据直到耗尽",
+                    "轮询 -每次选择后切换到下一个健康凭据",
+                    "随机 -每次随机选择一个健康凭据",
                 ]
                 current_strategy = _get_credential_pool_strategies(config).get(selected_provider, "fill_first")
                 default_strategy_idx = {
@@ -1002,13 +1002,13 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                     "random": 2,
                 }.get(current_strategy, 0)
                 strategy_idx = prompt_choice(
-                    "Select same-provider rotation strategy:",
+                    "选择同提供商轮换策略：",
                     strategy_labels,
                     default_strategy_idx,
                 )
                 strategy_value = ["fill_first", "round_robin", "random"][strategy_idx]
                 _set_credential_pool_strategy(config, selected_provider, strategy_value)
-                print_success(f"Saved {selected_provider} rotation strategy: {strategy_value}")
+                print_success(f"已保存 {selected_provider} 轮换策略: {strategy_value}")
             else:
                 _set_credential_pool_strategy(config, selected_provider, "fill_first")
         except Exception as exc:
@@ -1045,31 +1045,31 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         _prov_display = _prov_names.get(selected_provider, selected_provider or "your provider")
 
         print()
-        print_header("Vision & Image Analysis (optional)")
-        print_info(f"Vision uses a separate multimodal backend. {_prov_display}")
-        print_info("doesn't currently provide one Kunming can auto-use for vision,")
-        print_info("so choose a backend now or skip and configure later.")
+        print_header("视觉与图像分析（可选）")
+        print_info(f"视觉功能使用独立的多模态后端。{_prov_display}")
+        print_info("目前无法为 Kunming 自动提供视觉后端，")
+        print_info("请现在选择一个后端或跳过稍后配置。")
         print()
 
         _vision_choices = [
-            "OpenRouter -uses Gemini (free tier at openrouter.ai/keys)",
-            "OpenAI-compatible endpoint -base URL, API key, and vision model",
-            "Skip for now",
+            "OpenRouter -使用 Gemini（openrouter.ai/keys 有免费额度）",
+            "OpenAI 兼容端点 -自定义 Base URL、API 密钥和视觉模型",
+            "暂时跳过",
         ]
-        _vision_idx = prompt_choice("Configure vision:", _vision_choices, 2)
+        _vision_idx = prompt_choice("配置视觉功能：", _vision_choices, 2)
 
         if _vision_idx == 0:  # OpenRouter
-            _or_key = prompt("  OpenRouter API key", password=True).strip()
+            _or_key = prompt("  OpenRouter API 密钥", password=True).strip()
             if _or_key:
                 save_env_value("OPENROUTER_API_KEY", _or_key)
-                print_success("OpenRouter key saved -vision will use Gemini")
+                print_success("OpenRouter 密钥已保存 -视觉将使用 Gemini")
             else:
-                print_info("Skipped -vision won't be available")
+                print_info("已跳过 -视觉功能不可用")
         elif _vision_idx == 1:  # OpenAI-compatible endpoint
             _base_url = prompt("  Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
-            _api_key_label = "  API key"
+            _api_key_label = "  API 密钥"
             if "api.openai.com" in _base_url.lower():
-                _api_key_label = "  OpenAI API key"
+                _api_key_label = "  OpenAI API 密钥"
             _oai_key = prompt(_api_key_label, password=True).strip()
             if _oai_key:
                 save_env_value("OPENAI_API_KEY", _oai_key)
@@ -1078,33 +1078,33 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                 _vaux["base_url"] = _base_url
                 if "api.openai.com" in _base_url.lower():
                     _oai_vision_models = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano"]
-                    _vm_choices = _oai_vision_models + ["Use default (gpt-4o-mini)"]
-                    _vm_idx = prompt_choice("Select vision model:", _vm_choices, 0)
+                    _vm_choices = _oai_vision_models + ["使用默认 (gpt-4o-mini)"]
+                    _vm_idx = prompt_choice("选择视觉模型：", _vm_choices, 0)
                     _selected_vision_model = (
                         _oai_vision_models[_vm_idx]
                         if _vm_idx < len(_oai_vision_models)
                         else "gpt-4o-mini"
                     )
                 else:
-                    _selected_vision_model = prompt("  Vision model (blank = use main/custom default)").strip()
+                    _selected_vision_model = prompt("  视觉模型（留空使用主模型/自定义默认值）").strip()
                 save_env_value("AUXILIARY_VISION_MODEL", _selected_vision_model)
                 print_success(
-                    f"Vision configured with {_base_url}"
+                    f"视觉已配置 {_base_url}"
                     + (f" ({_selected_vision_model})" if _selected_vision_model else "")
                 )
             else:
-                print_info("Skipped -vision won't be available")
+                print_info("已跳过 -视觉功能不可用")
         else:
-            print_info("Skipped -add later with 'km setup' or configure AUXILIARY_VISION_* settings")
+            print_info("已跳过 -稍后可通过 'km setup' 添加或配置 AUXILIARY_VISION_* 设置")
 
 
     if selected_provider == "nous" and nous_subscription_selected:
         changed_defaults = apply_nous_provider_defaults(config)
         current_tts = str(config.get("tts", {}).get("provider") or "edge")
         if "tts" in changed_defaults:
-            print_success("TTS provider set to: OpenAI TTS via your Nous subscription")
+            print_success("TTS 提供商已设为: OpenAI TTS（通过您的 Nous 订阅）")
         else:
-            print_info(f"Keeping your existing TTS provider: {current_tts}")
+            print_info(f"保持现有 TTS 提供商: {current_tts}")
 
     save_config(config)
 
@@ -1189,28 +1189,28 @@ def _setup_tts_provider(config: dict):
     current_label = provider_labels.get(current_provider, current_provider)
 
     print()
-    print_header("Text-to-Speech Provider (optional)")
-    print_info(f"Current: {current_label}")
+    print_header("文字转语音提供商（可选）")
+    print_info(f"当前: {current_label}")
     print()
 
     choices = []
     providers = []
     if managed_nous_tools_enabled() and subscription_features.nous_auth_present:
-        choices.append("Nous Subscription (managed OpenAI TTS, billed to your subscription)")
+        choices.append("Nous 订阅（托管 OpenAI TTS，从订阅计费）")
         providers.append("nous-openai")
     choices.extend(
         [
-            "Edge TTS (free, cloud-based, no setup needed)",
-            "ElevenLabs (premium quality, needs API key)",
-            "OpenAI TTS (good quality, needs API key)",
-            "MiniMax TTS (high quality with voice cloning, needs API key)",
-            "NeuTTS (local on-device, free, ~300MB model download)",
+            "Edge TTS（免费，云端，无需配置）",
+            "ElevenLabs（高品质，需要 API 密钥）",
+            "OpenAI TTS（优质，需要 API 密钥）",
+            "MiniMax TTS（高品质，支持语音克隆，需要 API 密钥）",
+            "NeuTTS（本地设备，免费，约 300MB 模型下载）",
         ]
     )
     providers.extend(["edge", "elevenlabs", "openai", "minimax", "neutts"])
-    choices.append(f"Keep current ({current_label})")
+    choices.append(f"保持当前设置 ({current_label})")
     keep_current_idx = len(choices) - 1
-    idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
+    idx = prompt_choice("选择 TTS 提供商：", choices, keep_current_idx)
 
     if idx == keep_current_idx:
         return
@@ -1219,10 +1219,10 @@ def _setup_tts_provider(config: dict):
     selected_via_nous = selected == "nous-openai"
     if selected == "nous-openai":
         selected = "openai"
-        print_info("OpenAI TTS will use the managed Nous gateway and bill to your subscription.")
+        print_info("OpenAI TTS 将使用托管的 Nous 网关，从您的订阅计费。")
         if get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY"):
             print_warning(
-                "Direct OpenAI credentials are still configured and may take precedence until removed from ~/.kunming/.env."
+                "直接 OpenAI 凭据仍然已配置，在从 ~/.kunming/.env 移除之前可能优先使用。"
             )
 
     if selected == "neutts":
@@ -1234,55 +1234,55 @@ def _setup_tts_provider(config: dict):
             already_installed = False
 
         if already_installed:
-            print_success("NeuTTS is already installed")
+            print_success("NeuTTS 已安装")
         else:
             print()
-            print_info("NeuTTS requires:")
-            print_info("  -Python package: neutts (~50MB install + ~300MB model on first use)")
-            print_info("  -System package: espeak-ng (phonemizer)")
+            print_info("NeuTTS 需要：")
+            print_info("  -Python 包: neutts（约 50MB 安装 + 首次使用约 300MB 模型）")
+            print_info("  -系统包: espeak-ng（音素化工具）")
             print()
-            if prompt_yes_no("Install NeuTTS dependencies now?", True):
+            if prompt_yes_no("是否现在安装 NeuTTS 依赖？", True):
                 if not _install_neutts_deps():
-                    print_warning("NeuTTS installation incomplete. Falling back to Edge TTS.")
+                    print_warning("NeuTTS 安装未完成。回退到 Edge TTS。")
                     selected = "edge"
             else:
-                print_info("Skipping install. Set tts.provider to 'neutts' after installing manually.")
+                print_info("跳过安装。手动安装后将 tts.provider 设为 'neutts'。")
                 selected = "edge"
 
     elif selected == "elevenlabs":
         existing = get_env_value("ELEVENLABS_API_KEY")
         if not existing:
             print()
-            api_key = prompt("ElevenLabs API key", password=True)
+            api_key = prompt("ElevenLabs API 密钥", password=True)
             if api_key:
                 save_env_value("ELEVENLABS_API_KEY", api_key)
-                print_success("ElevenLabs API key saved")
+                print_success("ElevenLabs API 密钥已保存")
             else:
-                print_warning("No API key provided. Falling back to Edge TTS.")
+                print_warning("未提供 API 密钥。回退到 Edge TTS。")
                 selected = "edge"
 
     elif selected == "openai" and not selected_via_nous:
         existing = get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
         if not existing:
             print()
-            api_key = prompt("OpenAI API key for TTS", password=True)
+            api_key = prompt("OpenAI TTS API 密钥", password=True)
             if api_key:
                 save_env_value("VOICE_TOOLS_OPENAI_KEY", api_key)
-                print_success("OpenAI TTS API key saved")
+                print_success("OpenAI TTS API 密钥已保存")
             else:
-                print_warning("No API key provided. Falling back to Edge TTS.")
+                print_warning("未提供 API 密钥。回退到 Edge TTS。")
                 selected = "edge"
 
     elif selected == "minimax":
         existing = get_env_value("MINIMAX_API_KEY")
         if not existing:
             print()
-            api_key = prompt("MiniMax API key for TTS", password=True)
+            api_key = prompt("MiniMax TTS API 密钥", password=True)
             if api_key:
                 save_env_value("MINIMAX_API_KEY", api_key)
-                print_success("MiniMax TTS API key saved")
+                print_success("MiniMax TTS API 密钥已保存")
             else:
-                print_warning("No API key provided. Falling back to Edge TTS.")
+                print_warning("未提供 API 密钥。回退到 Edge TTS。")
                 selected = "edge"
 
     # Save the selection
@@ -1290,7 +1290,7 @@ def _setup_tts_provider(config: dict):
         config["tts"] = {}
     config["tts"]["provider"] = selected
     save_config(config)
-    print_success(f"TTS provider set to: {provider_labels.get(selected, selected)}")
+    print_success(f"TTS 提供商已设为: {provider_labels.get(selected, selected)}")
 
 
 def setup_tts(config: dict):
@@ -1308,10 +1308,10 @@ def setup_terminal_backend(config: dict):
     import platform as _platform
     import shutil
 
-    print_header("Terminal Backend")
-    print_info("Choose where Kunming runs shell commands and code.")
-    print_info("This affects tool execution, file access, and isolation.")
-    print_info(f"   Guide: {_DOCS_BASE}/developer-guide/environments")
+    print_header("终端后端")
+    print_info("选择 Kunming 运行 Shell 命令和代码的位置。")
+    print_info("这会影响工具执行、文件访问和隔离性。")
+    print_info(f"   指南: {_DOCS_BASE}/developer-guide/environments")
     print()
 
     current_backend = config.get("terminal", {}).get("backend", "local")
@@ -1319,52 +1319,52 @@ def setup_terminal_backend(config: dict):
 
     # Build backend choices with descriptions
     terminal_choices = [
-        "Local - run directly on this machine (default)",
-        "Docker - isolated container with configurable resources",
-        "Modal - serverless cloud sandbox",
-        "SSH - run on a remote machine",
-        "Daytona - persistent cloud development environment",
+        "本地 - 直接在本机运行（默认）",
+        "Docker - 隔离容器，可配置资源",
+        "Modal - 无服务器云沙箱",
+        "SSH - 在远程机器上运行",
+        "Daytona - 持久化云端开发环境",
     ]
     idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona"}
     backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4}
 
     next_idx = 5
     if is_linux:
-        terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
+        terminal_choices.append("Singularity/Apptainer - HPC 友好容器")
         idx_to_backend[next_idx] = "singularity"
         backend_to_idx["singularity"] = next_idx
         next_idx += 1
 
     # Add keep current option
     keep_current_idx = next_idx
-    terminal_choices.append(f"Keep current ({current_backend})")
+    terminal_choices.append(f"保持当前设置 ({current_backend})")
     idx_to_backend[keep_current_idx] = current_backend
 
     terminal_idx = prompt_choice(
-        "Select terminal backend:", terminal_choices, keep_current_idx
+        "选择终端后端：", terminal_choices, keep_current_idx
     )
 
     selected_backend = idx_to_backend.get(terminal_idx)
 
     if terminal_idx == keep_current_idx:
-        print_info(f"Keeping current backend: {current_backend}")
+        print_info(f"保持当前后端: {current_backend}")
         return
 
     config.setdefault("terminal", {})["backend"] = selected_backend
 
     if selected_backend == "local":
-        print_success("Terminal backend: Local")
-        print_info("Commands run directly on this machine.")
+        print_success("终端后端: 本地")
+        print_info("命令直接在本机运行。")
 
         # CWD for messaging
         print()
-        print_info("Working directory for messaging sessions:")
-        print_info("  When using Kunming via Telegram/Discord, this is where")
+        print_info("消息会话的工作目录：")
+        print_info("  通过 Telegram/Discord 使用 Kunming 时，这是")
         print_info(
-            "  the agent starts. CLI mode always starts in the current directory."
+            "  代理的启动目录。CLI 模式始终使用当前目录。"
         )
         current_cwd = config.get("terminal", {}).get("cwd", "")
-        cwd = prompt("  Messaging working directory", current_cwd or str(Path.home()))
+        cwd = prompt("  消息会话工作目录", current_cwd or str(Path.home()))
         if cwd:
             config["terminal"]["cwd"] = cwd
 
@@ -1372,62 +1372,62 @@ def setup_terminal_backend(config: dict):
         print()
         existing_sudo = get_env_value("SUDO_PASSWORD")
         if existing_sudo:
-            print_info("Sudo password: configured")
+            print_info("Sudo 密码: 已配置")
         else:
             if prompt_yes_no(
-                "Enable sudo support? (stores password for apt install, etc.)", False
+                "启用 sudo 支持？（存储密码用于 apt install 等）", False
             ):
-                sudo_pass = prompt("  Sudo password", password=True)
+                sudo_pass = prompt("  Sudo 密码", password=True)
                 if sudo_pass:
                     save_env_value("SUDO_PASSWORD", sudo_pass)
-                    print_success("Sudo password saved")
+                    print_success("Sudo 密码已保存")
 
     elif selected_backend == "docker":
-        print_success("Terminal backend: Docker")
+        print_success("终端后端: Docker")
 
         # Check if Docker is available
         docker_bin = shutil.which("docker")
         if not docker_bin:
-            print_warning("Docker not found in PATH!")
-            print_info("Install Docker: https://docs.docker.com/get-docker/")
+            print_warning("未在 PATH 中找到 Docker！")
+            print_info("安装 Docker: https://docs.docker.com/get-docker/")
         else:
-            print_info(f"Docker found: {docker_bin}")
+            print_info(f"已找到 Docker: {docker_bin}")
 
         # Docker image
         current_image = config.get("terminal", {}).get(
             "docker_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
-        image = prompt("  Docker image", current_image)
+        image = prompt("  Docker 镜像", current_image)
         config["terminal"]["docker_image"] = image
         save_env_value("TERMINAL_DOCKER_IMAGE", image)
 
         _prompt_container_resources(config)
 
     elif selected_backend == "singularity":
-        print_success("Terminal backend: Singularity/Apptainer")
+        print_success("终端后端: Singularity/Apptainer")
 
         # Check if singularity/apptainer is available
         sing_bin = shutil.which("apptainer") or shutil.which("singularity")
         if not sing_bin:
-            print_warning("Singularity/Apptainer not found in PATH!")
+            print_warning("未在 PATH 中找到 Singularity/Apptainer！")
             print_info(
-                "Install: https://apptainer.org/docs/admin/main/installation.html"
+                "安装: https://apptainer.org/docs/admin/main/installation.html"
             )
         else:
-            print_info(f"Found: {sing_bin}")
+            print_info(f"已找到: {sing_bin}")
 
         current_image = config.get("terminal", {}).get(
             "singularity_image", "docker://nikolaik/python-nodejs:python3.11-nodejs20"
         )
-        image = prompt("  Container image", current_image)
+        image = prompt("  容器镜像", current_image)
         config["terminal"]["singularity_image"] = image
         save_env_value("TERMINAL_SINGULARITY_IMAGE", image)
 
         _prompt_container_resources(config)
 
     elif selected_backend == "modal":
-        print_success("Terminal backend: Modal")
-        print_info("Serverless cloud sandboxes. Each session gets its own container.")
+        print_success("终端后端: Modal")
+        print_info("无服务器云沙箱。每次会话获得独立容器。")
         from tools.managed_tool_gateway import is_managed_tool_gateway_ready
         from tools.tool_backend_helpers import normalize_modal_mode
 
@@ -1441,8 +1441,8 @@ def setup_terminal_backend(config: dict):
         use_managed_modal = False
         if managed_modal_available:
             modal_choices = [
-                "Use my Nous subscription",
-                "Use my own Modal account",
+                "使用我的 Nous 订阅",
+                "使用我自己的 Modal 账户",
             ]
             if modal_mode == "managed":
                 default_modal_idx = 0
@@ -1451,7 +1451,7 @@ def setup_terminal_backend(config: dict):
             else:
                 default_modal_idx = 1 if get_env_value("MODAL_TOKEN_ID") else 0
             modal_mode_idx = prompt_choice(
-                "Select how Modal execution should be billed:",
+                "选择 Modal 执行的计费方式：",
                 modal_choices,
                 default_modal_idx,
             )
@@ -1459,20 +1459,20 @@ def setup_terminal_backend(config: dict):
 
         if use_managed_modal:
             config["terminal"]["modal_mode"] = "managed"
-            print_info("Modal execution will use the managed Nous gateway and bill to your subscription.")
+            print_info("Modal 执行将使用托管的 Nous 网关，从您的订阅计费。")
             if get_env_value("MODAL_TOKEN_ID") or get_env_value("MODAL_TOKEN_SECRET"):
                 print_info(
-                    "Direct Modal credentials are still configured, but this backend is pinned to managed mode."
+                    "直接 Modal 凭据仍然已配置，但此后端已固定为托管模式。"
                 )
         else:
             config["terminal"]["modal_mode"] = "direct"
-            print_info("Requires a Modal account: https://modal.com")
+            print_info("需要 Modal 账户: https://modal.com")
 
             # Check if modal SDK is installed
             try:
                 __import__("modal")
             except ImportError:
-                print_info("Installing modal SDK...")
+                print_info("正在安装 modal SDK...")
                 import subprocess
 
                 uv_bin = shutil.which("uv")
@@ -1496,18 +1496,18 @@ def setup_terminal_backend(config: dict):
                         text=True,
                     )
                 if result.returncode == 0:
-                    print_success("modal SDK installed")
+                    print_success("modal SDK 已安装")
                 else:
-                    print_warning("Install failed -run manually: pip install modal")
+                    print_warning("安装失败 -请手动运行: pip install modal")
 
             # Modal token
             print()
-            print_info("Modal authentication:")
-            print_info("  Get your token at: https://modal.com/settings")
+            print_info("Modal 认证：")
+            print_info("  获取 Token: https://modal.com/settings")
             existing_token = get_env_value("MODAL_TOKEN_ID")
             if existing_token:
-                print_info("  Modal token: already configured")
-                if prompt_yes_no("  Update Modal credentials?", False):
+                print_info("  Modal Token: 已配置")
+                if prompt_yes_no("  更新 Modal 凭据？", False):
                     token_id = prompt("    Modal Token ID", password=True)
                     token_secret = prompt("    Modal Token Secret", password=True)
                     if token_id:
@@ -1525,16 +1525,16 @@ def setup_terminal_backend(config: dict):
         _prompt_container_resources(config)
 
     elif selected_backend == "daytona":
-        print_success("Terminal backend: Daytona")
-        print_info("Persistent cloud development environments.")
-        print_info("Each session gets a dedicated sandbox with filesystem persistence.")
-        print_info("Sign up at: https://daytona.io")
+        print_success("终端后端: Daytona")
+        print_info("持久化云端开发环境。")
+        print_info("每次会话获得独立沙箱，文件系统持久化。")
+        print_info("注册地址: https://daytona.io")
 
         # Check if daytona SDK is installed
         try:
             __import__("daytona")
         except ImportError:
-            print_info("Installing daytona SDK...")
+            print_info("正在安装 daytona SDK...")
             import subprocess
 
             uv_bin = shutil.which("uv")
@@ -1551,9 +1551,9 @@ def setup_terminal_backend(config: dict):
                     text=True,
                 )
             if result.returncode == 0:
-                print_success("daytona SDK installed")
+                print_success("daytona SDK 已安装")
             else:
-                print_warning("Install failed -run manually: pip install daytona")
+                print_warning("安装失败 -请手动运行: pip install daytona")
                 if result.stderr:
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
@@ -1561,60 +1561,60 @@ def setup_terminal_backend(config: dict):
         print()
         existing_key = get_env_value("DAYTONA_API_KEY")
         if existing_key:
-            print_info("  Daytona API key: already configured")
-            if prompt_yes_no("  Update API key?", False):
-                api_key = prompt("    Daytona API key", password=True)
+            print_info("  Daytona API 密钥: 已配置")
+            if prompt_yes_no("  更新 API 密钥？", False):
+                api_key = prompt("    Daytona API 密钥", password=True)
                 if api_key:
                     save_env_value("DAYTONA_API_KEY", api_key)
-                    print_success("    Updated")
+                    print_success("    已更新")
         else:
-            api_key = prompt("    Daytona API key", password=True)
+            api_key = prompt("    Daytona API 密钥", password=True)
             if api_key:
                 save_env_value("DAYTONA_API_KEY", api_key)
-                print_success("    Configured")
+                print_success("    已配置")
 
         # Daytona image
         current_image = config.get("terminal", {}).get(
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
-        image = prompt("  Sandbox image", current_image)
+        image = prompt("  沙箱镜像", current_image)
         config["terminal"]["daytona_image"] = image
         save_env_value("TERMINAL_DAYTONA_IMAGE", image)
 
         _prompt_container_resources(config)
 
     elif selected_backend == "ssh":
-        print_success("Terminal backend: SSH")
-        print_info("Run commands on a remote machine via SSH.")
+        print_success("终端后端: SSH")
+        print_info("通过 SSH 在远程机器上运行命令。")
 
         # SSH host
         current_host = get_env_value("TERMINAL_SSH_HOST") or ""
-        host = prompt("  SSH host (hostname or IP)", current_host)
+        host = prompt("  SSH 主机（主机名或 IP）", current_host)
         if host:
             save_env_value("TERMINAL_SSH_HOST", host)
 
         # SSH user
         current_user = get_env_value("TERMINAL_SSH_USER") or ""
-        user = prompt("  SSH user", current_user or os.getenv("USER", ""))
+        user = prompt("  SSH 用户", current_user or os.getenv("USER", ""))
         if user:
             save_env_value("TERMINAL_SSH_USER", user)
 
         # SSH port
         current_port = get_env_value("TERMINAL_SSH_PORT") or "22"
-        port = prompt("  SSH port", current_port)
+        port = prompt("  SSH 端口", current_port)
         if port and port != "22":
             save_env_value("TERMINAL_SSH_PORT", port)
 
         # SSH key
         current_key = get_env_value("TERMINAL_SSH_KEY") or ""
         default_key = str(Path.home() / ".ssh" / "id_rsa")
-        ssh_key = prompt("  SSH private key path", current_key or default_key)
+        ssh_key = prompt("  SSH 私钥路径", current_key or default_key)
         if ssh_key:
             save_env_value("TERMINAL_SSH_KEY", ssh_key)
 
         # Test connection
-        if host and prompt_yes_no("  Test SSH connection?", True):
-            print_info("  Testing connection...")
+        if host and prompt_yes_no("  测试 SSH 连接？", True):
+            print_info("  正在测试连接...")
             import subprocess
 
             ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
@@ -1626,10 +1626,10 @@ def setup_terminal_backend(config: dict):
             ssh_cmd.append("echo ok")
             result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
-                print_success("  SSH connection successful!")
+                print_success("  SSH 连接成功！")
             else:
-                print_warning(f"  SSH connection failed: {result.stderr.strip()}")
-                print_info("  Check your SSH key and host settings.")
+                print_warning(f"  SSH 连接失败: {result.stderr.strip()}")
+                print_info("  请检查 SSH 密钥和主机设置。")
 
     # Sync terminal backend to .env so terminal_tool picks it up directly.
     # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.
@@ -1638,7 +1638,7 @@ def setup_terminal_backend(config: dict):
         save_env_value("TERMINAL_MODAL_MODE", config["terminal"].get("modal_mode", "auto"))
     save_config(config)
     print()
-    print_success(f"Terminal backend set to: {selected_backend}")
+    print_success(f"终端后端已设为: {selected_backend}")
 
 
 # =============================================================================
@@ -1663,71 +1663,71 @@ def _apply_default_agent_settings(config: dict):
     })
 
     save_config(config)
-    print_success("Applied recommended defaults:")
-    print_info("  Max iterations: 90")
-    print_info("  Tool progress: all")
-    print_info("  Compression threshold: 0.50")
-    print_info("  Session reset: inactivity (1440 min) + daily (4:00)")
-    print_info("  Run `km setup agent` later to customize.")
+    print_success("已应用推荐默认值：")
+    print_info("  最大迭代次数: 90")
+    print_info("  工具进度显示: all")
+    print_info("  压缩阈值: 0.50")
+    print_info("  会话重置: 不活跃 (1440 分钟) + 每日 (4:00)")
+    print_info("  稍后运行 `km setup agent` 自定义。")
 
 
 def setup_agent_settings(config: dict):
     """Configure agent behavior: iterations, progress display, compression, session reset."""
 
-    print_header("Agent Settings")
-    print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration")
+    print_header("代理设置")
+    print_info(f"   指南: {_DOCS_BASE}/user-guide/configuration")
     print()
 
     # -- Max Iterations --
     current_max = get_env_value("KUNMING_MAX_ITERATIONS") or str(
         config.get("agent", {}).get("max_turns", 90)
     )
-    print_info("Maximum tool-calling iterations per conversation.")
-    print_info("Higher = more complex tasks, but costs more tokens.")
-    print_info("Default is 90, which works for most tasks. Use 150+ for open exploration.")
+    print_info("每次对话的最大工具调用迭代次数。")
+    print_info("越高 = 可处理更复杂任务，但消耗更多 Token。")
+    print_info("默认 90，适用于大多数任务。探索性任务建议 150+。")
 
-    max_iter_str = prompt("Max iterations", current_max)
+    max_iter_str = prompt("最大迭代次数", current_max)
     try:
         max_iter = int(max_iter_str)
         if max_iter > 0:
             save_env_value("KUNMING_MAX_ITERATIONS", str(max_iter))
             config.setdefault("agent", {})["max_turns"] = max_iter
             config.pop("max_turns", None)
-            print_success(f"Max iterations set to {max_iter}")
+            print_success(f"最大迭代次数已设为 {max_iter}")
     except ValueError:
-        print_warning("Invalid number, keeping current value")
+        print_warning("无效数字，保持当前值")
 
     # -- Tool Progress Display --
     print_info("")
-    print_info("Tool Progress Display")
-    print_info("Controls how much tool activity is shown (CLI and messaging).")
-    print_info("  off     -Silent, just the final response")
-    print_info("  new     -Show tool name only when it changes (less noise)")
-    print_info("  all     -Show every tool call with a short preview")
-    print_info("  verbose -Full args, results, and debug logs")
+    print_info("工具进度显示")
+    print_info("控制工具活动的显示程度（CLI 和消息平台）。")
+    print_info("  off     - 静默，仅显示最终响应")
+    print_info("  new     - 仅在工具名称变化时显示（减少噪音）")
+    print_info("  all     - 显示每次工具调用及简短预览")
+    print_info("  verbose - 完整参数、结果和调试日志")
 
     current_mode = config.get("display", {}).get("tool_progress", "all")
-    mode = prompt("Tool progress mode", current_mode)
+    mode = prompt("工具进度模式", current_mode)
     if mode.lower() in ("off", "new", "all", "verbose"):
         if "display" not in config:
             config["display"] = {}
         config["display"]["tool_progress"] = mode.lower()
         save_config(config)
-        print_success(f"Tool progress set to: {mode.lower()}")
+        print_success(f"工具进度已设为: {mode.lower()}")
     else:
-        print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
+        print_warning(f"未知模式 '{mode}'，保持 '{current_mode}'")
 
     # -- Context Compression --
-    print_header("Context Compression")
-    print_info("Automatically summarizes old messages when context gets too long.")
+    print_header("上下文压缩")
+    print_info("当上下文过长时自动摘要旧消息。")
     print_info(
-        "Higher threshold = compress later (use more context). Lower = compress sooner."
+        "阈值越高 = 越晚压缩（使用更多上下文）。阈值越低 = 越早压缩。"
     )
 
     config.setdefault("compression", {})["enabled"] = True
 
     current_threshold = config.get("compression", {}).get("threshold", 0.50)
-    threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
+    threshold_str = prompt("压缩阈值 (0.5-0.95)", str(current_threshold))
     try:
         threshold = float(threshold_str)
         if 0.5 <= threshold <= 0.95:
@@ -1736,37 +1736,37 @@ def setup_agent_settings(config: dict):
         pass
 
     print_success(
-        f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
+        f"上下文压缩阈值已设为 {config['compression'].get('threshold', 0.50)}"
     )
 
     # -- Session Reset Policy --
-    print_header("Session Reset Policy")
+    print_header("会话重置策略")
     print_info(
-        "Messaging sessions (Telegram, Discord, etc.) accumulate context over time."
+        "消息平台会话（Telegram、Discord 等）会随时间积累上下文。"
     )
     print_info(
-        "Each message adds to the conversation history, which means growing API costs."
-    )
-    print_info("")
-    print_info(
-        "To manage this, sessions can automatically reset after a period of inactivity"
-    )
-    print_info(
-        "or at a fixed time each day. When a reset happens, the agent saves important"
-    )
-    print_info(
-        "things to its persistent memory first -but the conversation context is cleared."
+        "每条消息都会添加到对话历史中，这意味着 API 成本不断增长。"
     )
     print_info("")
-    print_info("You can also manually reset anytime by typing /reset in chat.")
+    print_info(
+        "为管理此问题，会话可以在一段不活跃时间后自动重置，"
+    )
+    print_info(
+        "或在每天固定时间重置。重置时，代理会先将重要内容"
+    )
+    print_info(
+        "保存到持久化记忆中 -但对话上下文会被清除。"
+    )
+    print_info("")
+    print_info("您也可以随时在聊天中输入 /reset 手动重置。")
     print_info("")
 
     reset_choices = [
-        "Inactivity + daily reset (recommended - reset whichever comes first)",
-        "Inactivity only (reset after N minutes of no messages)",
-        "Daily only (reset at a fixed hour each day)",
-        "Never auto-reset (context lives until /reset or context compression)",
-        "Keep current settings",
+        "不活跃 + 每日重置（推荐 - 先触发者生效）",
+        "仅不活跃重置（N 分钟无消息后重置）",
+        "仅每日重置（每天固定时间重置）",
+        "从不自动重置（上下文持续到 /reset 或压缩）",
+        "保持当前设置",
     ]
 
     current_policy = config.get("session_reset", {})
@@ -1776,20 +1776,20 @@ def setup_agent_settings(config: dict):
 
     default_reset = {"both": 0, "idle": 1, "daily": 2, "none": 3}.get(current_mode, 0)
 
-    reset_idx = prompt_choice("Session reset mode:", reset_choices, default_reset)
+    reset_idx = prompt_choice("会话重置模式：", reset_choices, default_reset)
 
     config.setdefault("session_reset", {})
 
     if reset_idx == 0:  # Both
         config["session_reset"]["mode"] = "both"
-        idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
+        idle_str = prompt("  不活跃超时（分钟）", str(current_idle))
         try:
             idle_val = int(idle_str)
             if idle_val > 0:
                 config["session_reset"]["idle_minutes"] = idle_val
         except ValueError:
             pass
-        hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
+        hour_str = prompt("  每日重置时间（0-23，本地时间）", str(current_hour))
         try:
             hour_val = int(hour_str)
             if 0 <= hour_val <= 23:
@@ -1797,11 +1797,11 @@ def setup_agent_settings(config: dict):
         except ValueError:
             pass
         print_success(
-            f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min idle or daily at {config['session_reset'].get('at_hour', 4)}:00"
+            f"会话将在 {config['session_reset'].get('idle_minutes', 1440)} 分钟不活跃或每日 {config['session_reset'].get('at_hour', 4)}:00 时重置"
         )
     elif reset_idx == 1:  # Idle only
         config["session_reset"]["mode"] = "idle"
-        idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
+        idle_str = prompt("  不活跃超时（分钟）", str(current_idle))
         try:
             idle_val = int(idle_str)
             if idle_val > 0:
@@ -1809,11 +1809,11 @@ def setup_agent_settings(config: dict):
         except ValueError:
             pass
         print_success(
-            f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min of inactivity"
+            f"会话将在 {config['session_reset'].get('idle_minutes', 1440)} 分钟不活跃后重置"
         )
     elif reset_idx == 2:  # Daily only
         config["session_reset"]["mode"] = "daily"
-        hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
+        hour_str = prompt("  每日重置时间（0-23，本地时间）", str(current_hour))
         try:
             hour_val = int(hour_str)
             if 0 <= hour_val <= 23:
@@ -1821,15 +1821,15 @@ def setup_agent_settings(config: dict):
         except ValueError:
             pass
         print_success(
-            f"Sessions reset daily at {config['session_reset'].get('at_hour', 4)}:00"
+            f"会话将在每日 {config['session_reset'].get('at_hour', 4)}:00 时重置"
         )
     elif reset_idx == 3:  # None
         config["session_reset"]["mode"] = "none"
         print_info(
-            "Sessions will never auto-reset. Context is managed only by compression."
+            "会话从不自动重置。上下文仅通过压缩管理。"
         )
         print_warning(
-            "Long conversations will grow in cost. Use /reset manually when needed."
+            "长对话成本会持续增长。需要时请手动使用 /reset。"
         )
     # else: keep current (idx == 4)
 
@@ -1846,58 +1846,58 @@ def _setup_telegram():
     print_header("Telegram")
     existing = get_env_value("TELEGRAM_BOT_TOKEN")
     if existing:
-        print_info("Telegram: already configured")
-        if not prompt_yes_no("Reconfigure Telegram?", False):
+        print_info("Telegram: 已配置")
+        if not prompt_yes_no("重新配置 Telegram？", False):
             # Check missing allowlist on existing config
             if not get_env_value("TELEGRAM_ALLOWED_USERS"):
-                print_info("â ï¸  Telegram has no user allowlist - anyone can use your bot!")
-                if prompt_yes_no("Add allowed users now?", True):
-                    print_info("   To find your Telegram user ID: message @userinfobot")
-                    allowed_users = prompt("Allowed user IDs (comma-separated)")
+                print_info("Telegram 未设置用户白名单 -任何人都可以使用你的机器人！")
+                if prompt_yes_no("现在添加允许的用户？", True):
+                    print_info("   查找你的 Telegram 用户 ID: 发消息给 @userinfobot")
+                    allowed_users = prompt("允许的用户 ID（逗号分隔）")
                     if allowed_users:
                         save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                        print_success("Telegram allowlist configured")
+                        print_success("Telegram 白名单已配置")
             return
 
-    print_info("Create a bot via @BotFather on Telegram")
-    token = prompt("Telegram bot token", password=True)
+    print_info("通过 Telegram 上的 @BotFather 创建机器人")
+    token = prompt("Telegram 机器人 Token", password=True)
     if not token:
         return
     save_env_value("TELEGRAM_BOT_TOKEN", token)
-    print_success("Telegram token saved")
+    print_success("Telegram Token 已保存")
 
     print()
     print_info("ð Security: Restrict who can use your bot")
-    print_info("   To find your Telegram user ID:")
-    print_info("   1. Message @userinfobot on Telegram")
-    print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
+    print_info("   查找你的 Telegram 用户 ID：")
+    print_info("   1. 在 Telegram 上给 @userinfobot 发消息")
+    print_info("   2. 它会回复你的数字 ID（例如 123456789）")
     print()
     allowed_users = prompt(
-        "Allowed user IDs (comma-separated, leave empty for open access)"
+        "允许的用户 ID（逗号分隔，留空则开放访问）"
     )
     if allowed_users:
         save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("Telegram allowlist configured - only listed users can use the bot")
+        print_success("Telegram 白名单已配置 -仅列出的用户可以使用机器人")
     else:
-        print_info("â ï¸  No allowlist set - anyone who finds your bot can use it!")
+        print_info("未设置白名单 -任何找到你机器人的人都可以使用！")
 
     print()
     print_info("ðŸ“¬ Home Channel: where Kunming delivers cron job results,")
-    print_info("   cross-platform messages, and notifications.")
-    print_info("   For Telegram DMs, this is your user ID (same as above).")
+    print_info("   跨平台消息和通知的位置。")
+    print_info("   对于 Telegram 私聊，这是你的用户 ID（同上）。")
 
     first_user_id = allowed_users.split(",")[0].strip() if allowed_users else ""
     if first_user_id:
-        if prompt_yes_no(f"Use your user ID ({first_user_id}) as the home channel?", True):
+        if prompt_yes_no(f"使用你的用户 ID ({first_user_id}) 作为主频道？", True):
             save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
-            print_success(f"Telegram home channel set to {first_user_id}")
+            print_success(f"Telegram 主频道已设为 {first_user_id}")
         else:
-            home_channel = prompt("Home channel ID (or leave empty to set later with /set-home in Telegram)")
+            home_channel = prompt("主频道 ID（或留空稍后在 Telegram 中使用 /set-home 设置）")
             if home_channel:
                 save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
     else:
-        print_info("   You can also set this later by typing /set-home in your Telegram chat.")
-        home_channel = prompt("Home channel ID (leave empty to set later)")
+        print_info("   你也可以稍后在 Telegram 聊天中输入 /set-home 来设置。")
+        home_channel = prompt("主频道 ID（留空稍后设置）")
         if home_channel:
             save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
 
@@ -1907,51 +1907,51 @@ def _setup_discord():
     print_header("Discord")
     existing = get_env_value("DISCORD_BOT_TOKEN")
     if existing:
-        print_info("Discord: already configured")
-        if not prompt_yes_no("Reconfigure Discord?", False):
+        print_info("Discord: 已配置")
+        if not prompt_yes_no("重新配置 Discord？", False):
             if not get_env_value("DISCORD_ALLOWED_USERS"):
-                print_info("â ï¸  Discord has no user allowlist - anyone can use your bot!")
-                if prompt_yes_no("Add allowed users now?", True):
-                    print_info("   To find Discord ID: Enable Developer Mode, right-click name ->Copy ID")
-                    allowed_users = prompt("Allowed user IDs (comma-separated)")
+                print_info("Discord 未设置用户白名单 -任何人都可以使用你的机器人！")
+                if prompt_yes_no("现在添加允许的用户？", True):
+                    print_info("   查找 Discord ID: 启用开发者模式，右键点击名称 ->复制 ID")
+                    allowed_users = prompt("允许的用户 ID（逗号分隔）")
                     if allowed_users:
                         cleaned_ids = _clean_discord_user_ids(allowed_users)
                         save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
-                        print_success("Discord allowlist configured")
+                        print_success("Discord 白名单已配置")
             return
 
-    print_info("Create a bot at https://discord.com/developers/applications")
-    token = prompt("Discord bot token", password=True)
+    print_info("在 https://discord.com/developers/applications 创建机器人")
+    token = prompt("Discord 机器人 Token", password=True)
     if not token:
         return
     save_env_value("DISCORD_BOT_TOKEN", token)
-    print_success("Discord token saved")
+    print_success("Discord Token 已保存")
 
     print()
     print_info("ð Security: Restrict who can use your bot")
-    print_info("   To find your Discord user ID:")
-    print_info("   1. Enable Developer Mode in Discord settings")
-    print_info("   2. Right-click your name ->Copy ID")
+    print_info("   查找你的 Discord 用户 ID：")
+    print_info("   1. 在 Discord 设置中启用开发者模式")
+    print_info("   2. 右键点击你的名称 ->复制 ID")
     print()
-    print_info("   You can also use Discord usernames (resolved on gateway start).")
+    print_info("   你也可以使用 Discord 用户名（网关启动时解析）。")
     print()
     allowed_users = prompt(
-        "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+        "允许的用户 ID 或用户名（逗号分隔，留空则开放访问）"
     )
     if allowed_users:
         cleaned_ids = _clean_discord_user_ids(allowed_users)
         save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
-        print_success("Discord allowlist configured")
+        print_success("Discord 白名单已配置")
     else:
-        print_info("â ï¸  No allowlist set - anyone in servers with your bot can use it!")
+        print_info("未设置白名单 -你机器人所在服务器的任何人都可以使用！")
 
     print()
     print_info("ð¬ Home Channel: where Kunming delivers cron job results,")
-    print_info("   cross-platform messages, and notifications.")
-    print_info("   To get a channel ID: right-click a channel ->Copy Channel ID")
-    print_info("   (requires Developer Mode in Discord settings)")
-    print_info("   You can also set this later by typing /set-home in a Discord channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    print_info("   跨平台消息和通知的位置。")
+    print_info("   获取频道 ID: 右键点击频道 ->复制频道 ID")
+    print_info("   （需要在 Discord 设置中启用开发者模式）")
+    print_info("   你也可以稍后在 Discord 频道中输入 /set-home 来设置。")
+    home_channel = prompt("主频道 ID（留空稍后使用 /set-home 设置）")
     if home_channel:
         save_env_value("DISCORD_HOME_CHANNEL", home_channel)
 
@@ -1975,29 +1975,29 @@ def _setup_slack():
     print_header("Slack")
     existing = get_env_value("SLACK_BOT_TOKEN")
     if existing:
-        print_info("Slack: already configured")
-        if not prompt_yes_no("Reconfigure Slack?", False):
+        print_info("Slack: 已配置")
+        if not prompt_yes_no("重新配置 Slack？", False):
             return
 
-    print_info("Steps to create a Slack app:")
-    print_info("   1. Go to https://api.slack.com/apps ->Create New App (from scratch)")
-    print_info("   2. Enable Socket Mode: Settings ->Socket Mode ->Enable")
-    print_info("      -Create an App-Level Token with 'connections:write' scope")
-    print_info("   3. Add Bot Token Scopes: Features ->OAuth & Permissions")
-    print_info("      Required scopes: chat:write, app_mentions:read,")
+    print_info("创建 Slack 应用的步骤：")
+    print_info("   1. 前往 https://api.slack.com/apps ->创建新应用（从零开始）")
+    print_info("   2. 启用 Socket Mode: Settings ->Socket Mode ->Enable")
+    print_info("      -创建带有 'connections:write' 权限的 App-Level Token")
+    print_info("   3. 添加 Bot Token 权限: Features ->OAuth & Permissions")
+    print_info("      必需权限: chat:write, app_mentions:read,")
     print_info("      channels:history, channels:read, im:history,")
     print_info("      im:read, im:write, users:read, files:write")
-    print_info("      Optional for private channels: groups:history")
-    print_info("   4. Subscribe to Events: Features ->Event Subscriptions ->Enable")
-    print_info("      Required events: message.im, message.channels, app_mention")
-    print_info("      Optional for private channels: message.groups")
-    print_warning("   [ON]Without message.channels the bot will ONLY work in DMs,")
-    print_warning("     not public channels.")
-    print_info("   5. Install to Workspace: Settings ->Install App")
-    print_info("   6. Reinstall the app after any scope or event changes")
-    print_info("   7. After installing, invite the bot to channels: /invite @YourBot")
+    print_info("      私有频道可选: groups:history")
+    print_info("   4. 订阅事件: Features ->Event Subscriptions ->Enable")
+    print_info("      必需事件: message.im, message.channels, app_mention")
+    print_info("      私有频道可选: message.groups")
+    print_warning("   [ON]没有 message.channels 权限，机器人只能在私聊中工作，")
+    print_warning("     无法在公共频道中使用。")
+    print_info("   5. 安装到工作区: Settings ->Install App")
+    print_info("   6. 修改权限或事件后需要重新安装应用")
+    print_info("   7. 安装后，邀请机器人到频道: /invite @YourBot")
     print()
-    print_info("   Full guide: https://kunming-agent.kunming.dev/docs/user-guide/messaging/slack/")
+    print_info("   完整指南: https://kunming-agent.kunming.dev/docs/user-guide/messaging/slack/")
     print()
     bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
     if not bot_token:
@@ -2006,21 +2006,21 @@ def _setup_slack():
     app_token = prompt("Slack App Token (xapp-...)", password=True)
     if app_token:
         save_env_value("SLACK_APP_TOKEN", app_token)
-    print_success("Slack tokens saved")
+    print_success("Slack Token 已保存")
 
     print()
     print_info("ð Security: Restrict who can use your bot")
-    print_info("   To find a Member ID: click a user's name ->View full profile ->â?->Copy member ID")
+    print_info("   查找成员 ID: 点击用户名称 ->查看完整资料 ->... ->复制成员 ID")
     print()
     allowed_users = prompt(
-        "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
+        "允许的用户 ID（逗号分隔，留空则拒绝除配对用户外的所有人）"
     )
     if allowed_users:
         save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("Slack allowlist configured")
+        print_success("Slack 白名单已配置")
     else:
-        print_warning("â ï¸  No Slack allowlist set - unpaired users will be denied by default.")
-        print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
+        print_warning("未设置 Slack 白名单 -未配对用户默认将被拒绝。")
+        print_info("   仅在有意开放工作区访问时设置 SLACK_ALLOW_ALL_USERS=true 或 GATEWAY_ALLOW_ALL_USERS=true。")
 
 
 def _setup_matrix():
@@ -2028,48 +2028,48 @@ def _setup_matrix():
     print_header("Matrix")
     existing = get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD")
     if existing:
-        print_info("Matrix: already configured")
-        if not prompt_yes_no("Reconfigure Matrix?", False):
+        print_info("Matrix: 已配置")
+        if not prompt_yes_no("重新配置 Matrix？", False):
             return
 
-    print_info("Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org).")
-    print_info("   1. Create a bot user on your homeserver, or use your own account")
-    print_info("   2. Get an access token from Element, or provide user ID + password")
+    print_info("支持任何 Matrix 主服务器（Synapse、Conduit、Dendrite 或 matrix.org）。")
+    print_info("   1. 在主服务器上创建机器人用户，或使用你自己的账户")
+    print_info("   2. 从 Element 获取访问令牌，或提供用户 ID + 密码")
     print()
-    homeserver = prompt("Homeserver URL (e.g. https://matrix.example.org)")
+    homeserver = prompt("主服务器 URL（例如 https://matrix.example.org）")
     if homeserver:
         save_env_value("MATRIX_HOMESERVER", homeserver.rstrip("/"))
 
     print()
-    print_info("Auth: provide an access token (recommended), or user ID + password.")
-    token = prompt("Access token (leave empty for password login)", password=True)
+    print_info("认证：提供访问令牌（推荐），或用户 ID + 密码。")
+    token = prompt("访问令牌（留空使用密码登录）", password=True)
     if token:
         save_env_value("MATRIX_ACCESS_TOKEN", token)
-        user_id = prompt("User ID (@bot:server -optional, will be auto-detected)")
+        user_id = prompt("用户 ID (@bot:server -可选，将自动检测)")
         if user_id:
             save_env_value("MATRIX_USER_ID", user_id)
-        print_success("Matrix access token saved")
+        print_success("Matrix 访问令牌已保存")
     else:
-        user_id = prompt("User ID (@bot:server)")
+        user_id = prompt("用户 ID (@bot:server)")
         if user_id:
             save_env_value("MATRIX_USER_ID", user_id)
-        password = prompt("Password", password=True)
+        password = prompt("密码", password=True)
         if password:
             save_env_value("MATRIX_PASSWORD", password)
-            print_success("Matrix credentials saved")
+            print_success("Matrix 凭据已保存")
 
     if token or get_env_value("MATRIX_PASSWORD"):
         print()
-        want_e2ee = prompt_yes_no("Enable end-to-end encryption (E2EE)?", False)
+        want_e2ee = prompt_yes_no("启用端到端加密 (E2EE)？", False)
         if want_e2ee:
             save_env_value("MATRIX_ENCRYPTION", "true")
-            print_success("E2EE enabled")
+            print_success("E2EE 已启用")
 
         matrix_pkg = "matrix-nio[e2e]" if want_e2ee else "matrix-nio"
         try:
             __import__("nio")
         except ImportError:
-            print_info(f"Installing {matrix_pkg}...")
+            print_info(f"正在安装 {matrix_pkg}...")
             import subprocess
             uv_bin = shutil.which("uv")
             if uv_bin:
@@ -2083,28 +2083,28 @@ def _setup_matrix():
                     capture_output=True, text=True,
                 )
             if result.returncode == 0:
-                print_success(f"{matrix_pkg} installed")
+                print_success(f"{matrix_pkg} 已安装")
             else:
-                print_warning(f"Install failed -run manually: pip install '{matrix_pkg}'")
+                print_warning(f"安装失败 -请手动运行: pip install '{matrix_pkg}'")
                 if result.stderr:
-                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+                    print_info(f"  错误: {result.stderr.strip().splitlines()[-1]}")
 
         print()
         print_info("ð Security: Restrict who can use your bot")
-        print_info("   Matrix user IDs look like @username:server")
+        print_info("   Matrix 用户 ID 格式如 @username:server")
         print()
-        allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+        allowed_users = prompt("允许的用户 ID（逗号分隔，留空则开放访问）")
         if allowed_users:
             save_env_value("MATRIX_ALLOWED_USERS", allowed_users.replace(" ", ""))
-            print_success("Matrix allowlist configured")
+            print_success("Matrix 白名单已配置")
         else:
-            print_info("â ï¸  No allowlist set - anyone who can message the bot can use it!")
+            print_info("未设置白名单 -任何能给机器人发消息的人都可以使用！")
 
         print()
         print_info("ðŸ“¬ Home Room: where Kunming delivers cron job results and notifications.")
-        print_info("   Room IDs look like !abc123:server (shown in Element room settings)")
-        print_info("   You can also set this later by typing /set-home in a Matrix room.")
-        home_room = prompt("Home room ID (leave empty to set later with /set-home)")
+        print_info("   房间 ID 格式如 !abc123:server（在 Element 房间设置中查看）")
+        print_info("   你也可以稍后在 Matrix 房间中输入 /set-home 来设置。")
+        home_room = prompt("主房间 ID（留空稍后使用 /set-home 设置）")
         if home_room:
             save_env_value("MATRIX_HOME_ROOM", home_room)
 
@@ -2114,40 +2114,40 @@ def _setup_mattermost():
     print_header("Mattermost")
     existing = get_env_value("MATTERMOST_TOKEN")
     if existing:
-        print_info("Mattermost: already configured")
-        if not prompt_yes_no("Reconfigure Mattermost?", False):
+        print_info("Mattermost: 已配置")
+        if not prompt_yes_no("重新配置 Mattermost？", False):
             return
 
-    print_info("Works with any self-hosted Mattermost instance.")
-    print_info("   1. In Mattermost: Integrations ->Bot Accounts ->Add Bot Account")
-    print_info("   2. Copy the bot token")
+    print_info("支持任何自托管的 Mattermost 实例。")
+    print_info("   1. 在 Mattermost 中: Integrations ->Bot Accounts ->Add Bot Account")
+    print_info("   2. 复制机器人 Token")
     print()
-    mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
+    mm_url = prompt("Mattermost 服务器 URL（例如 https://mm.example.com）")
     if mm_url:
         save_env_value("MATTERMOST_URL", mm_url.rstrip("/"))
-    token = prompt("Bot token", password=True)
+    token = prompt("机器人 Token", password=True)
     if not token:
         return
     save_env_value("MATTERMOST_TOKEN", token)
-    print_success("Mattermost token saved")
+    print_success("Mattermost Token 已保存")
 
     print()
     print_info("ð Security: Restrict who can use your bot")
-    print_info("   To find your user ID: click your avatar ->Profile")
-    print_info("   or use the API: GET /api/v4/users/me")
+    print_info("   查找用户 ID: 点击你的头像 ->个人资料")
+    print_info("   或使用 API: GET /api/v4/users/me")
     print()
-    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+    allowed_users = prompt("允许的用户 ID（逗号分隔，留空则开放访问）")
     if allowed_users:
         save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("Mattermost allowlist configured")
+        print_success("Mattermost 白名单已配置")
     else:
-        print_info("â ï¸  No allowlist set - anyone who can message the bot can use it!")
+        print_info("未设置白名单 -任何能给机器人发消息的人都可以使用！")
 
     print()
     print_info("ðŸ“¬ Home Channel: where Kunming delivers cron job results and notifications.")
-    print_info("   To get a channel ID: click channel name ->View Info ->copy the ID")
-    print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    print_info("   获取频道 ID: 点击频道名称 ->查看信息 ->复制 ID")
+    print_info("   你也可以稍后在 Mattermost 频道中输入 /set-home 来设置。")
+    home_channel = prompt("主频道 ID（留空稍后使用 /set-home 设置）")
     if home_channel:
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
 
@@ -2157,17 +2157,17 @@ def _setup_whatsapp():
     print_header("WhatsApp")
     existing = get_env_value("WHATSAPP_ENABLED")
     if existing:
-        print_info("WhatsApp: already enabled")
+        print_info("WhatsApp: 已启用")
         return
 
-    print_info("WhatsApp connects via a built-in bridge (Baileys).")
-    print_info("Requires Node.js. Run 'km whatsapp' for guided setup.")
+    print_info("WhatsApp 通过内置桥接（Baileys）连接。")
+    print_info("需要 Node.js。运行 'km whatsapp' 进行引导式设置。")
     print()
-    if prompt_yes_no("Enable WhatsApp now?", True):
+    if prompt_yes_no("现在启用 WhatsApp？", True):
         save_env_value("WHATSAPP_ENABLED", "true")
-        print_success("WhatsApp enabled")
-        print_info("Run 'km whatsapp' to choose your mode (separate bot number")
-        print_info("or personal self-chat) and pair via QR code.")
+        print_success("WhatsApp 已启用")
+        print_info("运行 'km whatsapp' 选择模式（独立机器人号码")
+        print_info("或个人自聊）并通过二维码配对。")
 
 
 def _setup_webhooks():
@@ -2175,45 +2175,45 @@ def _setup_webhooks():
     print_header("Webhooks")
     existing = get_env_value("WEBHOOK_ENABLED")
     if existing:
-        print_info("Webhooks: already configured")
-        if not prompt_yes_no("Reconfigure webhooks?", False):
+        print_info("Webhooks: 已配置")
+        if not prompt_yes_no("重新配置 Webhooks？", False):
             return
 
     print()
-    print_warning("[ON] Webhook and SMS platforms require exposing gateway ports to the")
-    print_warning("   internet. For security, run the gateway in a sandboxed environment")
-    print_warning("   (Docker, VM, etc.) to limit blast radius from prompt injection.")
+    print_warning("[ON] Webhook 和 SMS 平台需要将网关端口暴露到互联网。")
+    print_warning("   为安全起见，请在沙箱环境（Docker、VM 等）中运行网关，")
+    print_warning("   以限制提示注入攻击的影响范围。")
     print()
-    print_info("   Full guide: https://kunming-agent.kunming.dev/docs/user-guide/messaging/webhooks/")
+    print_info("   完整指南: https://kunming-agent.kunming.dev/docs/user-guide/messaging/webhooks/")
     print()
 
-    port = prompt("Webhook port (default 8644)")
+    port = prompt("Webhook 端口（默认 8644）")
     if port:
         try:
             save_env_value("WEBHOOK_PORT", str(int(port)))
-            print_success(f"Webhook port set to {port}")
+            print_success(f"Webhook 端口已设为 {port}")
         except ValueError:
-            print_warning("Invalid port number, using default 8644")
+            print_warning("无效端口号，使用默认值 8644")
 
-    secret = prompt("Global HMAC secret (shared across all routes)", password=True)
+    secret = prompt("全局 HMAC 密钥（所有路由共享）", password=True)
     if secret:
         save_env_value("WEBHOOK_SECRET", secret)
-        print_success("Webhook secret saved")
+        print_success("Webhook 密钥已保存")
     else:
-        print_warning("No secret set -you must configure per-route secrets in config.yaml")
+        print_warning("未设置密钥 -必须在 config.yaml 中配置每个路由的密钥")
 
     save_env_value("WEBHOOK_ENABLED", "true")
     print()
-    print_success("Webhooks enabled! Next steps:")
+    print_success("Webhooks 已启用！后续步骤：")
     from kunming_constants import display_kunming_home as _dhh
-    print_info(f"   1. Define webhook routes in {_dhh()}/config.yaml")
-    print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
+    print_info(f"   1. 在 {_dhh()}/config.yaml 中定义 Webhook 路由")
+    print_info("   2. 将你的服务（GitHub、GitLab 等）指向：")
     print_info("      http://your-server:8644/webhooks/<route-name>")
     print()
-    print_info("   Route configuration guide:")
+    print_info("   路由配置指南：")
     print_info("   https://kunming-agent.kunming.dev/docs/user-guide/messaging/webhooks/#configuring-routes")
     print()
-    print_info("   Open config in your editor:  km config edit")
+    print_info("   在编辑器中打开配置:  km config edit")
 
 
 # Platform registry for the gateway checklist
@@ -2230,9 +2230,9 @@ _GATEWAY_PLATFORMS = [
 
 def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
-    print_header("Messaging Platforms")
-    print_info("Connect to messaging platforms to chat with Kunming from anywhere.")
-    print_info("Toggle with Space, confirm with Enter.")
+    print_header("消息平台")
+    print_info("连接消息平台，随时随地与 Kunming 对话。")
+    print_info("空格键切换选择，回车键确认。")
     print()
 
     # Build checklist items, pre-selecting already-configured platforms
@@ -2243,15 +2243,15 @@ def setup_gateway(config: dict):
         is_configured = bool(get_env_value(env_var))
         if name == "Matrix" and not is_configured:
             is_configured = bool(get_env_value("MATRIX_PASSWORD"))
-        label = f"{name}  (configured)" if is_configured else name
+        label = f"{name}  (已配置)" if is_configured else name
         items.append(label)
         if is_configured:
             pre_selected.append(i)
 
-    selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
+    selected = prompt_checklist("选择要配置的平台：", items, pre_selected)
 
     if not selected:
-        print_info("No platforms selected. Run 'km setup gateway' later to configure.")
+        print_info("未选择任何平台。稍后运行 'km setup gateway' 进行配置。")
         return
 
     for idx in selected:
@@ -2272,7 +2272,7 @@ def setup_gateway(config: dict):
     if any_messaging:
         print()
         print_info("+" * 50)
-        print_success("Messaging platforms configured!")
+        print_success("消息平台已配置！")
 
         # Check if any home channels are missing
         missing_home = []
@@ -2289,10 +2289,10 @@ def setup_gateway(config: dict):
 
         if missing_home:
             print()
-            print_warning(f"No home channel set for: {', '.join(missing_home)}")
-            print_info("   Without a home channel, cron jobs and cross-platform")
-            print_info("   messages can't be delivered to those platforms.")
-            print_info("   Set one later with /set-home in your chat, or:")
+            print_warning(f"未设置主频道: {', '.join(missing_home)}")
+            print_info("   没有主频道，定时任务和跨平台消息")
+            print_info("   无法投递到这些平台。")
+            print_info("   稍后在聊天中使用 /set-home 设置，或：")
             for plat in missing_home:
                 print_info(
                     f"     km config set {plat.upper()}_HOME_CHANNEL <channel_id>"
@@ -2326,27 +2326,27 @@ def setup_gateway(config: dict):
             print()
 
         if service_running:
-            if prompt_yes_no("  Restart the gateway to pick up changes?", True):
+            if prompt_yes_no("  重启网关以应用更改？", True):
                 try:
                     if _is_linux:
                         systemd_restart()
                     elif _is_macos:
                         launchd_restart()
                 except Exception as e:
-                    print_error(f"  Restart failed: {e}")
+                    print_error(f"  重启失败: {e}")
         elif service_installed:
-            if prompt_yes_no("  Start the gateway service?", True):
+            if prompt_yes_no("  启动网关服务？", True):
                 try:
                     if _is_linux:
                         systemd_start()
                     elif _is_macos:
                         launchd_start()
                 except Exception as e:
-                    print_error(f"  Start failed: {e}")
+                    print_error(f"  启动失败: {e}")
         elif _is_linux or _is_macos:
             svc_name = "systemd" if _is_linux else "launchd"
             if prompt_yes_no(
-                f"  Install the gateway as a {svc_name} service? (runs in background, starts on boot)",
+                f"  将网关安装为 {svc_name} 服务？（后台运行，开机自启）",
                 True,
             ):
                 try:
@@ -2358,25 +2358,25 @@ def setup_gateway(config: dict):
                         launchd_install(force=False)
                         did_install = True
                     print()
-                    if did_install and prompt_yes_no("  Start the service now?", True):
+                    if did_install and prompt_yes_no("  现在启动服务？", True):
                         try:
                             if _is_linux:
                                 systemd_start(system=installed_scope == "system")
                             elif _is_macos:
                                 launchd_start()
                         except Exception as e:
-                            print_error(f"  Start failed: {e}")
+                            print_error(f"  启动失败: {e}")
                 except Exception as e:
-                    print_error(f"  Install failed: {e}")
-                    print_info("  You can try manually: km gateway install")
+                    print_error(f"  安装失败: {e}")
+                    print_info("  你可以手动尝试: km gateway install")
             else:
-                print_info("  You can install later: km gateway install")
+                print_info("  稍后安装: km gateway install")
                 if _is_linux:
-                    print_info("  Or as a boot-time service: sudo km gateway install --system")
-                print_info("  Or run in foreground:  km gateway")
+                    print_info("  或作为开机服务: sudo km gateway install --system")
+                print_info("  或前台运行:  km gateway")
         else:
-            print_info("Start the gateway to bring your bots online:")
-            print_info("   km gateway              # Run in foreground")
+            print_info("启动网关使你的机器人上线：")
+            print_info("   km gateway              # 前台运行")
 
         print_info("+" * 50)
 
@@ -2486,7 +2486,7 @@ def _skip_configured_section(
         return False
     print()
     print_success(f"  {label}: {summary}")
-    return not prompt_yes_no(f"  Reconfigure {label.lower()}?", default=False)
+    return not prompt_yes_no(f"  重新配置 {label.lower()}？", default=False)
 
 
 # =============================================================================
@@ -2494,12 +2494,12 @@ def _skip_configured_section(
 # =============================================================================
 
 SETUP_SECTIONS = [
-    ("model", "Model & Provider", setup_model_provider),
-    ("tts", "Text-to-Speech", setup_tts),
-    ("terminal", "Terminal Backend", setup_terminal_backend),
-    ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
-    ("tools", "Tools", setup_tools),
-    ("agent", "Agent Settings", setup_agent_settings),
+    ("model", "模型与提供商", setup_model_provider),
+    ("tts", "文字转语音", setup_tts),
+    ("terminal", "终端后端", setup_terminal_backend),
+    ("gateway", "消息平台（网关）", setup_gateway),
+    ("tools", "工具", setup_tools),
+    ("agent", "代理设置", setup_agent_settings),
 ]
 
 # The returning-user menu intentionally omits standalone TTS because model setup
@@ -2541,7 +2541,7 @@ def run_setup_wizard(args):
 
     if non_interactive:
         print_noninteractive_setup_guidance(
-            "Running in a non-interactive environment (no TTY detected)."
+            "运行在非交互环境中（未检测到 TTY）。"
         )
         return
 
@@ -2567,11 +2567,11 @@ def run_setup_wizard(args):
                 func(config)
                 save_config(config)
                 print()
-                print_success(f"{label} configuration complete!")
+                print_success(f"{label} 配置完成！")
                 return
 
-        print_error(f"Unknown setup section: {section}")
-        print_info(f"Available sections: {', '.join(k for k, _, _ in SETUP_SECTIONS)}")
+        print_error(f"未知的设置区段: {section}")
+        print_info(f"可用区段: {', '.join(k for k, _, _ in SETUP_SECTIONS)}")
         return
 
     # Check if this is an existing installation with a provider configured
@@ -2593,7 +2593,7 @@ def run_setup_wizard(args):
     )
     print(
         color(
-            "|            [ON] Kunming Agent Setup Wizard              |",
+            "|            [ON] Kunming Agent 设置向导                  |",
             Colors.MAGENTA,
         )
     )
@@ -2605,13 +2605,13 @@ def run_setup_wizard(args):
     )
     print(
         color(
-            "| Let's configure your Kunming Agent installation.        |",
+            "| 让我们配置你的 Kunming Agent 安装。                     |",
             Colors.MAGENTA,
         )
     )
     print(
         color(
-            "| Press Ctrl+C at any time to exit.                       |",
+            "| 随时按 Ctrl+C 退出。                                    |",
             Colors.MAGENTA,
         )
     )
@@ -2625,26 +2625,26 @@ def run_setup_wizard(args):
     if is_existing:
         # -- Returning User Menu --
         print()
-        print_header("Welcome Back!")
-        print_success("You already have km configured.")
+        print_header("欢迎回来！")
+        print_success("你已经配置过 km 了。")
         print()
 
         menu_choices = [
-            "Quick Setup - configure missing items only",
-            "Full Setup - reconfigure everything",
+            "快速设置 -仅配置缺少的项目",
+            "完整设置 -重新配置所有内容",
             "---",
-            "Model & Provider",
-            "Terminal Backend",
-            "Messaging Platforms (Gateway)",
-            "Tools",
-            "Agent Settings",
+            "模型与提供商",
+            "终端后端",
+            "消息平台（网关）",
+            "工具",
+            "代理设置",
             "---",
-            "Exit",
+            "退出",
         ]
 
         # Separator indices (not selectable, but prompt_choice doesn't filter them,
         # so we handle them below)
-        choice = prompt_choice("What would you like to do?", menu_choices, 0)
+        choice = prompt_choice("你想做什么？", menu_choices, 0)
 
         if choice == 0:
             # Quick setup
@@ -2655,10 +2655,10 @@ def run_setup_wizard(args):
             pass
         elif choice in (2, 8):
             # Separator -treat as exit
-            print_info("Exiting. Run 'km setup' again when ready.")
+            print_info("退出。准备好后运行 'km setup'。")
             return
         elif choice == 9:
-            print_info("Exiting. Run 'km setup' again when ready.")
+            print_info("退出。准备好后运行 'km setup'。")
             return
         elif 3 <= choice <= 7:
             # Individual section -map by key, not by position.
@@ -2676,9 +2676,9 @@ def run_setup_wizard(args):
         # -- First-Time Setup --
         print()
 
-        setup_mode = prompt_choice("How would you like to set up Kunming?", [
-            "Quick setup -provider, model & messaging (recommended)",
-            "Full setup -configure everything",
+        setup_mode = prompt_choice("你想如何设置 Kunming？", [
+            "快速设置 -提供商、模型和消息（推荐）",
+            "完整设置 -配置所有内容",
         ], 0)
 
         if setup_mode == 0:
@@ -2686,13 +2686,13 @@ def run_setup_wizard(args):
             return
 
     # -- Full Setup -run all sections --
-    print_header("Configuration Location")
-    print_info(f"Config file:  {get_config_path()}")
-    print_info(f"Secrets file: {get_env_path()}")
-    print_info(f"Data folder:  {kunming_home}")
-    print_info(f"Install dir:  {PROJECT_ROOT}")
+    print_header("配置文件位置")
+    print_info(f"配置文件:  {get_config_path()}")
+    print_info(f"密钥文件: {get_env_path()}")
+    print_info(f"数据目录:  {kunming_home}")
+    print_info(f"安装目录:  {PROJECT_ROOT}")
     print()
-    print_info("You can edit these files directly or use 'km config edit'")
+    print_info("你可以直接编辑这些文件，或使用 'km config edit'")
 
     # Section 1: Model & Provider
     setup_model_provider(config)
@@ -2719,7 +2719,7 @@ def run_setup_wizard(args):
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
     print()
-    if prompt_yes_no("Launch km chat now?", True):
+    if prompt_yes_no("现在启动 km 对话？", True):
         from kunming_cli.main import cmd_chat
         from types import SimpleNamespace
         cmd_chat(SimpleNamespace(
@@ -2750,10 +2750,10 @@ def _run_first_time_quick_setup(config: dict, kunming_home, is_existing: bool):
     # Step 3: Offer messaging gateway setup
     print()
     gateway_choice = prompt_choice(
-        "Connect a messaging platform? (Telegram, Discord, etc.)",
+        "连接消息平台？（Telegram、Discord 等）",
         [
-            "Set up messaging now (recommended)",
-            "Skip -set up later with 'km setup gateway'",
+            "现在设置消息平台（推荐）",
+            "跳过 -稍后使用 'km setup gateway' 设置",
         ],
         0,
     )
@@ -2763,11 +2763,11 @@ def _run_first_time_quick_setup(config: dict, kunming_home, is_existing: bool):
         save_config(config)
 
     print()
-    print_success("Setup complete! You're ready to go.")
+    print_success("设置完成！你可以开始使用了。")
     print()
-    print_info("  Configure all settings:    km setup")
+    print_info("  配置所有设置:    km setup")
     if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  km setup gateway")
+        print_info("  连接 Telegram/Discord:  km setup gateway")
     print()
 
     _print_setup_summary(config, kunming_home)
@@ -2784,7 +2784,7 @@ def _run_quick_setup(config: dict, kunming_home):
     )
 
     print()
-    print_header("Quick Setup -Missing Items Only")
+    print_header("快速设置 -仅配置缺少的项目")
 
     # Check what's missing
     missing_required = [
@@ -2804,16 +2804,16 @@ def _run_quick_setup(config: dict, kunming_home):
     )
 
     if not has_anything_missing:
-        print_success("Everything is configured! Nothing to do.")
+        print_success("所有项目已配置！无需操作。")
         print()
-        print_info("Run 'km setup' and choose 'Full Setup' to reconfigure,")
-        print_info("or pick a specific section from the menu.")
+        print_info("运行 'km setup' 并选择'完整设置'来重新配置，")
+        print_info("或从菜单中选择特定区段。")
         return
 
     # Handle missing required env vars
     if missing_required:
         print()
-        print_info(f"{len(missing_required)} required setting(s) missing:")
+        print_info(f"{len(missing_required)} 个必需设置缺失：")
         for var in missing_required:
             print(f"     -{var['name']}")
         print()
@@ -2823,7 +2823,7 @@ def _run_quick_setup(config: dict, kunming_home):
             print(color(f"  {var['name']}", Colors.CYAN))
             print_info(f"  {var.get('description', '')}")
             if var.get("url"):
-                print_info(f"  Get key at: {var['url']}")
+                print_info(f"  获取密钥: {var['url']}")
 
             if var.get("password"):
                 value = prompt(f"  {var.get('prompt', var['name'])}", password=True)
@@ -2832,9 +2832,9 @@ def _run_quick_setup(config: dict, kunming_home):
 
             if value:
                 save_env_value(var["name"], value)
-                print_success(f"  Saved {var['name']}")
+                print_success(f"  已保存 {var['name']}")
             else:
-                print_warning(f"  Skipped {var['name']}")
+                print_warning(f"  已跳过 {var['name']}")
 
     # Split missing optional vars by category
     missing_tools = [v for v in missing_optional if v.get("category") == "tool"]
@@ -2847,7 +2847,7 @@ def _run_quick_setup(config: dict, kunming_home):
     # -- Tool API keys (checklist) --
     if missing_tools:
         print()
-        print_header("Tool API Keys")
+        print_header("工具 API 密钥")
 
         checklist_labels = []
         for var in missing_tools:
@@ -2856,7 +2856,7 @@ def _run_quick_setup(config: dict, kunming_home):
             checklist_labels.append(f"{var.get('description', var['name'])}{tools_str}")
 
         selected_indices = prompt_checklist(
-            "Which tools would you like to configure?",
+            "你想配置哪些工具？",
             checklist_labels,
         )
 
@@ -2867,9 +2867,9 @@ def _run_quick_setup(config: dict, kunming_home):
     # -- Messaging platforms (checklist then prompt for selected) --
     if missing_messaging:
         print()
-        print_header("Messaging Platforms")
-        print_info("Connect Kunming to messaging apps to chat from anywhere.")
-        print_info("You can configure these later with 'km setup gateway'.")
+        print_header("消息平台")
+        print_info("连接 Kunming 到消息应用，随时随地对话。")
+        print_info("你可以稍后使用 'km setup gateway' 配置。")
 
         # Group by platform (preserving order)
         platform_order = []

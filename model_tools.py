@@ -476,6 +476,14 @@ def handle_function_call(
             }, ensure_ascii=False)
 
     try:
+        # Fast-path abort: if the agent has been interrupted, do not start
+        # long-running synchronous work (especially MCP calls).
+        from tools.interrupt import is_interrupted
+        if is_interrupted():
+            return json.dumps({
+                "error": f"Tool '{function_name}' was cancelled because the agent was interrupted."
+            }, ensure_ascii=False)
+
         _tool_start = time.monotonic()
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
@@ -524,23 +532,23 @@ def handle_function_call(
         return result
 
     except (KeyError, ValueError, TypeError) as e:
-        logger.error(f"Error executing {function_name}: {e}")
+        logger.error("Error executing %s: %s", function_name, e)
         with _tool_failure_lock:
             _tool_failure_counts[function_name] = _tool_failure_counts.get(function_name, 0) + 1
         _record_tool_failure(function_name, "value_error", _tool_start)
-        return json.dumps({"error": f"{function_name}: {str(e)}"}, ensure_ascii=False)
+        return json.dumps({"error": f"{function_name}: {type(e).__name__}"}, ensure_ascii=False)
     except RuntimeError as e:
-        logger.error(f"Runtime error in {function_name}: {e}")
+        logger.error("Runtime error in %s: %s", function_name, e)
         with _tool_failure_lock:
             _tool_failure_counts[function_name] = _tool_failure_counts.get(function_name, 0) + 1
         _record_tool_failure(function_name, "runtime_error", _tool_start)
-        return json.dumps({"error": f"{function_name}: {str(e)}"}, ensure_ascii=False)
+        return json.dumps({"error": f"{function_name}: {type(e).__name__}"}, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"Unexpected error in {function_name}: {e}", exc_info=True)
+        logger.error("Unexpected error in %s: %s", function_name, e, exc_info=True)
         with _tool_failure_lock:
             _tool_failure_counts[function_name] = _tool_failure_counts.get(function_name, 0) + 1
         _record_tool_failure(function_name, "unexpected", _tool_start)
-        return json.dumps({"error": f"{function_name}: {str(e)}"}, ensure_ascii=False)
+        return json.dumps({"error": f"{function_name}: {type(e).__name__}"}, ensure_ascii=False)
 
 
 def _record_tool_failure(tool_name: str, error_type: str, start_time: float = 0):

@@ -46,6 +46,23 @@ _COMPLEX_KEYWORDS = {
     "cron",
     "docker",
     "kubernetes",
+    # Chinese keywords for better support
+    "调试",
+    "实现",
+    "重构",
+    "分析",
+    "调查",
+    "架构",
+    "设计",
+    "对比",
+    "优化",
+    "审查",
+    "终端",
+    "工具",
+    "测试",
+    "计划",
+    "委派",
+    "代理",
 }
 
 _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
@@ -93,7 +110,7 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
         return None
     if text.count("\n") > 1:
         return None
-    if "```" in text or "`" in text:
+    if "```" in text:
         return None
     if _URL_RE.search(text):
         return None

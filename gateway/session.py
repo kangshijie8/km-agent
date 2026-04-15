@@ -935,6 +935,32 @@ class SessionStore:
         entries.sort(key=lambda e: e.updated_at, reverse=True)
 
         return entries
+
+    def get_expired_sessions(self) -> List[SessionEntry]:
+        """
+        Get all sessions that have expired based on their reset policy.
+        
+        This method checks each session against its configured reset policy
+        (idle timeout, daily reset, or both) and returns those that have expired.
+        Sessions with active background processes are excluded.
+        
+        Returns:
+            List of expired SessionEntry objects, sorted by updated_at (oldest first)
+        """
+        expired_sessions = []
+        
+        with self._lock:
+            self._ensure_loaded_locked()
+            entries = list(self._entries.values())
+        
+        for entry in entries:
+            if self._is_session_expired(entry):
+                expired_sessions.append(entry)
+        
+        # Sort by updated_at ascending (oldest first) for predictable processing order
+        expired_sessions.sort(key=lambda e: e.updated_at)
+        
+        return expired_sessions
     
     def get_transcript_path(self, session_id: str) -> Path:
         """Get the path to a session's legacy transcript file."""

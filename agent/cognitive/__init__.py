@@ -98,12 +98,19 @@ from .neural.rl_trainer import (
     create_rl_trainer,
 )
 
-# Import adapters
+# Import adapters (only available ones)
 from .adapters import (
-    HybridMemoryProvider, HybridSearchResult, get_hybrid_memory_provider,
     SmartDelegator, TaskComplexity, TaskAnalysis, get_smart_delegator,
-    UnifiedLearningSystem, LearningConfig, get_unified_learning,
 )
+
+# HybridMemoryProvider and UnifiedLearningSystem have been removed
+# Use the main system's memory_tool and error_learning instead
+HybridMemoryProvider = None
+HybridSearchResult = None
+get_hybrid_memory_provider = lambda: None
+UnifiedLearningSystem = None
+LearningConfig = None
+get_unified_learning = lambda: None
 
 
 @dataclass

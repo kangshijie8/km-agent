@@ -426,7 +426,8 @@ class APIServerAdapter(BasePlatformAdapter):
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
-        max_iterations = int(os.getenv("KUNMING_MAX_ITERATIONS", "90"))
+        _agent_max_turns = (user_config.get("agent") or {}).get("max_turns")
+        max_iterations = int(_agent_max_turns) if _agent_max_turns else int(os.getenv("KUNMING_MAX_ITERATIONS", "90"))
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).

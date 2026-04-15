@@ -407,13 +407,14 @@ def _platform_config_key(platform: "Platform") -> str:
 
 
 def _load_gateway_config() -> dict:
-    """Load and parse ~/.kunming/config.yaml, returning {} on any error."""
+    """Load and parse ~/.kunming/config.yaml using unified config system.
+    
+    Uses kunming_cli.config.load_config() for consistency with CLI and other components.
+    Returns {} on any error for backward compatibility.
+    """
     try:
-        config_path = _kunming_home / 'config.yaml'
-        if config_path.exists():
-            import yaml
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f) or {}
+        from kunming_cli.config import load_config
+        return load_config()
     except Exception:
         logger.debug("Could not load gateway config from %s", _kunming_home / 'config.yaml')
     return {}
@@ -506,15 +507,15 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._running_agents_lock = asyncio.Lock()  # Protects _running_agents and _running_agents_ts
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
         # system prompt (including memory) every turn -breaking prefix cache
         # and costing ~10x more on providers with prompt caching (Anthropic).
         # Key: session_key, Value: (AIAgent, config_signature_str)
-        import threading as _threading
         self._agent_cache: Dict[str, tuple] = {}
-        self._agent_cache_lock = _threading.Lock()
+        self._agent_cache_lock = asyncio.Lock()  # Use asyncio.Lock for async context
 
         # Track active fallback model/provider when primary is rate-limited.
         # Set after an agent run where fallback was activated; cleared when
@@ -1323,7 +1324,8 @@ class GatewayRunner:
                     try:
                         await self._async_flush_memories(entry.session_id)
                         # Shut down memory provider on the cached agent
-                        cached_agent = self._running_agents.get(key)
+                        async with self._running_agents_lock:
+                            cached_agent = self._running_agents.get(key)
                         if cached_agent and cached_agent is not _AGENT_PENDING_SENTINEL:
                             try:
                                 if hasattr(cached_agent, 'shutdown_memory_provider'):
@@ -1488,7 +1490,9 @@ class GatewayRunner:
         logger.info("Stopping gateway...")
         self._running = False
 
-        for session_key, agent in list(self._running_agents.items()):
+        async with self._running_agents_lock:
+            _agents_snapshot = list(self._running_agents.items())
+        for session_key, agent in _agents_snapshot:
             if agent is _AGENT_PENDING_SENTINEL:
                 continue
             try:
@@ -1528,7 +1532,9 @@ class GatewayRunner:
         self._background_tasks.clear()
 
         self.adapters.clear()
-        self._running_agents.clear()
+        async with self._running_agents_lock:
+            self._running_agents.clear()
+            self._running_agents_ts.clear()
         self._pending_messages.clear()
         self._pending_approvals.clear()
         self._shutdown_event.set()
@@ -1885,50 +1891,53 @@ class GatewayRunner:
         # has been *idle* beyond the inactivity threshold (or when the agent
         # object has no activity tracker and wall-clock age is extreme).
         _raw_stale_timeout = float(os.getenv("KUNMING_AGENT_TIMEOUT", 1800))
-        _stale_ts = self._running_agents_ts.get(_quick_key, 0)
-        if _quick_key in self._running_agents and _stale_ts:
-            _stale_age = time.time() - _stale_ts
-            _stale_agent = self._running_agents.get(_quick_key)
-            # Never evict the pending sentinel -it was just placed moments
-            # ago during the async setup phase before the real agent is
-            # created.  Sentinels have no get_activity_summary(), so the
-            # idle check below would always evaluate to inf >= timeout and
-            # immediately evict them, racing with the setup path.
-            _stale_idle = float("inf")  # assume idle if we can't check
-            _stale_detail = ""
-            if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
-                try:
-                    _sa = _stale_agent.get_activity_summary()
-                    _stale_idle = _sa.get("seconds_since_activity", float("inf"))
-                    _stale_detail = (
-                        f" | last_activity={_sa.get('last_activity_desc', 'unknown')} "
-                        f"({_stale_idle:.0f}s ago) "
-                        f"| iteration={_sa.get('api_call_count', 0)}/{_sa.get('max_iterations', 0)}"
+        async with self._running_agents_lock:
+            _stale_ts = self._running_agents_ts.get(_quick_key, 0)
+            if _quick_key in self._running_agents and _stale_ts:
+                _stale_age = time.time() - _stale_ts
+                _stale_agent = self._running_agents.get(_quick_key)
+                # Never evict the pending sentinel -it was just placed moments
+                # ago during the async setup phase before the real agent is
+                # created.  Sentinels have no get_activity_summary(), so the
+                # idle check below would always evaluate to inf >= timeout and
+                # immediately evict them, racing with the setup path.
+                _stale_idle = float("inf")  # assume idle if we can't check
+                _stale_detail = ""
+                if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
+                    try:
+                        _sa = _stale_agent.get_activity_summary()
+                        _stale_idle = _sa.get("seconds_since_activity", float("inf"))
+                        _stale_detail = (
+                            f" | last_activity={_sa.get('last_activity_desc', 'unknown')} "
+                            f"({_stale_idle:.0f}s ago) "
+                            f"| iteration={_sa.get('api_call_count', 0)}/{_sa.get('max_iterations', 0)}"
+                        )
+                    except Exception:
+                        pass
+                # Evict if: agent is idle beyond timeout, OR wall-clock age is
+                # extreme (10x timeout or 2h, whichever is larger -catches
+                # cases where the agent object was garbage-collected).
+                _wall_ttl = max(_raw_stale_timeout * 10, 7200) if _raw_stale_timeout > 0 else float("inf")
+                _should_evict = (
+                    _stale_agent is not _AGENT_PENDING_SENTINEL
+                    and (
+                        (_raw_stale_timeout > 0 and _stale_idle >= _raw_stale_timeout)
+                        or _stale_age > _wall_ttl
                     )
-                except Exception:
-                    pass
-            # Evict if: agent is idle beyond timeout, OR wall-clock age is
-            # extreme (10x timeout or 2h, whichever is larger -catches
-            # cases where the agent object was garbage-collected).
-            _wall_ttl = max(_raw_stale_timeout * 10, 7200) if _raw_stale_timeout > 0 else float("inf")
-            _should_evict = (
-                _stale_agent is not _AGENT_PENDING_SENTINEL
-                and (
-                    (_raw_stale_timeout > 0 and _stale_idle >= _raw_stale_timeout)
-                    or _stale_age > _wall_ttl
                 )
-            )
-            if _should_evict:
-                logger.warning(
-                    "Evicting stale _running_agents entry for %s "
-                    "(age: %.0fs, idle: %.0fs, timeout: %.0fs)%s",
-                    _quick_key[:30], _stale_age, _stale_idle,
-                    _raw_stale_timeout, _stale_detail,
-                )
-                del self._running_agents[_quick_key]
-                self._running_agents_ts.pop(_quick_key, None)
+                if _should_evict:
+                    logger.warning(
+                        "Evicting stale _running_agents entry for %s "
+                        "(age: %.0fs, idle: %.0fs, timeout: %.0fs)%s",
+                        _quick_key[:30], _stale_age, _stale_idle,
+                        _raw_stale_timeout, _stale_detail,
+                    )
+                    del self._running_agents[_quick_key]
+                    self._running_agents_ts.pop(_quick_key, None)
 
-        if _quick_key in self._running_agents:
+            _is_running = _quick_key in self._running_agents
+
+        if _is_running:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
 
@@ -1943,16 +1952,18 @@ class GatewayRunner:
             # _interrupt_requested.  Force-clean _running_agents so the session
             # is unlocked and subsequent messages are processed normally.
             if _cmd_def_inner and _cmd_def_inner.name == "stop":
-                running_agent = self._running_agents.get(_quick_key)
-                if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-                    running_agent.interrupt("Stop requested")
-                # Force-clean: remove the session lock regardless of agent state
+                async with self._running_agents_lock:
+                    running_agent = self._running_agents.get(_quick_key)
+                    if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                        running_agent.interrupt("Stop requested")
+                    # Force-clean: remove the session lock regardless of agent state
+                    if _quick_key in self._running_agents:
+                        del self._running_agents[_quick_key]
+                        self._running_agents_ts.pop(_quick_key, None)
                 adapter = self.adapters.get(source.platform)
                 if adapter and hasattr(adapter, 'get_pending_message'):
                     adapter.get_pending_message(_quick_key)  # consume and discard
                 self._pending_messages.pop(_quick_key, None)
-                if _quick_key in self._running_agents:
-                    del self._running_agents[_quick_key]
                 logger.info("HARD STOP for session %s -session lock released", _quick_key[:20])
                 return "[ON]Force-stopped. The session is unlocked -you can send a new message."
 
@@ -1964,18 +1975,20 @@ class GatewayRunner:
             # doesn't get re-processed as a user message after the
             # interrupt completes.
             if _cmd_def_inner and _cmd_def_inner.name == "new":
-                running_agent = self._running_agents.get(_quick_key)
-                if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
-                    running_agent.interrupt("Session reset requested")
+                async with self._running_agents_lock:
+                    running_agent = self._running_agents.get(_quick_key)
+                    if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                        running_agent.interrupt("Session reset requested")
+                    # Clean up the running agent entry so the reset handler
+                    # doesn't think an agent is still active.
+                    if _quick_key in self._running_agents:
+                        del self._running_agents[_quick_key]
+                        self._running_agents_ts.pop(_quick_key, None)
                 # Clear any pending messages so the old text doesn't replay
                 adapter = self.adapters.get(source.platform)
                 if adapter and hasattr(adapter, 'get_pending_message'):
                     adapter.get_pending_message(_quick_key)  # consume and discard
                 self._pending_messages.pop(_quick_key, None)
-                # Clean up the running agent entry so the reset handler
-                # doesn't think an agent is still active.
-                if _quick_key in self._running_agents:
-                    del self._running_agents[_quick_key]
                 return await self._handle_reset_command(event)
 
             # /queue <prompt> -queue without interrupting
@@ -2026,23 +2039,25 @@ class GatewayRunner:
                         adapter._pending_messages[_quick_key] = event
                 return None
 
-            running_agent = self._running_agents.get(_quick_key)
-            if running_agent is _AGENT_PENDING_SENTINEL:
-                # Agent is being set up but not ready yet.
-                if event.get_command() == "stop":
-                    # Force-clean the sentinel so the session is unlocked.
-                    if _quick_key in self._running_agents:
-                        del self._running_agents[_quick_key]
-                    logger.info("HARD STOP (pending) for session %s -sentinel cleared", _quick_key[:20])
-                    return "[ON]Force-stopped. The agent was still starting -session unlocked."
-                # Queue the message so it will be picked up after the
-                # agent starts.
-                adapter = self.adapters.get(source.platform)
-                if adapter:
-                    adapter._pending_messages[_quick_key] = event
-                return None
-            logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
-            running_agent.interrupt(event.text)
+            async with self._running_agents_lock:
+                running_agent = self._running_agents.get(_quick_key)
+                if running_agent is _AGENT_PENDING_SENTINEL:
+                    # Agent is being set up but not ready yet.
+                    if event.get_command() == "stop":
+                        # Force-clean the sentinel so the session is unlocked.
+                        if _quick_key in self._running_agents:
+                            del self._running_agents[_quick_key]
+                            self._running_agents_ts.pop(_quick_key, None)
+                        logger.info("HARD STOP (pending) for session %s -sentinel cleared", _quick_key[:20])
+                        return "[ON]Force-stopped. The agent was still starting -session unlocked."
+                    # Queue the message so it will be picked up after the
+                    # agent starts.
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        adapter._pending_messages[_quick_key] = event
+                    return None
+                logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
+                running_agent.interrupt(event.text)
             if _quick_key in self._pending_messages:
                 self._pending_messages[_quick_key] += "\n" + event.text
             else:
@@ -2312,8 +2327,9 @@ class GatewayRunner:
         # message arriving during any of those yields would pass the
         # "already running" guard and spin up a duplicate agent for the
         # same session -corrupting the transcript.
-        self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
-        self._running_agents_ts[_quick_key] = time.time()
+        async with self._running_agents_lock:
+            self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
+            self._running_agents_ts[_quick_key] = time.time()
 
         try:
             return await self._handle_message_with_agent(event, source, _quick_key)
@@ -2322,9 +2338,10 @@ class GatewayRunner:
             # then cleaned it up, this is a no-op.  If we exited early
             # (exception, command fallthrough, etc.) the sentinel must
             # not linger or the session would be permanently locked out.
-            if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
-                del self._running_agents[_quick_key]
-            self._running_agents_ts.pop(_quick_key, None)
+            async with self._running_agents_lock:
+                if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
+                    del self._running_agents[_quick_key]
+                self._running_agents_ts.pop(_quick_key, None)
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -3383,7 +3400,8 @@ class GatewayRunner:
 
         # Check if there's an active agent
         session_key = session_entry.session_key
-        is_running = session_key in self._running_agents
+        async with self._running_agents_lock:
+            is_running = session_key in self._running_agents
 
         title = None
         if self._session_db:
@@ -3422,22 +3440,24 @@ class GatewayRunner:
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
-        
-        agent = self._running_agents.get(session_key)
-        if agent is _AGENT_PENDING_SENTINEL:
-            # Force-clean the sentinel so the session is unlocked.
-            if session_key in self._running_agents:
-                del self._running_agents[session_key]
-            logger.info("HARD STOP (pending) for session %s -sentinel cleared", session_key[:20])
-            return "[ON]Force-stopped. The agent was still starting -session unlocked."
-        if agent:
-            agent.interrupt("Stop requested")
-            # Force-clean the session lock so a truly hung agent doesn't
-            # keep it locked forever.
-            if session_key in self._running_agents:
-                del self._running_agents[session_key]
-            return "[ON]Force-stopped. The session is unlocked -you can send a new message."
-        else:
+
+        async with self._running_agents_lock:
+            agent = self._running_agents.get(session_key)
+            if agent is _AGENT_PENDING_SENTINEL:
+                # Force-clean the sentinel so the session is unlocked.
+                if session_key in self._running_agents:
+                    del self._running_agents[session_key]
+                    self._running_agents_ts.pop(session_key, None)
+                logger.info("HARD STOP (pending) for session %s -sentinel cleared", session_key[:20])
+                return "[ON]Force-stopped. The agent was still starting -session unlocked."
+            if agent:
+                agent.interrupt("Stop requested")
+                # Force-clean the session lock so a truly hung agent doesn't
+                # keep it locked forever.
+                if session_key in self._running_agents:
+                    del self._running_agents[session_key]
+                    self._running_agents_ts.pop(session_key, None)
+                return "[ON]Force-stopped. The session is unlocked -you can send a new message."
             return "No active task to stop."
     
     async def _handle_help_command(self, event: MessageEvent) -> str:
@@ -4701,7 +4721,8 @@ class GatewayRunner:
             pr = self._provider_routing
 
             # Snapshot history from running agent or stored transcript
-            running_agent = self._running_agents.get(session_key)
+            async with self._running_agents_lock:
+                running_agent = self._running_agents.get(session_key)
             if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
                 history_snapshot = list(getattr(running_agent, "_session_messages", []) or [])
             else:
@@ -5087,8 +5108,10 @@ class GatewayRunner:
             logger.debug("Memory flush on resume failed: %s", e)
 
         # Clear any running agent for this session key
-        if session_key in self._running_agents:
-            del self._running_agents[session_key]
+        async with self._running_agents_lock:
+            if session_key in self._running_agents:
+                del self._running_agents[session_key]
+                self._running_agents_ts.pop(session_key, None)
 
         # Switch the session entry to point at the old session
         new_entry = self.session_store.switch_session(session_key, target_id)
@@ -5199,7 +5222,8 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
 
-        agent = self._running_agents.get(session_key)
+        async with self._running_agents_lock:
+            agent = self._running_agents.get(session_key)
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
             lines = [
                 "ð **Session Token Usage**",
@@ -6994,8 +7018,9 @@ class GatewayRunner:
             while agent_holder[0] is None:
                 await asyncio.sleep(0.05)
             if session_key:
-                self._running_agents[session_key] = agent_holder[0]
-        
+                async with self._running_agents_lock:
+                    self._running_agents[session_key] = agent_holder[0]
+
         tracking_task = asyncio.create_task(track_agent())
         
         # Monitor for interrupts from the adapter (new messages arriving)
@@ -7318,10 +7343,11 @@ class GatewayRunner:
             
             # Clean up tracking
             tracking_task.cancel()
-            if session_key and session_key in self._running_agents:
-                del self._running_agents[session_key]
             if session_key:
-                self._running_agents_ts.pop(session_key, None)
+                async with self._running_agents_lock:
+                    if session_key in self._running_agents:
+                        del self._running_agents[session_key]
+                    self._running_agents_ts.pop(session_key, None)
             
             # Wait for cancelled tasks
             for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:

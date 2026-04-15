@@ -19,6 +19,8 @@ from typing import Any
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
+from kunming_cli.i18n import _T
+
 
 # ---------------------------------------------------------------------------
 # CommandDef dataclass
@@ -72,7 +74,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("btw", "Ephemeral side question using session context (no tools, not persisted)", "Session",
                args_hint="<question>"),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
-               aliases=("q",), args_hint="<prompt>"),
+               aliases=("qu",), args_hint="<prompt>"),
     CommandDef("status", "Show session info", "Session",
                gateway_only=True),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
@@ -225,10 +227,16 @@ def rebuild_lookups() -> None:
 
 
 def _build_description(cmd: CommandDef) -> str:
-    """Build a CLI-facing description string including usage hint."""
+    """Build a CLI-facing description string including usage hint.
+
+    Translates the command description via i18n when a translation exists.
+    """
+    i18n_key = f"cmd.{cmd.name}"
+    translated = _T(i18n_key)
+    desc = translated if translated != i18n_key else cmd.description
     if cmd.args_hint:
-        return f"{cmd.description} (usage: /{cmd.name} {cmd.args_hint})"
-    return cmd.description
+        return f"{desc} (usage: /{cmd.name} {cmd.args_hint})"
+    return desc
 
 
 # Backwards-compatible flat dict: "/command" -> description

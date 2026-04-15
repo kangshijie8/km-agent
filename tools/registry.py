@@ -38,6 +38,7 @@ class ToolMetadata:
     max_result_size_chars: Optional[int] = None
     is_agent_tool: bool = False  # True for tools requiring agent-level state (todo, memory, etc.)
     is_async: bool = False  # True if handler is a coroutine function
+    emoji: Optional[str] = None  # Emoji icon for the tool
 
 
 class ToolRegistry:
@@ -120,6 +121,7 @@ class ToolRegistry:
                         max_result_size_chars=max_result_size_chars,
                         is_agent_tool=is_agent_tool,
                         is_async=is_async,
+                        emoji=emoji,
                     )
                 )
                 return
@@ -148,6 +150,7 @@ class ToolRegistry:
                 max_result_size_chars=max_result_size_chars,
                 is_agent_tool=is_agent_tool,
                 is_async=is_async,
+                emoji=emoji,
             )
 
             if name in self._tools and allow_override:
@@ -208,19 +211,26 @@ class ToolRegistry:
         """Get all registered tools."""
         return self._tools.copy()
 
-    def get_emoji(self, name: str) -> Optional[str]:
+    def get_emoji(self, name: str, default: str = "⚡") -> str:
         """Get the emoji for a tool.
 
         Args:
             name: The tool name
+            default: Default emoji to return if not set
 
         Returns:
-            The emoji string if set, None otherwise
+            The emoji string if set, default otherwise
         """
         tool = self._tools.get(name)
         if not tool:
-            return None
-        return tool.schema.get("_metadata", {}).get("emoji")
+            return default
+        # Check ToolMetadata.emoji first, then schema metadata
+        emoji = tool.emoji
+        if emoji is None or emoji == "":
+            emoji = tool.schema.get("_metadata", {}).get("emoji")
+        if emoji is None or emoji == "":
+            return default
+        return emoji
 
     def get_tool_to_toolset_map(self) -> Dict[str, str]:
         """Get a mapping of tool names to their toolset names.
@@ -297,7 +307,6 @@ class ToolRegistry:
         """Dispatch a tool call to the appropriate handler.
 
         This is the main entry point for tool execution from model_tools.py.
-        Delegates to dispatch_tool for actual execution.
 
         Args:
             tool_name: The name of the tool to call
@@ -316,12 +325,89 @@ class ToolRegistry:
                 ensure_ascii=False,
             )
 
-        # Delegate to the main dispatch function
-        return dispatch_tool(tool_name, params, task_id=task_id, **kwargs)
+        # Get tool from this registry instance
+        tool = self.get_tool(tool_name)
+        if not tool:
+            return json.dumps(
+                {"error": f"Unknown tool: '{tool_name}'"}, ensure_ascii=False
+            )
+
+        # Check if tool is available
+        if not self.check_tool_availability_single(tool_name):
+            missing = []
+            for env_var in tool.requires_env:
+                if not os.getenv(env_var):
+                    missing.append(f"{env_var} environment variable")
+            if missing:
+                return json.dumps(
+                    {
+                        "error": f"Tool '{tool_name}' is not available. Missing: {', '.join(missing)}"
+                    },
+                    ensure_ascii=False,
+                )
+
+        # Call the handler directly
+        try:
+            if tool.is_async:
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = None
+                if loop and loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        result = pool.submit(
+                            asyncio.run, tool.handler(params, task_id=task_id, **kwargs)
+                        ).result()
+                else:
+                    result = asyncio.run(tool.handler(params, task_id=task_id, **kwargs))
+            else:
+                result = tool.handler(params, task_id=task_id, **kwargs)
+
+            if isinstance(result, dict):
+                return json.dumps(result, ensure_ascii=False)
+            return result
+        except Exception as e:
+            logger.error("Tool '%s' failed: %s", tool_name, e)
+            logger.debug(traceback.format_exc())
+            return json.dumps(
+                {"error": f"Tool '{tool_name}' failed: {type(e).__name__}: {str(e)}"},
+                ensure_ascii=False,
+            )
 
     def get_all_tool_names(self) -> List[str]:
-        """Return all registered tool names."""
-        return self.list_tools()
+        """Return all registered tool names (sorted for deterministic ordering)."""
+        return sorted(self.list_tools())
+
+    def is_toolset_available(self, toolset_name: str) -> bool:
+        """Check if a toolset is available (all its tools are available).
+
+        Args:
+            toolset_name: The name of the toolset to check
+
+        Returns:
+            True if all tools in the toolset are available, False otherwise
+        """
+        tool_names = self._toolsets.get(toolset_name, [])
+        if not tool_names:
+            return True  # Empty toolset is considered available
+
+        for name in tool_names:
+            if not self.check_tool_availability_single(name):
+                return False
+        return True
+
+    def check_toolset_requirements(self) -> Dict[str, bool]:
+        """Check availability status for all toolsets.
+
+        Returns:
+            Dictionary mapping toolset names to their availability (True/False)
+        """
+        result = {}
+        for toolset_name in self._toolsets:
+            result[toolset_name] = self.is_toolset_available(toolset_name)
+        return result
 
     def get_agent_tool_names(self) -> List[str]:
         """Return names of all tools marked with is_agent_tool=True."""
@@ -369,18 +455,8 @@ class ToolRegistry:
             if is_available:
                 available.append(toolset_name)
             else:
-                # Collect missing requirements
-                missing = []
-                for name in tool_names:
-                    tool = self._tools.get(name)
-                    if tool:
-                        for env_var in tool.requires_env:
-                            if not os.getenv(env_var):
-                                missing.append(f"{env_var} environment variable")
-                unavailable.append({
-                    "toolset": toolset_name,
-                    "missing": list(set(missing)),
-                })
+                # Collect unavailable toolsets with their names
+                unavailable.append({"name": toolset_name})
 
         return available, unavailable
 
@@ -436,18 +512,60 @@ class ToolRegistry:
         Returns:
             List of OpenAI-format tool definitions: [{"type": "function", "function": schema}, ...]
         """
+        # Cache check_fn results to avoid calling the same check_fn multiple times
+        check_fn_cache: Dict[Callable, bool] = {}
+
+        def check_with_cache(tool: ToolMetadata) -> bool:
+            """Check tool availability with caching for shared check_fn."""
+            # Check required environment variables first
+            for env_var in tool.requires_env:
+                if not os.getenv(env_var):
+                    return False
+
+            # Check required config keys
+            if tool.requires_config:
+                try:
+                    from kunming_cli.config import load_cli_config
+
+                    cfg = load_cli_config()
+                    for key_path in tool.requires_config:
+                        parts = key_path.split(".")
+                        value = cfg
+                        for part in parts:
+                            if isinstance(value, dict):
+                                value = value.get(part)
+                            else:
+                                value = None
+                                break
+                        if value is None:
+                            return False
+                except Exception:
+                    return False
+
+            # Check custom check_fn with caching
+            if tool.check_fn:
+                if tool.check_fn not in check_fn_cache:
+                    try:
+                        check_fn_cache[tool.check_fn] = tool.check_fn()
+                    except Exception:
+                        logger.debug("check_fn for tool '%s' raised exception", tool.name, exc_info=True)
+                        check_fn_cache[tool.check_fn] = False
+                return check_fn_cache[tool.check_fn]
+
+            return True
+
         if tool_names is None:
             # Return all available tools in OpenAI format
             return [
                 {"type": "function", "function": schema}
                 for schema in self._schemas
-                if self.check_tool_availability_single(schema.get("name", ""))
+                if check_with_cache(self._tools.get(schema.get("name", "")))
             ]
 
         schemas = []
         for name in tool_names:
             tool = self._tools.get(name)
-            if tool and self.check_tool_availability_single(name):
+            if tool and check_with_cache(tool):
                 schemas.append({"type": "function", "function": tool.schema})
             elif not tool and not quiet:
                 logger.warning(f"Tool '{name}' not found in registry")
@@ -774,7 +892,7 @@ def dispatch_tool(
             return json.dumps(result, ensure_ascii=False)
         return result
     except Exception as e:
-        logger.error(f"Tool '{tool_name}' failed: {e}")
+        logger.error("Tool '%s' failed: %s", tool_name, e)
         logger.debug(traceback.format_exc())
         return json.dumps(
             {"error": f"Tool '{tool_name}' failed: {str(e)}"}, ensure_ascii=False
@@ -842,7 +960,7 @@ def safe_execute(
         result = func(*args, **kwargs)
         return format_json_result({"success": True, "result": result})
     except Exception as e:
-        logger.error(f"safe_execute failed: {e}")
+        logger.error("safe_execute failed: %s", e)
         return format_json_result({"success": False, "error": str(e) or default_error})
 
 
