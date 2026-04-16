@@ -49,6 +49,9 @@ from typing import Any, Dict, List, Optional
 # 优化: 从轻量kunming_constants导入，避免触发config.py的重量级初始化 [M17]
 from kunming_constants import get_kunming_home
 
+# 整合: 统一导入ansi_strip，消除函数内重复导入 [R1]
+from tools.ansi_strip import strip_ansi
+
 logger = logging.getLogger(__name__)
 
 
@@ -548,7 +551,7 @@ class ProcessRegistry:
         # If the caller requested agent notification, enqueue the completion
         # so the CLI/gateway can auto-trigger a new agent turn.
         if session.notify_on_complete:
-            from tools.ansi_strip import strip_ansi
+            # [修复: 重复导入] 使用模块顶部已导入的strip_ansi [R1]
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
             self.completion_queue.put({
                 "session_id": session.id,
@@ -567,8 +570,7 @@ class ProcessRegistry:
 
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""
-        from tools.ansi_strip import strip_ansi
-
+        # [修复: 重复导入] 使用模块顶部已导入的strip_ansi [R1]
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
@@ -593,8 +595,7 @@ class ProcessRegistry:
 
     def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
-        from tools.ansi_strip import strip_ansi
-
+        # [修复: 重复导入] 使用模块顶部已导入的strip_ansi [R1]
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
@@ -631,7 +632,7 @@ class ProcessRegistry:
             dict with status ("exited", "timeout", "interrupted", "not_found")
             and output snapshot.
         """
-        from tools.ansi_strip import strip_ansi
+        # [修复: 重复导入] 使用模块顶部已导入的strip_ansi [R1]
         from tools.terminal_tool import _interrupt_event
 
         default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))

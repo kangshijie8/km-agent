@@ -2714,6 +2714,33 @@ class AIAgent:
                     self.client = None
         except Exception:
             pass
+        # ------------------------------------------------------------------
+        # CRITICAL FIX 2026-04-16: Anthropic client interrupt handling.
+        #
+        # When using Anthropic Messages API (including MiniMax via Anthropic
+        # compatibility mode), the _anthropic_client holds the HTTP connection.
+        # The SDK's streaming iterator (messages.stream()) blocks in httpx's
+        # C extension, holding the GIL on Windows. We must close the underlying
+        # httpx client to force the blocked read() to raise and release the GIL.
+        #
+        # The Anthropic SDK's Anthropic class wraps an httpx.Client, and
+        # close() shuts down the connection pool, interrupting in-flight streams.
+        # ------------------------------------------------------------------
+        try:
+            anthropic_client = getattr(self, "_anthropic_client", None)
+            if anthropic_client is not None:
+                # Close the Anthropic client's underlying HTTP transport
+                anthropic_client.close()
+                # Rebuild the client so subsequent calls don't fail with
+                # "Cannot use a closed client" errors.
+                if self.api_mode == "anthropic_messages":
+                    from agent.anthropic_adapter import build_anthropic_client
+                    self._anthropic_client = build_anthropic_client(
+                        getattr(self, "_anthropic_api_key", "") or "",
+                        getattr(self, "_anthropic_base_url", None),
+                    )
+        except Exception:
+            pass
         # Propagate interrupt to any running child agents (subagent delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
@@ -4036,9 +4063,28 @@ class AIAgent:
             collected_output_items: list = []
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
-                    for event in stream:
-                        if self._interrupt_requested:
-                            break
+                    import concurrent.futures as _futures
+
+                    def _iter_stream_with_interrupt():
+                        for event in stream:
+                            if self._interrupt_requested:
+                                raise InterruptedError("Stream interrupted by user request")
+                            yield event
+
+                    with _futures.ThreadPoolExecutor(max_workers=1) as _executor:
+                        _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
+                        while not _future.done():
+                            if self._interrupt_requested:
+                                _future.cancel()
+                                try:
+                                    active_client.close()
+                                except Exception:
+                                    pass
+                                raise InterruptedError("Agent interrupted during Codex stream")
+                            time.sleep(0.1)
+                        _all_events = _future.result(timeout=1.0)
+
+                    for event in _all_events:
                         event_type = getattr(event, "type", "")
                         # Fire callbacks on text content deltas (suppress during tool calls)
                         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
@@ -4160,7 +4206,29 @@ class AIAgent:
         collected_output_items: list = []
         collected_text_deltas: list = []
         try:
-            for event in stream_or_response:
+            import concurrent.futures as _futures
+
+            def _iter_stream_with_interrupt():
+                for event in stream_or_response:
+                    if self._interrupt_requested:
+                        raise InterruptedError("Stream interrupted by user request")
+                    yield event
+
+            with _futures.ThreadPoolExecutor(max_workers=1) as _executor:
+                _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
+                while not _future.done():
+                    if self._interrupt_requested:
+                        _future.cancel()
+                        try:
+                            if hasattr(stream_or_response, "close"):
+                                stream_or_response.close()
+                        except Exception:
+                            pass
+                        raise InterruptedError("Agent interrupted during Codex fallback stream")
+                    time.sleep(0.1)
+                _all_events = _future.result(timeout=1.0)
+
+            for event in _all_events:
                 event_type = getattr(event, "type", None)
                 if not event_type and isinstance(event, dict):
                     event_type = event.get("type")
@@ -4653,14 +4721,32 @@ class AIAgent:
             # knows whether reasoning was already displayed during streaming.
             self._reasoning_deltas_fired = False
 
+            import concurrent.futures as _futures
+
+            def _iter_stream_with_interrupt():
+                for chunk in stream:
+                    if self._interrupt_requested:
+                        raise InterruptedError("Stream interrupted by user request")
+                    yield chunk
+
+            with _futures.ThreadPoolExecutor(max_workers=1) as _executor:
+                _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
+                while not _future.done():
+                    if self._interrupt_requested:
+                        _future.cancel()
+                        try:
+                            request_client_holder["client"].close()
+                        except Exception:
+                            pass
+                        raise InterruptedError("Agent interrupted during chat.completions stream")
+                    time.sleep(0.1)
+                _all_chunks = _future.result(timeout=1.0)
+
             _first_chunk_seen = False
-            for chunk in stream:
+            for chunk in _all_chunks:
                 if not _first_chunk_seen:
                     _first_chunk_seen = True
                     self._touch_activity("receiving stream response")
-
-                if self._interrupt_requested:
-                    break
 
                 if not chunk.choices:
                     if hasattr(chunk, "model") and chunk.model:
@@ -4825,37 +4911,120 @@ class AIAgent:
             last_chunk_time["t"] = time.time()
             with self._openai_client_lock():
                 self._current_request_client = self._anthropic_client
+
+            # ------------------------------------------------------------------
+            # CRITICAL FIX 2026-04-16: Anthropic stream interrupt handling.
+            #
+            # The Anthropic SDK's stream iterator blocks in httpx's C extension
+            # when waiting for the next SSE event. On Windows, this holds the GIL
+            # and prevents Python-level interrupt checks from running.
+            #
+            # We use the SDK's .stream() context manager with a sentinel-based
+            # approach: if interrupt() closes the _anthropic_client, the blocked
+            # read() will raise an exception and break the loop. We also check
+            # _interrupt_requested after each event to exit gracefully.
+            # ------------------------------------------------------------------
+            _stream_start_time = time.monotonic()
+            _stream_hard_timeout = float(os.getenv("KUNMING_STREAM_TIMEOUT", 600.0))  # 10 min default
+
             # Use the Anthropic SDK's streaming context manager
             with self._anthropic_client.messages.stream(**api_kwargs) as stream:
-                for event in stream:
+                try:
+                    # ------------------------------------------------------------------
+                    # CRITICAL FIX 2026-04-16: Interruptible stream iteration for Anthropic.
+                    #
+                    # The standard 'for event in stream:' pattern blocks in httpx's C extension
+                    # when waiting for the next SSE event. On Windows, this holds the GIL
+                    # and cannot be interrupted by closing the client.
+                    #
+                    # We use a sentinel-based approach with periodic timeout checks:
+                    # - Wrap the iterator in a generator that yields (event, None) normally
+                    # - When interrupt is requested, the generator raises InterruptedError
+                    # - This allows the main loop to remain responsive to interrupts
+                    # ------------------------------------------------------------------
+                    import concurrent.futures as _futures
+
+                    def _iter_stream_with_interrupt():
+                        """Generator that yields stream events but checks for interrupts."""
+                        for evt in stream:
+                            if self._interrupt_requested:
+                                raise InterruptedError("Stream interrupted by user request")
+                            yield evt
+
+                    # Use ThreadPoolExecutor to make iteration interruptible
+                    with _futures.ThreadPoolExecutor(max_workers=1) as _executor:
+                        _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
+
+                        # Poll for completion with interrupt checks
+                        _poll_interval = 0.1  # 100ms
+                        while not _future.done():
+                            # Check for interrupt
+                            if self._interrupt_requested:
+                                _future.cancel()
+                                # Force-close the stream by closing the client
+                                try:
+                                    self._anthropic_client.close()
+                                except Exception:
+                                    pass
+                                raise InterruptedError("Agent interrupted during Anthropic stream")
+
+                            # Check for hard timeout
+                            if time.monotonic() - _stream_start_time > _stream_hard_timeout:
+                                _future.cancel()
+                                try:
+                                    self._anthropic_client.close()
+                                except Exception:
+                                    pass
+                                logger.warning("Anthropic stream exceeded hard timeout of %ss", _stream_hard_timeout)
+                                raise TimeoutError(f"Stream exceeded {_stream_hard_timeout}s timeout")
+
+                            # Short sleep to avoid busy-waiting
+                            time.sleep(_poll_interval)
+
+                        # Get all events
+                        _all_events = _future.result(timeout=1.0)
+
+                    # Process all collected events
+                    for event in _all_events:
+                        event_type = getattr(event, "type", None)
+
+                        if event_type == "content_block_start":
+                            block = getattr(event, "content_block", None)
+                            if block and getattr(block, "type", None) == "tool_use":
+                                has_tool_use = True
+                                tool_name = getattr(block, "name", None)
+                                if tool_name:
+                                    _fire_first_delta()
+                                    self._fire_tool_gen_started(tool_name)
+
+                        elif event_type == "content_block_delta":
+                            delta = getattr(event, "delta", None)
+                            if delta:
+                                delta_type = getattr(delta, "type", None)
+                                if delta_type == "text_delta":
+                                    text = getattr(delta, "text", "")
+                                    if text and not has_tool_use:
+                                        _fire_first_delta()
+                                        self._fire_stream_delta(text)
+                                elif delta_type == "thinking_delta":
+                                    thinking_text = getattr(delta, "thinking", "")
+                                    if thinking_text:
+                                        _fire_first_delta()
+                                        self._fire_reasoning_delta(thinking_text)
+
+                except InterruptedError:
+                    # Re-raise interrupt errors
+                    raise
+                except Exception as stream_exc:
+                    # Handle interrupt-induced client closure gracefully
                     if self._interrupt_requested:
-                        break
-
-                    event_type = getattr(event, "type", None)
-
-                    if event_type == "content_block_start":
-                        block = getattr(event, "content_block", None)
-                        if block and getattr(block, "type", None) == "tool_use":
-                            has_tool_use = True
-                            tool_name = getattr(block, "name", None)
-                            if tool_name:
-                                _fire_first_delta()
-                                self._fire_tool_gen_started(tool_name)
-
-                    elif event_type == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        if delta:
-                            delta_type = getattr(delta, "type", None)
-                            if delta_type == "text_delta":
-                                text = getattr(delta, "text", "")
-                                if text and not has_tool_use:
-                                    _fire_first_delta()
-                                    self._fire_stream_delta(text)
-                            elif delta_type == "thinking_delta":
-                                thinking_text = getattr(delta, "thinking", "")
-                                if thinking_text:
-                                    _fire_first_delta()
-                                    self._fire_reasoning_delta(thinking_text)
+                        logger.debug("Anthropic stream interrupted (client closed): %s", stream_exc)
+                        # Return partial message if available, otherwise re-raise
+                        try:
+                            return stream.get_final_message()
+                        except Exception:
+                            raise InterruptedError("Agent interrupted during Anthropic stream")
+                    raise
 
                 # Return the native Anthropic Message for downstream processing
                 return stream.get_final_message()
@@ -4874,6 +5043,11 @@ class AIAgent:
                         else:
                             result["response"] = _call_chat_completions()
                         return  # success
+                    except InterruptedError:
+                        # CRITICAL FIX 2026-04-16: Re-raise InterruptedError immediately
+                        # so the outer interrupt logic can handle it properly. Don't let
+                        # it get caught by the generic Exception handler below.
+                        raise
                     except Exception as e:
                         if deltas_were_sent["yes"]:
                             # Streaming failed AFTER some tokens were already

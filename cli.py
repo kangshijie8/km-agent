@@ -6069,14 +6069,16 @@ class KunmingCLI:
                 self._clarify_deadline = 0
                 return result
             except queue.Empty:
+                # CRITICAL FIX 2026-04-16: Check for interrupt request to prevent
+                # the agent thread from blocking forever when the user sends a new message.
+                # This matches the pattern used in _sudo_password_callback and _approval_callback.
+                if self.agent and getattr(self.agent, '_interrupt_requested', False):
+                    break
                 remaining = self._clarify_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
                 # Only repaint every 5 s for the countdown █avoids flicker
                 now = _time.monotonic()
-                if now - _last_countdown_refresh >= 5.0:
-                    _last_countdown_refresh = now
-                    self._invalidate()
                 if now - _last_countdown_refresh >= 5.0:
                     _last_countdown_refresh = now
                     self._invalidate()

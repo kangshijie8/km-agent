@@ -46,6 +46,10 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
+# 整合: 统一导入ansi_strip和redact，消除函数内重复导入 [R2]
+from tools.ansi_strip import strip_ansi
+from agent.redact import redact_sensitive_text
+
 # Availability gate: UDS requires a POSIX OS
 logger = logging.getLogger(__name__)
 
@@ -746,11 +750,11 @@ def _execute_remote(
         )
 
     # Strip ANSI escape sequences
-    from tools.ansi_strip import strip_ansi
+    # [修复: 重复导入] 使用模块顶部已导入的strip_ansi [R2]
     stdout_text = strip_ansi(stdout_text)
 
     # Redact secrets
-    from agent.redact import redact_sensitive_text
+    # [修复: 重复导入] 使用模块顶部已导入的redact_sensitive_text [R2]
     stdout_text = redact_sensitive_text(stdout_text)
 
     # Build response
@@ -1039,7 +1043,7 @@ def execute_code(
 
         # Strip ANSI escape sequences so the model never sees terminal
         # formatting — prevents it from copying escapes into file writes.
-        from tools.ansi_strip import strip_ansi
+        # [修复: 重复导入] 使用模块顶部已导入的strip_ansi [R2]
         stdout_text = strip_ansi(stdout_text)
         stderr_text = strip_ansi(stderr_text)
 
@@ -1047,7 +1051,7 @@ def execute_code(
         # The sandbox env-var filter (lines 434-454) blocks os.environ access,
         # but scripts can still read secrets from disk (e.g. open('~/.kunming/.env')).
         # This ensures leaked secrets never enter the model context.
-        from agent.redact import redact_sensitive_text
+        # [修复: 重复导入] 使用模块顶部已导入的redact_sensitive_text [R2]
         stdout_text = redact_sensitive_text(stdout_text)
         stderr_text = redact_sensitive_text(stderr_text)
 
