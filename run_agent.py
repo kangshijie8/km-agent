@@ -4063,31 +4063,17 @@ class AIAgent:
             collected_output_items: list = []
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
-                    import concurrent.futures as _futures
+                    # FIX: Removed ThreadPoolExecutor + polling loop that blocked
+                    # the main thread. Iterate stream directly and check
+                    # _interrupt_requested on each event for responsive cancel.
+                    for event in stream:
+                        if self._interrupt_requested:
+                            try:
+                                active_client.close()
+                            except Exception:
+                                pass
+                            raise InterruptedError("Agent interrupted during Codex stream")
 
-                    def _iter_stream_with_interrupt():
-                        for event in stream:
-                            if self._interrupt_requested:
-                                raise InterruptedError("Stream interrupted by user request")
-                            yield event
-
-                    _executor = _futures.ThreadPoolExecutor(max_workers=1)
-                    try:
-                        _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
-                        while not _future.done():
-                            if self._interrupt_requested:
-                                _future.cancel()
-                                try:
-                                    active_client.close()
-                                except Exception:
-                                    pass
-                                raise InterruptedError("Agent interrupted during Codex stream")
-                            time.sleep(0.1)
-                        _all_events = _future.result(timeout=1.0)
-                    finally:
-                        _executor.shutdown(wait=False)
-
-                    for event in _all_events:
                         event_type = getattr(event, "type", "")
                         # Fire callbacks on text content deltas (suppress during tool calls)
                         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
@@ -4209,32 +4195,18 @@ class AIAgent:
         collected_output_items: list = []
         collected_text_deltas: list = []
         try:
-            import concurrent.futures as _futures
-
-            def _iter_stream_with_interrupt():
-                for event in stream_or_response:
-                    if self._interrupt_requested:
-                        raise InterruptedError("Stream interrupted by user request")
-                    yield event
-
-            _executor = _futures.ThreadPoolExecutor(max_workers=1)
-            try:
-                _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
-                while not _future.done():
-                    if self._interrupt_requested:
-                        _future.cancel()
+            # FIX: Removed ThreadPoolExecutor + polling loop that blocked
+            # the main thread. Iterate stream directly and check
+            # _interrupt_requested on each event for responsive cancel.
+            for event in stream_or_response:
+                if self._interrupt_requested:
+                    if hasattr(stream_or_response, "close"):
                         try:
-                            if hasattr(stream_or_response, "close"):
-                                stream_or_response.close()
+                            stream_or_response.close()
                         except Exception:
                             pass
-                        raise InterruptedError("Agent interrupted during Codex fallback stream")
-                    time.sleep(0.1)
-                _all_events = _future.result(timeout=1.0)
-            finally:
-                _executor.shutdown(wait=False)
+                    raise InterruptedError("Agent interrupted during Codex fallback stream")
 
-            for event in _all_events:
                 event_type = getattr(event, "type", None)
                 if not event_type and isinstance(event, dict):
                     event_type = event.get("type")
@@ -4733,32 +4705,19 @@ class AIAgent:
             # knows whether reasoning was already displayed during streaming.
             self._reasoning_deltas_fired = False
 
-            import concurrent.futures as _futures
-
-            def _iter_stream_with_interrupt():
-                for chunk in stream:
-                    if self._interrupt_requested:
-                        raise InterruptedError("Stream interrupted by user request")
-                    yield chunk
-
-            _executor = _futures.ThreadPoolExecutor(max_workers=1)
-            try:
-                _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
-                while not _future.done():
-                    if self._interrupt_requested:
-                        _future.cancel()
-                        try:
-                            request_client_holder["client"].close()
-                        except Exception:
-                            pass
-                        raise InterruptedError("Agent interrupted during chat.completions stream")
-                    time.sleep(0.1)
-                _all_chunks = _future.result(timeout=1.0)
-            finally:
-                _executor.shutdown(wait=False)
-
+            # FIX: Removed ThreadPoolExecutor + polling loop that blocked
+            # the main thread. Iterate stream directly and check
+            # _interrupt_requested on each chunk for responsive cancel.
+            # Also moved last_chunk_time check here to avoid SSE ping timer refresh.
             _first_chunk_seen = False
-            for chunk in _all_chunks:
+            for chunk in stream:
+                if self._interrupt_requested:
+                    try:
+                        request_client_holder["client"].close()
+                    except Exception:
+                        pass
+                    raise InterruptedError("Agent interrupted during chat.completions stream")
+
                 if not _first_chunk_seen:
                     _first_chunk_seen = True
                     self._touch_activity("receiving stream response")
@@ -4945,65 +4904,25 @@ class AIAgent:
             # Use the Anthropic SDK's streaming context manager
             with self._anthropic_client.messages.stream(**api_kwargs) as stream:
                 try:
-                    # ------------------------------------------------------------------
-                    # CRITICAL FIX 2026-04-16: Interruptible stream iteration for Anthropic.
-                    #
-                    # The standard 'for event in stream:' pattern blocks in httpx's C extension
-                    # when waiting for the next SSE event. On Windows, this holds the GIL
-                    # and cannot be interrupted by closing the client.
-                    #
-                    # We use a sentinel-based approach with periodic timeout checks:
-                    # - Wrap the iterator in a generator that yields (event, None) normally
-                    # - When interrupt is requested, the generator raises InterruptedError
-                    # - This allows the main loop to remain responsive to interrupts
-                    # ------------------------------------------------------------------
-                    import concurrent.futures as _futures
+                    # FIX: Removed ThreadPoolExecutor + polling loop that blocked
+                    # the main thread. Iterate stream directly and check
+                    # _interrupt_requested + hard timeout on each event.
+                    for event in stream:
+                        if self._interrupt_requested:
+                            try:
+                                self._anthropic_client.close()
+                            except Exception:
+                                pass
+                            raise InterruptedError("Agent interrupted during Anthropic stream")
 
-                    def _iter_stream_with_interrupt():
-                        """Generator that yields stream events but checks for interrupts."""
-                        for evt in stream:
-                            if self._interrupt_requested:
-                                raise InterruptedError("Stream interrupted by user request")
-                            yield evt
+                        if time.monotonic() - _stream_start_time > _stream_hard_timeout:
+                            try:
+                                self._anthropic_client.close()
+                            except Exception:
+                                pass
+                            logger.warning("Anthropic stream exceeded hard timeout of %ss", _stream_hard_timeout)
+                            raise TimeoutError(f"Stream exceeded {_stream_hard_timeout}s timeout")
 
-                    # Use ThreadPoolExecutor to make iteration interruptible
-                    _executor = _futures.ThreadPoolExecutor(max_workers=1)
-                    try:
-                        _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
-
-                        # Poll for completion with interrupt checks
-                        _poll_interval = 0.1  # 100ms
-                        while not _future.done():
-                            # Check for interrupt
-                            if self._interrupt_requested:
-                                _future.cancel()
-                                # Force-close the stream by closing the client
-                                try:
-                                    self._anthropic_client.close()
-                                except Exception:
-                                    pass
-                                raise InterruptedError("Agent interrupted during Anthropic stream")
-
-                            # Check for hard timeout
-                            if time.monotonic() - _stream_start_time > _stream_hard_timeout:
-                                _future.cancel()
-                                try:
-                                    self._anthropic_client.close()
-                                except Exception:
-                                    pass
-                                logger.warning("Anthropic stream exceeded hard timeout of %ss", _stream_hard_timeout)
-                                raise TimeoutError(f"Stream exceeded {_stream_hard_timeout}s timeout")
-
-                            # Short sleep to avoid busy-waiting
-                            time.sleep(_poll_interval)
-
-                        # Get all events
-                        _all_events = _future.result(timeout=1.0)
-                    finally:
-                        _executor.shutdown(wait=False)
-
-                    # Process all collected events
-                    for event in _all_events:
                         event_type = getattr(event, "type", None)
 
                         if event_type == "content_block_start":
