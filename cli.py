@@ -6535,7 +6535,12 @@ class KunmingCLI:
                     }
 
             # Start agent in background thread
-            agent_thread = threading.Thread(target=run_agent)
+            # FIX 2026-04-17: agent_thread设为daemon=True。
+            # 之前非daemon线程在Windows上卡住时，关闭CLI窗口进程不会退出，
+            # 因为Python等待所有非daemon线程结束。daemon线程在主线程退出时
+            # 会被自动终止。agent_thread.join(timeout=3)仍然可以等待结果，
+            # 但如果3s后线程仍存活，进程可以正常退出。
+            agent_thread = threading.Thread(target=run_agent, daemon=True)
             agent_thread.start()
 
             # Monitor the dedicated interrupt queue while the agent runs.
