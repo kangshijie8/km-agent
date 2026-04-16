@@ -6782,19 +6782,26 @@ class AIAgent:
         # 问题：如果工具线程卡死在C扩展中，while循环永远运行（除非interrupt触发），
         # 而且额外的join在GIL死锁下也卡住。总等待可能无限+5s/30s。
         # 现在改为单次join循环，interrupt时缩短超时到3s后直接返回错误
+        # FIX 2026-04-17: 进一步缩短interrupt响应时间到0.5s。
+        # 因为CLI只等待3s就报告"Agent thread stuck"，工具层不能占用太长时间。
+        # 0.5s足以让正常退出的工具完成清理，如果0.5s后线程仍存活，
+        # 说明它卡在C扩展中，直接返回错误让agent线程继续。
         _deadline = time.time() + timeout
+        _interrupt_fired = False
         while t.is_alive():
             _remaining = _deadline - time.time()
             if _remaining <= 0:
                 break
             t.join(timeout=min(0.3, _remaining))
-            if self._interrupt_requested:
-                # 用户中断：给3s清理时间后直接返回
-                t.join(timeout=3.0)
+            if self._interrupt_requested and not _interrupt_fired:
+                # 用户中断：给0.5s清理时间后立即返回
+                # 线程是daemon=True，不会阻塞进程退出
+                _interrupt_fired = True
+                t.join(timeout=0.5)
                 if t.is_alive():
                     return (
                         f"Error executing tool '{function_name}': "
-                        f"Tool execution did not respond to interrupt within 3 seconds."
+                        f"Tool execution interrupted (thread did not exit within 0.5s)."
                     )
                 break
         if t.is_alive():
@@ -7334,6 +7341,20 @@ class AIAgent:
             # freeze the main agent thread. Internal agent tools (todo, memory,
             # clarify, delegate_task) are kept synchronous because they only
             # touch in-memory Python state and return instantly.
+            # FIX 2026-04-17: 子代理(_delegate_depth > 0)直接使用_invoke_tool，
+            # 因为子代理本身已在ThreadPoolExecutor中运行，delegate_task已通过
+            # future.result(timeout=DEFAULT_SUBAGENT_TIMEOUT)处理超时。避免多层
+            # 线程嵌套导致的interrupt响应延迟问题。
+            elif getattr(self, '_delegate_depth', 0) > 0:
+                # 子代理：直接调用，依赖ThreadPoolExecutor的超时机制
+                try:
+                    function_result = self._invoke_tool(
+                        function_name, function_args, effective_task_id, tool_call.id
+                    )
+                except Exception as tool_error:
+                    function_result = f"Error executing tool '{function_name}': {tool_error}"
+                    logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
+                tool_duration = time.time() - tool_start_time
             elif self.quiet_mode:
                 try:
                     function_result = self._invoke_tool_interruptible(
