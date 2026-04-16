@@ -13,6 +13,8 @@ import logging
 import os
 import json
 import re
+
+from kunming_constants import display_kunming_home  # [Profile隔离] 用于用户面向消息中的路径显示
 import threading
 import uuid
 from pathlib import Path
@@ -328,7 +330,7 @@ def build_session_context_prompt(
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
     
     # Local always available
-    lines.append("- `\"local\"` → Save to local files only (~/.kunming/cron/output/)")
+    lines.append(f"- `\"local\"` → Save to local files only ({display_kunming_home()}/cron/output/)")
     
     # Platform home channels
     for platform, home in context.home_channels.items():

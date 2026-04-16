@@ -42,7 +42,7 @@ import re
 import sys  # Windows平台检测需要（原子写入安全策略）
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext  # [并发保护] 添加nullcontext，用于_skip_lock=True时跳过锁获取
 from pathlib import Path
 from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS, HYBRID_SEARCH_FTS_WEIGHT, HYBRID_SEARCH_VECTOR_WEIGHT, ebbinghaus_retention, _EBINGHAUS_HALF_LIFE_DAYS, _EBINGHAUS_RETENTION_THRESHOLD  # 整合: 使用统一搜索权重 [S1]
 from typing import Dict, Any, List, Optional, Tuple
@@ -455,8 +455,13 @@ class MemoryStore:
         resolved = self._resolve_target(target)
         return self._char_limits.get(resolved, 3000)
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
-        """Append a new entry. Returns error if it would exceed the char limit."""
+    def add(self, target: str, content: str, _skip_lock: bool = False) -> Dict[str, Any]:
+        """Append a new entry. Returns error if it would exceed the char limit.
+
+        _skip_lock=True时跳过memory_lock获取，用于调用方已持有memory_lock的场景。
+        此时调用方负责确保read-modify-write的原子性，避免嵌套死锁。
+        用法: with store.memory_lock(target): store.add(target, content, _skip_lock=True)
+        """
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -471,8 +476,11 @@ class MemoryStore:
             # 原实现：锁内读取修改 → 释放锁 → save_to_disk获取另一个锁写入
             # 竞态窗口：释放锁后、save_to_disk获取锁前，另一进程可能修改文件
             # 修复：在同一锁作用域内完成reload→modify→save_to_disk，消除竞态窗口
-            with self.memory_lock(target) as acquired:
-                if not acquired:
+            # [并发保护] _skip_lock=True时使用nullcontext跳过锁获取，由调用方的
+            # memory_lock保护整个操作序列，避免嵌套死锁
+            lock_ctx = nullcontext() if _skip_lock else self.memory_lock(target)
+            with lock_ctx as acquired:
+                if not _skip_lock and not acquired:
                     return {"success": False, "error": "Failed to acquire file lock."}
                 self._reload_target(target)
 

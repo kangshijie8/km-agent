@@ -222,9 +222,15 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     # enough for thinking models but prevents indefinite blocking.
     # Can be overridden via KUNMING_ANTHROPIC_TIMEOUT env var.
     _anthropic_timeout = float(os.getenv("KUNMING_ANTHROPIC_TIMEOUT", "300.0"))
+    # SIMPLIFICATION 2026-04-17: 将read_timeout从120s缩短到60s。
+    # 这是Windows适配的核心手段：当interrupt()只设置标志而不暴力关闭socket时，
+    # 需要确保httpx自身的read_timeout能让阻塞的SSE流在合理时间内超时退出。
+    # 60s足以覆盖thinking模型的首token延迟，同时确保中断后最多等60s而非无限。
+    # 可通过KUNMING_ANTHROPIC_READ_TIMEOUT环境变量覆盖
+    _read_timeout = float(os.getenv("KUNMING_ANTHROPIC_READ_TIMEOUT", "60.0"))
     normalized_base_url = _normalize_base_url_text(base_url)
     kwargs = {
-        "timeout": Timeout(timeout=_anthropic_timeout, connect=10.0),
+        "timeout": Timeout(timeout=_anthropic_timeout, connect=10.0, read=_read_timeout),
     }
     if normalized_base_url:
         kwargs["base_url"] = normalized_base_url
@@ -1358,7 +1364,10 @@ def build_anthropic_kwargs(
                 kwargs["temperature"] = 1
                 kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
-    _stream_timeout = float(os.getenv("KUNMING_STREAM_TIMEOUT", "1800.0"))
+    # Stream timeout: max time for the entire streaming request
+    # Reduced from 1800s to 180s (3 min) to prevent indefinite blocking on slow models
+    # MiniMax-M2.7 with large context can take 23+ minutes; we prefer to fail fast and retry
+    _stream_timeout = float(os.getenv("KUNMING_STREAM_TIMEOUT", "180.0"))
     kwargs["timeout"] = _stream_timeout
 
     return kwargs

@@ -35,12 +35,13 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
-from kunming_constants import get_kunming_dir
+from kunming_constants import get_kunming_dir, display_kunming_home  # [Profile隔离] 添加display_kunming_home用于用户面向消息
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
-    "Load this skill in the local CLI to be prompted, or add the key to ~/.kunming/.env manually."
+    "Load this skill in the local CLI to be prompted, or add the key to "
+    f"{display_kunming_home()}/.env manually."
 )
 
 

@@ -109,8 +109,9 @@ NOUS_EXTRA_BODY = {"tags": ["product=kunming-agent"]}
 
 # Set at resolve time True if the auxiliary client points to Nous Portal
 # Thread-safe: uses threading.local() to avoid cross-session contamination in gateway mode
-import threading as _threading_for_nous
-_auxiliary_nous_state = _threading_for_nous.local()
+# [重复导入清理] 删除 `import threading as _threading_for_nous`，直接使用第48行已导入的 threading
+# threading.local() 为每个线程提供独立命名空间，确保gateway模式下多会话的Nous状态互不污染
+_auxiliary_nous_state = threading.local()
 
 def _is_auxiliary_nous() -> bool:
     return getattr(_auxiliary_nous_state, 'is_nous', False)

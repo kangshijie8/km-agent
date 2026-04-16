@@ -4,11 +4,11 @@ Memory Distillation — offline consolidation of short-term signals into long-te
 Three-phase model mirroring sleep-stage memory consolidation:
   - Light phase: collect recent signals (session transcripts, daily notes)
   - Deep phase: score candidates by multi-dimensional weighted formula, promote
-    high-confidence entries into MEMORY.md
+    high-confidence entries into FACTS.md / EXPERIENCES.md / MODELS.md
   - REM phase: extract recurring patterns and themes across memories
 
 The distillation runs as a cron job (default: daily at 3 AM) or on-demand via
-the /distill slash command. It operates on the MEMORY.md / USER.md files that
+the /distill slash command. It operates on the FACTS.md / EXPERIENCES.md / MODELS.md / USER.md files that
 the MemoryStore manages, and writes results atomically so concurrent sessions
 are not disrupted.
 
@@ -34,8 +34,6 @@ import hashlib
 import json
 import logging
 import math
-import os
-import re
 import sys
 import time
 from collections import Counter, defaultdict
@@ -458,9 +456,25 @@ def _promote_to_memory(
                     # save_to_disk不需要再获取锁，避免嵌套死锁
                     store.save_to_disk("experiences", _skip_lock=True)
 
-        result = store.add("experiences", entry_text)
-        if result.get("success"):
-            promoted.append(c)
+            # [并发保护] add操作也在锁保护范围内，使用_skip_lock=True避免嵌套死锁
+            # 原实现：add在锁外执行，若主会话在eviction后、add前写入，
+            # add的save_to_disk可能覆盖主会话的写入
+            result = store.add("experiences", entry_text, _skip_lock=True)
+            if result.get("success"):
+                promoted.append(c)
+        else:
+            # 无需eviction时，add也需要锁保护（与上面eviction路径一致）
+            with store.memory_lock("experiences"):
+                store._reload_target("experiences")
+                # reload后重新检查重复
+                existing = store._entries.get("experiences", [])
+                if any(_jaccard_text_similarity(snippet, e) >= 0.88 for e in existing):
+                    continue
+                if any(marker in e for e in existing):
+                    continue
+                result = store.add("experiences", entry_text, _skip_lock=True)
+                if result.get("success"):
+                    promoted.append(c)
 
     return promoted
 
@@ -505,7 +519,9 @@ def _ingest_session_transcripts(lookback_days: int = 7) -> int:
                 continue
             msgs = db.get_messages(s["id"])
             rows.extend(msgs)
-    except Exception:
+    except Exception as e:
+        # [异常日志] 添加日志记录，原实现完全吞掉异常导致蒸馏静默失败无法排查
+        logger.warning("Failed to ingest session transcripts: %s", e)
         return 0
 
     # 修复：用户纠正关键词列表，用于从user消息中筛选纠正信号
@@ -586,18 +602,33 @@ def _llm_extract_patterns(candidates: List[Dict], themes: List[Dict]) -> List[Di
 
 
 def _write_models_to_store(rules: List[Dict]) -> int:
-    """Write LLM-extracted rules to the MODELS.md layer."""
+    """Write LLM-extracted rules to the MODELS.md layer.
+
+    [并发保护+去重] 使用memory_lock保护写入，并用Jaccard相似度去重。
+    原实现：无锁保护且无去重，若蒸馏与错误提升同时运行会互相覆盖，
+    且LLM可能提取与已有规则重复的内容导致MODELS.md膨胀。
+    修复：在锁内reload+去重检查+add(_skip_lock=True)，确保原子性和唯一性。
+    """
     if not rules:
         return 0
     from tools.memory_tool import MemoryStore
     store = MemoryStore()
     store.load_from_disk()
     written = 0
-    for r in rules:
-        rule_text = f"[model] {r['rule']}"
-        result = store.add("models", rule_text)
-        if result.get("success"):
-            written += 1
+    # [并发保护] 整个写入操作在锁保护范围内，防止与错误提升的并发写入互相覆盖
+    with store.memory_lock("models"):
+        store._reload_target("models")
+        for r in rules:
+            rule_text = f"[model] {r['rule']}"
+            # [去重] 检查是否与已有规则高度相似，避免MODELS.md膨胀
+            existing = store._entries.get("models", [])
+            is_dup = any(_jaccard_text_similarity(rule_text, e) > 0.7 for e in existing)
+            if is_dup:
+                logger.debug("Skipping duplicate model rule: %s", rule_text[:60])
+                continue
+            result = store.add("models", rule_text, _skip_lock=True)
+            if result.get("success"):
+                written += 1
     return written
 
 

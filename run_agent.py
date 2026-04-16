@@ -2679,66 +2679,16 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
-        # Signal all tools to abort any in-flight operations immediately
         _set_interrupt(True)
-        # ------------------------------------------------------------------
-        # CRITICAL FIX 2026-04-15: Windows GIL deadlock escape hatch.
-        #
-        # On Windows, when the agent thread is inside httpx's C extension
-        # reading an SSE stream, it holds the Python GIL.  Thread.join()
-        # in the main thread cannot acquire the GIL, so timeout=30 becomes
-        # an infinite wait.  Setting flags (_interrupt_requested) does not
-        # help because the blocked thread never gets a chance to check them.
-        #
-        # The ONLY reliable way to unblock the agent thread is to close the
-        # underlying HTTP socket from the outside.  This causes the blocked
-        # read() to raise an exception, release the GIL, and let the agent
-        # thread exit gracefully.  We track the active request client in
-        # _current_request_client so we can murder it on demand.
-        # ------------------------------------------------------------------
-        try:
-            with self._openai_client_lock():
-                in_flight = getattr(self, "_current_request_client", None)
-                if in_flight is not None:
-                    self._close_request_openai_client(in_flight, reason="interrupt_kill")
-                    self._current_request_client = None
-        except Exception:
-            pass
-        # Also nuke the primary shared client if one exists; its connection
-        # pool may hold the dead socket.
-        try:
-            with self._openai_client_lock():
-                primary = getattr(self, "client", None)
-                if primary is not None:
-                    self._close_openai_client(primary, reason="interrupt_kill_primary")
-                    self.client = None
-        except Exception:
-            pass
-        # ------------------------------------------------------------------
-        # CRITICAL FIX 2026-04-16: Anthropic client interrupt handling.
-        #
-        # When using Anthropic Messages API (including MiniMax via Anthropic
-        # compatibility mode), the _anthropic_client holds the HTTP connection.
-        # The SDK's streaming iterator (messages.stream()) blocks in httpx's
-        # C extension, holding the GIL on Windows. We must close the underlying
-        # httpx client to force the blocked read() to raise and release the GIL.
-        #
-        # The Anthropic SDK's Anthropic class wraps an httpx.Client, and
-        # close() shuts down the connection pool, interrupting in-flight streams.
-        # ------------------------------------------------------------------
-        try:
-            anthropic_client = getattr(self, "_anthropic_client", None)
-            if anthropic_client is not None:
-                self._force_close_tcp_sockets(anthropic_client)
-                anthropic_client.close()
-                if self.api_mode == "anthropic_messages":
-                    from agent.anthropic_adapter import build_anthropic_client
-                    self._anthropic_client = build_anthropic_client(
-                        getattr(self, "_anthropic_api_key", "") or "",
-                        getattr(self, "_anthropic_base_url", None),
-                    )
-        except Exception:
-            pass
+        # SIMPLIFICATION 2026-04-17: 移除interrupt()中的暴力socket关闭和客户端重建。
+        # 之前的8轮修复在interrupt()中调用_force_close_tcp_sockets、client.close()、
+        # 重建Anthropic客户端，但这些操作本身可能阻塞（反射路径脆弱、close()在
+        # with stream上下文中可能二次阻塞、重建可能发起新HTTP连接），导致比原始
+        # 问题更严重的阻塞。现在回归"标志+等待"模式：
+        # - interrupt只设置标志，不碰网络连接
+        # - 流式循环通过检查_interrupt_requested自然退出
+        # - httpx自身的read_timeout（120s）确保线程最终会超时退出
+        # - 这是比暴力关闭更安全、更可靠的Windows适配方案
         # Propagate interrupt to any running child agents (subagent delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
@@ -3900,6 +3850,30 @@ class AIAgent:
                 except OSError:
                     pass
                 closed += 1
+
+            # FIX 2026-04-17: Also try to close any pending connections in the pool's
+            # _requests set (connections being established but not yet in _connections)
+            pending_requests = getattr(pool, "_requests", None)
+            if pending_requests:
+                for req in list(pending_requests):
+                    try:
+                        req_stream = getattr(req, "_stream", None)
+                        if req_stream is None:
+                            req_stream = getattr(req, "stream", None)
+                        if req_stream:
+                            req_sock = getattr(req_stream, "_sock", None)
+                            if req_sock:
+                                try:
+                                    req_sock.shutdown(_socket.SHUT_RDWR)
+                                except OSError:
+                                    pass
+                                try:
+                                    req_sock.close()
+                                except OSError:
+                                    pass
+                                closed += 1
+                    except Exception:
+                        pass
         except Exception as exc:
             logger.debug("Force-close TCP sockets sweep error: %s", exc)
         return closed
@@ -3907,25 +3881,41 @@ class AIAgent:
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
         if client is None:
             return
-        # Force-close TCP sockets first to prevent CLOSE-WAIT accumulation,
-        # then do the graceful SDK-level close.
+        # FIX 2026-04-17: client.close()在Windows上可能阻塞30s+
+        # （graceful shutdown等待TCP FIN-ACK握手完成）。
+        # 先通过_force_close_tcp_sockets强制关闭底层socket，
+        # 然后在子线程中执行client.close()，主线程等待最多5秒。
+        # 如果close()超时，放弃等待（daemon线程会在进程退出时自动终止）。
         force_closed = self._force_close_tcp_sockets(client)
-        try:
-            client.close()
-            logger.info(
-                "OpenAI client closed (%s, shared=%s, tcp_force_closed=%d) %s",
-                reason,
-                shared,
-                force_closed,
-                self._client_log_context(),
+
+        # 在子线程中执行client.close()，避免阻塞调用线程
+        _close_exc = [None]
+        def _do_close():
+            try:
+                client.close()
+            except Exception as e:
+                _close_exc[0] = e
+
+        _close_thread = threading.Thread(target=_do_close, daemon=True)
+        _close_thread.start()
+        _close_thread.join(timeout=5.0)
+        if _close_thread.is_alive():
+            # close()超时5s，放弃等待。daemon线程会在进程退出时自动终止。
+            logger.warning(
+                "OpenAI client.close() timed out after 5s (%s, shared=%s, tcp_force_closed=%d) %s — abandoning",
+                reason, shared, force_closed, self._client_log_context(),
             )
-        except Exception as exc:
+            return
+
+        if _close_exc[0] is not None:
             logger.debug(
                 "OpenAI client close failed (%s, shared=%s) %s error=%s",
-                reason,
-                shared,
-                self._client_log_context(),
-                exc,
+                reason, shared, self._client_log_context(), _close_exc[0],
+            )
+        else:
+            logger.info(
+                "OpenAI client closed (%s, shared=%s, tcp_force_closed=%d) %s",
+                reason, shared, force_closed, self._client_log_context(),
             )
 
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
@@ -4005,10 +3995,12 @@ class AIAgent:
                 if sock is None:
                     continue
                 # Probe socket health with a non-blocking recv peek
+                # FIX 2026-04-17: Windows不支持MSG_DONTWAIT，只使用MSG_PEEK。
+                # setblocking(False)已经将socket设为非阻塞模式，无需MSG_DONTWAIT。
                 import socket as _socket
                 try:
                     sock.setblocking(False)
-                    data = sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT)
+                    data = sock.recv(1, _socket.MSG_PEEK)
                     if data == b"":
                         dead_count += 1
                 except BlockingIOError:
@@ -4066,10 +4058,11 @@ class AIAgent:
                     # _interrupt_requested on each event for responsive cancel.
                     for event in stream:
                         if self._interrupt_requested:
-                            try:
-                                active_client.close()
-                            except Exception:
-                                pass
+                            # FIX 2026-04-17: 移除with stream内的active_client.close()。
+                            # 在with stream上下文中调用client.close()会触发stream的
+                            # __exit__二次阻塞（close()等待TCP FIN-ACK，__exit__
+                            # 又尝试关闭已关闭的连接）。改为只break，让上下文
+                            # 管理器自然关闭连接。
                             raise InterruptedError("Agent interrupted during Codex stream")
 
                         event_type = getattr(event, "type", "")
@@ -4115,7 +4108,24 @@ class AIAgent:
                                 sum(len(p) for p in self._codex_streamed_text_parts),
                                 self._client_log_context(),
                             )
-                    final_response = stream.get_final_response()
+                    # FIX 2026-04-17: get_final_response()可能阻塞（等待剩余SSE事件）。
+                    # 在子线程中调用，主线程等待最多10秒。
+                    _final_resp = [None]
+                    _final_exc = [None]
+                    def _get_codex_final():
+                        try:
+                            _final_resp[0] = stream.get_final_response()
+                        except Exception as e:
+                            _final_exc[0] = e
+                    _final_thread = threading.Thread(target=_get_codex_final, daemon=True)
+                    _final_thread.start()
+                    _final_thread.join(timeout=10.0)
+                    if _final_thread.is_alive():
+                        logger.warning("get_final_response() timed out after 10s, returning None")
+                        return None
+                    if _final_exc[0] is not None:
+                        raise _final_exc[0]
+                    final_response = _final_resp[0]
                     # PATCH: ChatGPT Codex backend streams valid output items
                     # but get_final_response() can return an empty output list.
                     # Backfill from collected items or synthesize from deltas.
@@ -4350,7 +4360,17 @@ class AIAgent:
             return False
 
         try:
-            self._anthropic_client.close()
+            # FIX 2026-04-17: 先强制关闭底层socket，再在子线程中close()
+            # 避免anthropic_client.close()在Windows上阻塞30s+
+            self._force_close_tcp_sockets(self._anthropic_client)
+            _close_thread = threading.Thread(
+                target=lambda: self._anthropic_client.close() if self._anthropic_client else None,
+                daemon=True,
+            )
+            _close_thread.start()
+            _close_thread.join(timeout=3.0)
+            if _close_thread.is_alive():
+                logger.warning("Anthropic client.close() timed out during credential refresh, abandoning")
         except Exception:
             pass
 
@@ -4391,7 +4411,16 @@ class AIAgent:
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
 
             try:
-                self._anthropic_client.close()
+                # FIX 2026-04-17: 先强制关闭底层socket，再在子线程中close()
+                self._force_close_tcp_sockets(self._anthropic_client)
+                _close_thread = threading.Thread(
+                    target=lambda: self._anthropic_client.close() if self._anthropic_client else None,
+                    daemon=True,
+                )
+                _close_thread.start()
+                _close_thread.join(timeout=3.0)
+                if _close_thread.is_alive():
+                    logger.warning("Anthropic client.close() timed out during credential swap, abandoning")
             except Exception:
                 pass
 
@@ -4526,17 +4555,11 @@ class AIAgent:
         while t.is_alive():
             t.join(timeout=0.3)
             if self._interrupt_requested:
+                # SIMPLIFICATION 2026-04-17: 移除暴力socket关闭和客户端重建。
+                # 只关闭request_client（OpenAI兼容模式），不碰Anthropic客户端。
+                # Anthropic模式依赖httpx read_timeout自然超时退出
                 try:
-                    if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
-                        self._force_close_tcp_sockets(self._anthropic_client)
-                        self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                        )
-                    else:
+                    if self.api_mode != "anthropic_messages":
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
                             self._close_request_openai_client(request_client, reason="interrupt_abort")
@@ -4544,7 +4567,7 @@ class AIAgent:
                     pass
 
                 _interrupt_start = time.monotonic()
-                _interrupt_timeout = 5.0
+                _interrupt_timeout = 3.0
                 while t.is_alive() and time.monotonic() - _interrupt_start < _interrupt_timeout:
                     t.join(timeout=0.1)
 
@@ -4676,6 +4699,10 @@ class AIAgent:
                     pool=30.0,
                 ),
             }
+
+            if self._interrupt_requested:
+                raise InterruptedError("Agent interrupted before chat.completions stream start")
+
             request_client_holder["client"] = self._create_request_openai_client(
                 reason="chat_completion_stream_request"
             )
@@ -4685,6 +4712,14 @@ class AIAgent:
             # attempt's start, not a previous attempt's last chunk.
             last_chunk_time["t"] = time.time()
             self._touch_activity("waiting for provider response (streaming)")
+
+            if self._interrupt_requested:
+                try:
+                    request_client_holder["client"].close()
+                except Exception:
+                    pass
+                raise InterruptedError("Agent interrupted during chat.completions stream setup")
+
             stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
 
             content_parts: list = []
@@ -4712,10 +4747,10 @@ class AIAgent:
             _first_chunk_seen = False
             for chunk in stream:
                 if self._interrupt_requested:
-                    try:
-                        request_client_holder["client"].close()
-                    except Exception:
-                        pass
+                    # FIX 2026-04-17: 移除stream迭代内的client.close()。
+                    # close()在Windows上可能阻塞30s+（graceful shutdown），
+                    # 且在stream迭代中调用可能导致底层socket状态不一致。
+                    # 改为只raise，让外层的finally块在stream结束后安全关闭。
                     raise InterruptedError("Agent interrupted during chat.completions stream")
 
                 if not _first_chunk_seen:
@@ -4885,46 +4920,83 @@ class AIAgent:
             with self._openai_client_lock():
                 self._current_request_client = self._anthropic_client
 
-            with self._anthropic_client.messages.stream(**api_kwargs) as stream:
-                for event in stream:
+            if self._interrupt_requested:
+                raise InterruptedError("Agent interrupted before anthropic stream start")
+
+            stream = None
+            try:
+                stream = self._anthropic_client.messages.stream(**api_kwargs)
+            except Exception as e:
+                raise
+
+            if self._interrupt_requested:
+                # SIMPLIFICATION 2026-04-17: 移除stream setup阶段的暴力socket关闭。
+                # 只设置标志后raise，让with stream as s的__exit__自然关闭连接
+                raise InterruptedError("Agent interrupted during anthropic stream setup")
+
+            with stream as s:
+                try:
+                    for event in s:
+                        if self._interrupt_requested:
+                            # SIMPLIFICATION 2026-04-17: 移除循环内的_force_close_tcp_sockets
+                            # 和client.close()。这些操作在with stream上下文中执行时，
+                            # __exit__可能二次阻塞。现在只break，让上下文管理器自然关闭
+                            break
+
+                        event_type = getattr(event, "type", None)
+
+                        if event_type == "content_block_start":
+                            block = getattr(event, "content_block", None)
+                            if block and getattr(block, "type", None) == "tool_use":
+                                has_tool_use = True
+                                tool_name = getattr(block, "name", None)
+                                if tool_name:
+                                    _fire_first_delta()
+                                    self._fire_tool_gen_started(tool_name)
+                                    last_chunk_time["t"] = time.time()
+
+                        elif event_type == "content_block_delta":
+                            delta = getattr(event, "delta", None)
+                            if delta:
+                                delta_type = getattr(delta, "type", None)
+                                if delta_type == "text_delta":
+                                    text = getattr(delta, "text", "")
+                                    if text and not has_tool_use:
+                                        _fire_first_delta()
+                                        self._fire_stream_delta(text)
+                                        last_chunk_time["t"] = time.time()
+                                elif delta_type == "thinking_delta":
+                                    thinking_text = getattr(delta, "thinking", "")
+                                    if thinking_text:
+                                        _fire_first_delta()
+                                        self._fire_reasoning_delta(thinking_text)
+                                        last_chunk_time["t"] = time.time()
+
+                    # FIX 2026-04-17: get_final_message()可能阻塞（等待剩余SSE事件）。
+                    # 如果interrupt已触发，直接raise跳过。正常流程中，在子线程中
+                    # 调用get_final_message()，主线程等待最多10秒。
                     if self._interrupt_requested:
+                        raise InterruptedError("Agent interrupted before anthropic stream finalization")
+
+                    _final_msg = [None]
+                    _final_exc = [None]
+                    def _get_final():
                         try:
-                            self._force_close_tcp_sockets(self._anthropic_client)
-                            self._anthropic_client.close()
-                        except Exception:
-                            pass
-                        raise InterruptedError("Agent interrupted during anthropic stream")
-
-                    event_type = getattr(event, "type", None)
-
-                    if event_type == "content_block_start":
-                        block = getattr(event, "content_block", None)
-                        if block and getattr(block, "type", None) == "tool_use":
-                            has_tool_use = True
-                            tool_name = getattr(block, "name", None)
-                            if tool_name:
-                                _fire_first_delta()
-                                self._fire_tool_gen_started(tool_name)
-                                last_chunk_time["t"] = time.time()
-
-                    elif event_type == "content_block_delta":
-                        delta = getattr(event, "delta", None)
-                        if delta:
-                            delta_type = getattr(delta, "type", None)
-                            if delta_type == "text_delta":
-                                text = getattr(delta, "text", "")
-                                if text and not has_tool_use:
-                                    _fire_first_delta()
-                                    self._fire_stream_delta(text)
-                                    last_chunk_time["t"] = time.time()
-                            elif delta_type == "thinking_delta":
-                                thinking_text = getattr(delta, "thinking", "")
-                                if thinking_text:
-                                    _fire_first_delta()
-                                    self._fire_reasoning_delta(thinking_text)
-                                    last_chunk_time["t"] = time.time()
-
-                return stream.get_final_message()
+                            _final_msg[0] = stream.get_final_message()
+                        except Exception as e:
+                            _final_exc[0] = e
+                    _final_thread = threading.Thread(target=_get_final, daemon=True)
+                    _final_thread.start()
+                    _final_thread.join(timeout=10.0)
+                    if _final_thread.is_alive():
+                        logger.warning("get_final_message() timed out after 10s, returning None")
+                        return None
+                    if _final_exc[0] is not None:
+                        raise _final_exc[0]
+                    return _final_msg[0]
+                except Exception:
+                    # Stream was closed (likely by stale detector), re-raise to trigger retry
+                    raise
 
         def _call():
             import httpx as _httpx
@@ -5077,7 +5149,12 @@ class AIAgent:
             logger.debug("Local provider detected (%s) - stale stream timeout disabled", self.base_url)
         else:
             _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-            if _est_tokens > 100_000:
+            _model_name = api_kwargs.get("model", "").lower()
+            # Slow models (MiniMax, etc.) need shorter stale timeout to avoid long hangs
+            _is_slow_model = any(m in _model_name for m in ["minimax", "m2-", "abab"])
+            if _is_slow_model:
+                _stream_stale_timeout = 300.0  # 5 min for slow models
+            elif _est_tokens > 100_000:
                 _stream_stale_timeout = max(_stream_stale_timeout_base, 1800.0)
             elif _est_tokens > 50_000:
                 _stream_stale_timeout = max(_stream_stale_timeout_base, 1200.0)
@@ -5131,18 +5208,26 @@ class AIAgent:
                     f"context: ~{_est_ctx:,} tokens). "
                     f"Reconnecting..."
                 )
-                # FIX 2026-04-16: Kill the correct client based on api_mode.
-                # When api_mode == "anthropic_messages", the stream uses
-                # _anthropic_client, NOT request_client_holder["client"].
-                # Closing the wrong client leaves the stream blocked forever.
+                # SIMPLIFICATION 2026-04-17: 简化stale detector的连接杀死逻辑。
+                # 移除_force_close_tcp_sockets和Anthropic客户端重建，原因：
+                # 1. _force_close_tcp_sockets通过反射访问httpx内部属性，路径脆弱
+                # 2. anthropic_client.close()在with stream上下文中可能二次阻塞
+                # 3. 重建客户端可能发起新HTTP连接，引入新的阻塞点
+                # 现在只用_close_request_openai_client（早期版本的方式），
+                # 对于Anthropic模式，依赖httpx read_timeout自然超时
                 try:
                     if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-                        self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                        )
+                        # FIX 2026-04-17: Anthropic模式stale detector不再pass。
+                        # 之前的pass导致当服务器半开连接时，SSE keep-alive心跳
+                        # 会不断刷新httpx的read_timeout，导致永远无法超时退出，
+                        # 形成无限阻塞。现在通过_force_close_tcp_sockets安全地
+                        # 关闭Anthropic客户端的底层TCP socket，使内层线程的
+                        # for event in s循环在下次recv()时抛出ConnectionError，
+                        # 从而退出循环。_force_close_tcp_sockets通过反射访问
+                        # httpx内部属性，如果反射失败则静默跳过（不会阻塞）。
+                        anthropic_client = getattr(self, "_anthropic_client", None)
+                        if anthropic_client is not None:
+                            self._force_close_tcp_sockets(anthropic_client)
                     else:
                         rc = request_client_holder.get("client")
                         if rc is not None:
@@ -5150,60 +5235,30 @@ class AIAgent:
                         self._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
                 except Exception:
                     pass
-                # Reset the timer so we don't kill repeatedly while
-                # the inner thread processes the closure.
                 last_chunk_time["t"] = time.time()
-                # Hard fallback: if closing the connection didn't unblock the
-                # thread, abandon it so the agent thread doesn't hang forever.
-                t.join(timeout=30)
+                # SIMPLIFICATION 2026-04-17: 缩短join超时从30s到10s。
+                # 30s在GIL死锁下本身也卡住，10s是更合理的等待上限
+                t.join(timeout=10)
                 if t.is_alive():
                     logger.error(
-                        "Streaming thread stuck for %.0fs even after connection kill; abandoning.",
+                        "Streaming thread stuck for %.0fs even after stale detection; abandoning.",
                         _stale_elapsed,
                     )
                     result["error"] = RuntimeError(
-                        f"Streaming API call stuck for {_stale_elapsed:.0f}s and did not respond to connection kill"
+                        f"Streaming API call stuck for {_stale_elapsed:.0f}s and did not respond to stale detection"
                     )
                     break
 
             if self._interrupt_requested:
-                # CRITICAL FIX 2026-04-16: Improved interrupt handling on Windows.
-                # On Windows, httpx's underlying socket read() is a blocking C call
-                # that holds the GIL. Calling close() may not immediately unblock
-                # the thread, so we need to wait and then gracefully abandon if
-                # the thread doesn't respond.
-                try:
-                    if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
-                        # Close the current client to break the blocking read()
-                        try:
-                            self._anthropic_client.close()
-                        except Exception:
-                            pass
-                        # Rebuild with a fresh client for the next request
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                        )
-                    else:
-                        request_client = request_client_holder.get("client")
-                        if request_client is not None:
-                            self._close_request_openai_client(request_client, reason="stream_interrupt_abort")
-                except Exception:
-                    pass
-
-                # Wait briefly for the thread to notice the closure
-                t.join(timeout=5.0)
-                if t.is_alive():
-                    # Thread still blocked in C extension — log and abandon gracefully
-                    logger.warning(
-                        "Streaming thread did not terminate within 5s after interrupt; "
-                        "abandoning (daemon thread will die with process)"
-                    )
-                    result["error"] = InterruptedError("Agent interrupted during streaming API call")
-                    break
-                raise InterruptedError("Agent interrupted during streaming API call")
+                # SIMPLIFICATION 2026-04-17: 简化interrupt处理。
+                # 移除_force_close_tcp_sockets和客户端重建，只设置error并break。
+                # 内层线程是daemon线程，会在进程退出时自动终止。
+                # 依赖httpx read_timeout确保线程最终退出
+                logger.warning(
+                    "Interrupt requested during streaming; abandoning streaming thread"
+                )
+                result["error"] = InterruptedError("Agent interrupted during streaming API call")
+                break
         if result["error"] is not None:
             if deltas_were_sent["yes"]:
                 # Streaming failed AFTER some tokens were already delivered to
@@ -5495,11 +5550,17 @@ class AIAgent:
 
             wait_time = min(3 + retry_count, 8)
             self._vprint(
-                f"{self.log_prefix}🔁 Transient {error_type} on {self.provider} ?"
+                f"{self.log_prefix} Transient {error_type} on {self.provider} "
                 f"rebuilt client, waiting {wait_time}s before one last primary attempt.",
                 force=True,
             )
-            time.sleep(wait_time)
+            # FIX 2026-04-17: 分段sleep，支持interrupt检查
+            _slept = 0.0
+            while _slept < wait_time:
+                if self._interrupt_requested:
+                    break
+                time.sleep(min(0.2, wait_time - _slept))
+                _slept += 0.2
             return True
         except Exception as e:
             logging.warning("Primary transport recovery failed: %s", e)
@@ -6500,19 +6561,30 @@ class AIAgent:
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
+        # SIMPLIFICATION 2026-04-17: 消除双重join问题。
+        # 之前的实现：while循环每0.3s检查一次interrupt，退出后又执行一次join(5s/30s)。
+        # 问题：如果工具线程卡死在C扩展中，while循环永远运行（除非interrupt触发），
+        # 而且额外的join在GIL死锁下也卡住。总等待可能无限+5s/30s。
+        # 现在改为单次join循环，interrupt时缩短超时到3s后直接返回错误
+        _deadline = time.time() + timeout
         while t.is_alive():
-            t.join(timeout=0.3)
-            if self._interrupt_requested:
+            _remaining = _deadline - time.time()
+            if _remaining <= 0:
                 break
-        # When the user explicitly interrupted, don't wait the full
-        # tool timeout. 5s is enough for graceful cleanup; otherwise
-        # the agent thread itself will be considered stuck by the CLI.
-        _join_timeout = 5.0 if self._interrupt_requested else timeout
-        t.join(timeout=_join_timeout)
+            t.join(timeout=min(0.3, _remaining))
+            if self._interrupt_requested:
+                # 用户中断：给3s清理时间后直接返回
+                t.join(timeout=3.0)
+                if t.is_alive():
+                    return (
+                        f"Error executing tool '{function_name}': "
+                        f"Tool execution did not respond to interrupt within 3 seconds."
+                    )
+                break
         if t.is_alive():
             return (
                 f"Error executing tool '{function_name}': "
-                f"Tool execution did not respond to interrupt within {int(_join_timeout)} seconds."
+                f"Tool execution timed out after {int(timeout)} seconds."
             )
         if exc_container[0] is not None:
             raise exc_container[0]

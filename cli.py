@@ -6582,17 +6582,13 @@ class KunmingCLI:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
 
-            # Wait for agent thread to finish, but cap the wait so a stuck
-            # tool (e.g. an unresponsive MCP call) cannot freeze the CLI forever.
-            # NOTE 2026-04-15: On Windows, if the agent thread is blocked inside
-            # a C extension (httpx SSE read) that holds the GIL, this join()
-            # can also hang regardless of timeout.  The definitive fix is in
-            # run_agent.py interrupt(), which closes the underlying HTTP socket
-            # to force the blocked thread to wake up.  This 30s cap is the
-            # last-resort safety net when even that socket-kill fails.
-            agent_thread.join(timeout=30)
+            # SIMPLIFICATION 2026-04-17: 缩短agent_thread.join超时从30s到10s。
+            # 之前30s的注释说"Windows GIL死锁下join也卡住"，但既然我们已经
+            # 移除了interrupt()中的暴力socket关闭，不再依赖join来等待socket关闭。
+            # 10s足以让正常退出的agent线程完成清理，同时不会让用户等太久
+            agent_thread.join(timeout=10)
             if agent_thread.is_alive():
-                _cprint(f"\n{_DIM}[System] Agent thread is stuck and did not terminate within 30s after interrupt. Forcing recovery...{_RST}")
+                _cprint(f"\n{_DIM}[System] Agent thread is stuck and did not terminate within 10s after interrupt. Forcing recovery...{_RST}")
                 try:
                     _dbg = _kunming_home / "interrupt_debug.log"
                     with open(_dbg, "a") as _f:

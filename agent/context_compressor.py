@@ -383,7 +383,10 @@ class ContextCompressor:
                     "Skipping context summary during cooldown (%.0fs remaining)",
                     self._summary_failure_cooldown_until - now,
                 )
-                return None
+                # [兜底摘要] 冷却期内也返回规则基础摘要而非None
+                # 原实现：冷却期内直接返回None，导致中间轮次被完全丢弃
+                # 修复：返回规则基础摘要保留关键信息，与LLM失败时的行为一致
+                return self._generate_rule_based_summary(turns_to_summarize)
             logger.warning("Context usage at %.0f%%, forcing compression despite cooldown", usage_ratio * 100)
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
@@ -525,10 +528,13 @@ Write only the summary body. Do not include any preamble or prefix."""
                 continue
             role = msg.get("role", "")
             if role == "user":
-                content = str(msg.get("content", ""))[:100]
+                # [格式兼容] 使用_extract_text_content处理OpenAI list[dict]格式
+                # 原实现：str(msg.get("content", "")) 对list[dict]做str()得到
+                # "[{'type': 'text', ...}]"这样的无用字符串，而非实际文本
+                content = _extract_text_content(msg.get("content", ""))[:100]
                 parts.append(f"User asked: {content}")
             elif role == "assistant":
-                content = str(msg.get("content", ""))[:100]
+                content = _extract_text_content(msg.get("content", ""))[:100]
                 tc = msg.get("tool_calls", [])
                 if tc:
                     tool_names = [t.get("function", {}).get("name", "?") for t in tc if isinstance(t, dict)]
@@ -537,7 +543,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                     parts.append(f"Assistant responded: {content}")
             elif role == "tool":
                 name = msg.get("name", "unknown")
-                content = str(msg.get("content", ""))[:80]
+                content = _extract_text_content(msg.get("content", ""))[:80]
                 parts.append(f"Tool {name} result: {content}")
         return "[Auto summary - LLM unavailable] " + "; ".join(parts[:20])
 

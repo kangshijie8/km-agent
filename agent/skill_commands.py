@@ -12,6 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from kunming_constants import display_kunming_home  # [Profile隔离] 使用display_kunming_home替代硬编码~/.kunming
+
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
@@ -108,7 +110,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         if not resolved:
             return
 
-        lines = ["", "[Skill config (from ~/.kunming/config.yaml):"]
+        lines = ["", f"[Skill config (from {display_kunming_home()}/config.yaml):]"]
         for key, value in resolved.items():
             display_val = str(value) if value else "(not set)"
             lines.append(f"  {key} = {display_val}")

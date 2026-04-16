@@ -78,7 +78,7 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Kunming home directory (respects KUNMING_HOME override)
-from kunming_constants import get_kunming_home
+from kunming_constants import get_kunming_home, display_kunming_home  # [Profile隔离] 添加display_kunming_home用于用户面向消息
 _kunming_home = get_kunming_home()
 
 # Load environment variables from ~/.kunming/.env first.
@@ -931,7 +931,7 @@ class GatewayRunner:
             if _enabled_platform_count > 0:
                 logger.warning(
                     "No user allowlists configured. All unauthorized users will be denied. "
-                    "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.kunming/.env to allow open access, "
+                    f"Set GATEWAY_ALLOW_ALL_USERS=true in {display_kunming_home()}/.env to allow open access, "
                     "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
                 )
             else:
@@ -3740,7 +3740,7 @@ class GatewayRunner:
         personalities = config.get("agent", {}).get("personalities", {})
 
         if not personalities:
-            return "No personalities configured in `~/.kunming/config.yaml`"
+            return f"No personalities configured in `{display_kunming_home()}/config.yaml`"
 
         if not args:
             lines = ["ð­ **Available Personalities**\n"]

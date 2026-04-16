@@ -231,8 +231,14 @@ class TestSummaryFailureCooldown:
             first = c._generate_summary(messages)
             second = c._generate_summary(messages)
 
-        assert first is None
-        assert second is None
+        # [测试更新] LLM失败时现在返回规则基础摘要而非None（兜底摘要修复）
+        # 原断言：assert first is None — 旧实现LLM失败直接返回None
+        # 新断言：first是规则基础摘要字符串，包含"[Auto summary - LLM unavailable]"
+        assert first is not None
+        assert "[Auto summary - LLM unavailable]" in first
+        # 第二次调用仍在冷却期内，call_llm只被调用1次（第二次直接跳过LLM调用）
+        assert second is not None
+        assert "[Auto summary - LLM unavailable]" in second
         assert mock_call.call_count == 1
 
 

@@ -15,15 +15,13 @@ import hashlib
 import json
 import re
 import logging
-import os
 import sys
-import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from kunming_constants import get_kunming_home
+from kunming_constants import get_kunming_home, utc_now_iso  # 整合: 使用统一时间戳函数，与memory_distillation保持一致 [T1]
 from utils import _extract_tokens
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -131,7 +129,7 @@ def detect_correction(user_message: str, assistant_message: str) -> Optional[Dic
         "patterns": matched_patterns,
         "user_message": user_message[:500],
         "assistant_message": assistant_message[:500],
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": utc_now_iso(),
         "confidence": confidence,
     }
 
@@ -155,14 +153,13 @@ def log_error(
     Returns:
         Dict with logging result.
     """
-    import hashlib
     key = hashlib.sha256(f"{what_was_wrong}:{what_should_be}".encode()).hexdigest()[:16]
 
     with _error_lock():
         log = _load_error_log()
         errors = log.setdefault("errors", {})
 
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = utc_now_iso()
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         if key in errors:
@@ -212,7 +209,12 @@ def log_error(
 
 
 def _promote_error_to_models(error_entry: Dict[str, Any]) -> None:
-    """Promote a recurring error to the MODELS.md layer as a learned rule."""
+    """Promote a recurring error to the MODELS.md layer as a learned rule.
+
+    [并发保护] 使用memory_lock保护写入，防止与蒸馏/其他会话的并发写入互相覆盖。
+    原实现：直接创建MemoryStore并add，无锁保护，若蒸馏同时运行会覆盖对方的写入。
+    修复：在锁内reload+add(_skip_lock=True)，确保基于最新数据写入。
+    """
     from tools.memory_tool import MemoryStore
     store = MemoryStore()
     store.load_from_disk()
@@ -223,7 +225,10 @@ def _promote_error_to_models(error_entry: Dict[str, Any]) -> None:
     if correct:
         rule += f" → INSTEAD: {correct}"
 
-    store.add("models", rule)
+    # [并发保护] 在锁内reload+add，防止并发写入覆盖
+    with store.memory_lock("models"):
+        store._reload_target("models")
+        store.add("models", rule, _skip_lock=True)
     logger.info("Promoted recurring error to models: %s", rule[:80])
 
 
@@ -231,7 +236,8 @@ def _promote_error_to_models(error_entry: Dict[str, Any]) -> None:
 
 
 def retrieve_relevant_errors(query: str, limit: int = 3) -> List[Dict[str, Any]]:
-    """Uses hybrid scoring: keyword matching (60%) + SimHash semantic similarity (40%)."""
+    """Uses hybrid scoring via HYBRID_SEARCH_FTS_WEIGHT/HYBRID_SEARCH_VECTOR_WEIGHT constants
+    (currently FTS=0.6 + Vector=0.4), plus occurrence and promotion bonuses."""
     if not query.strip():
         return []
 

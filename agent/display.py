@@ -1044,7 +1044,7 @@ def get_cute_tool_message(
 
 _DIM = "\033[2m"
 _SKY_BLUE = "\033[38;5;117m"
-_ANSI_RESET = "\033[0m"
+# [重复定义清理] 删除 _ANSI_RESET = "\033[0m" — 与第24行定义完全重复
 
 
 def honcho_session_url(workspace: str, session_name: str) -> str:
