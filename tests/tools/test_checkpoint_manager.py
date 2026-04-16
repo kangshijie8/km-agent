@@ -277,7 +277,15 @@ class TestRestore:
 # =========================================================================
 
 class TestWorkingDirResolution:
-    def test_resolves_git_project_root(self, tmp_path):
+    # [Windows兼容] Windows上tmp_path可能位于home目录子树下，
+    # 导致get_working_dir_for_path的"check==home"提前break，
+    # 找不到.git标记。使用monkeypatch模拟home目录来避免此问题。
+    def test_resolves_git_project_root(self, tmp_path, monkeypatch):
+        # 将home设为tmp_path的子目录，确保遍历不会提前终止
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
         mgr = CheckpointManager(enabled=True)
         project = tmp_path / "myproject"
         project.mkdir()
@@ -290,7 +298,11 @@ class TestWorkingDirResolution:
         result = mgr.get_working_dir_for_path(str(filepath))
         assert result == str(project)
 
-    def test_resolves_pyproject_root(self, tmp_path):
+    def test_resolves_pyproject_root(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+
         mgr = CheckpointManager(enabled=True)
         project = tmp_path / "pyproj"
         project.mkdir()

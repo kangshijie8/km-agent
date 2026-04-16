@@ -59,7 +59,9 @@ class TestClarifyToolBasics:
         """Should return error when no callback is provided."""
         result = json.loads(clarify_tool("What do you want?"))
         assert "error" in result
-        assert "not available" in result["error"].lower()
+        # [断言修正] 源码错误消息已从"not available"改为"Cannot ask the user a question"，
+        # 匹配实际错误文本中的关键短语
+        assert "cannot ask" in result["error"].lower()
 
 
 class TestClarifyToolChoicesValidation:

@@ -5467,9 +5467,12 @@ class KunmingCLI:
             target=self._reload_mcp, daemon=True
         )
         _reload_thread.start()
-        _reload_thread.join(timeout=30)
+        # FIX 2026-04-17: MCP reload join从30s降到5s。
+        # 30s会冻结process_loop，用户输入无法被处理。
+        # MCP重连是后台操作，5s足够完成大部分重连。
+        _reload_thread.join(timeout=5)
         if _reload_thread.is_alive():
-            print("  [!]  MCP reload timed out (30s). Some servers may not have reconnected.")
+            print("  [!]  MCP reload still running (background). Some servers may reconnect shortly.")
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.
@@ -6582,13 +6585,14 @@ class KunmingCLI:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
 
-            # SIMPLIFICATION 2026-04-17: 缩短agent_thread.join超时从30s到10s。
-            # 之前30s的注释说"Windows GIL死锁下join也卡住"，但既然我们已经
-            # 移除了interrupt()中的暴力socket关闭，不再依赖join来等待socket关闭。
-            # 10s足以让正常退出的agent线程完成清理，同时不会让用户等太久
-            agent_thread.join(timeout=10)
+            # FIX 2026-04-17: agent_thread.join从10s降到3s。
+            # 10s在Windows GIL死锁下用户感知为"卡住10秒"。
+            # 3s足以让正常退出的agent线程完成清理。如果3s后线程仍存活，
+            # 说明它卡在C扩展的阻塞I/O中（httpx socket recv），无法被中断。
+            # 直接nuke agent实例，让下一轮对话使用全新的agent。
+            agent_thread.join(timeout=3)
             if agent_thread.is_alive():
-                _cprint(f"\n{_DIM}[System] Agent thread is stuck and did not terminate within 10s after interrupt. Forcing recovery...{_RST}")
+                _cprint(f"\n{_DIM}[System] Agent thread stuck (>3s), forcing recovery...{_RST}")
                 try:
                     _dbg = _kunming_home / "interrupt_debug.log"
                     with open(_dbg, "a") as _f:
@@ -6621,11 +6625,15 @@ class KunmingCLI:
             # Flush any remaining streamed text and close the box
             self._flush_stream()
 
-            # Signal end-of-text to TTS consumer and wait for it to finish
+            # Signal end-of-text to TTS consumer
+            # FIX 2026-04-17: TTS线程已经是daemon=True，不需要等待它完成。
+            # 之前join(timeout=120)会阻塞process_loop最长2分钟，
+            # 导致用户输入无法被处理。TTS播放是"锦上添花"的操作，
+            # 不应该阻塞主流程。放入sentinel后直接继续。
             if use_streaming_tts and text_queue is not None:
                 text_queue.put(None)  # sentinel
-                if tts_thread is not None:
-                    tts_thread.join(timeout=120)
+                # TTS thread is daemon, will finish in background
+                # No join needed - don't block process_loop
 
             # Drain any remaining agent output still in the StdoutProxy
             # buffer so tool/status lines render ABOVE our response box.
@@ -8354,7 +8362,9 @@ class KunmingCLI:
                             def _restart_recording():
                                 try:
                                     if self._voice_tts:
-                                        self._voice_tts_done.wait(timeout=60)
+                                        # FIX 2026-04-17: TTS等待从60s降到5s。
+                                        # TTS播放是"锦上添花"，不应阻塞语音重启。
+                                        self._voice_tts_done.wait(timeout=5)
                                         time.sleep(0.3)
                                     self._voice_start_recording()
                                     app.invalidate()
@@ -8477,12 +8487,18 @@ class KunmingCLI:
             # Stop cron ticker thread
             if hasattr(self, '_cron_stop'):
                 self._cron_stop.set()
-            # Flush memories before exit (only for substantial conversations)
+            # FIX 2026-04-17: flush_memories在子线程中执行+5s超时。
+            # flush_memories可能涉及LLM调用（记忆蒸馏），网络请求可能阻塞。
+            # Windows上KeyboardInterrupt不能中断C扩展阻塞调用。
             if self.agent and self.conversation_history:
-                try:
-                    self.agent.flush_memories(self.conversation_history)
-                except (Exception, KeyboardInterrupt):
-                    pass
+                def _flush():
+                    try:
+                        self.agent.flush_memories(self.conversation_history)
+                    except (Exception, KeyboardInterrupt):
+                        pass
+                _flush_thread = threading.Thread(target=_flush, daemon=True)
+                _flush_thread.start()
+                _flush_thread.join(timeout=5.0)
             # Shut down voice recorder (release persistent audio stream)
             if hasattr(self, '_voice_recorder') and self._voice_recorder:
                 try:

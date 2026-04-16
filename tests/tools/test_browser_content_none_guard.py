@@ -90,7 +90,8 @@ class TestBrowserSourceLinesAreGuarded:
     def _read_file() -> str:
         import os
         base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        with open(os.path.join(base, "tools", "browser_tool.py")) as f:
+        # [Windows兼容] 必须指定encoding="utf-8"，否则中文Windows默认用GBK解码导致UnicodeDecodeError
+        with open(os.path.join(base, "tools", "browser_tool.py"), encoding="utf-8") as f:
             return f.read()
 
     def test_extract_relevant_content_guarded(self):

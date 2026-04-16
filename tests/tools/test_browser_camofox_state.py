@@ -48,7 +48,8 @@ class TestCamofoxIdentity:
             identity = state.get_camofox_identity()
             assert "user_id" in identity
             assert "session_key" in identity
-            assert identity["user_id"].startswith("KUNMING_")
+            # [大小写修正] 源码(browser_camofox_state.py)使用小写前缀"kunming_"，测试需匹配实际值
+            assert identity["user_id"].startswith("kunming_")
             assert identity["session_key"].startswith("task_")
 
 

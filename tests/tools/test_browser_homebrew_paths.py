@@ -39,6 +39,9 @@ class TestDiscoverHomebrewNodeDirs:
         with patch("os.path.isdir", return_value=False):
             assert _discover_homebrew_node_dirs() == []
 
+    # [Windows兼容] Homebrew是macOS专属，_discover_homebrew_node_dirs在Windows上
+    # 检查/opt/homebrew/opt不存在，mock os.path.isdir在Windows上行为不同
+    @pytest.mark.skipif(os.name == "nt", reason="Homebrew is macOS-only")
     def test_finds_versioned_node_dirs(self):
         """Should discover node@20/bin, node@24/bin etc."""
         entries = ["node@20", "node@24", "openssl", "node", "python@3.12"]

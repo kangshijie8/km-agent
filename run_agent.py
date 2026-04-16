@@ -5143,8 +5143,11 @@ class AIAgent:
                 with self._openai_client_lock():
                     self._current_request_client = None
 
-        _stream_stale_timeout_base = float(os.getenv("KUNMING_STREAM_STALE_TIMEOUT", 600.0))
-        if _stream_stale_timeout_base == 600.0 and self.base_url and is_local_endpoint(self.base_url):
+        # FIX 2026-04-17: 默认stale timeout从600s降到120s。
+        # 600s(10分钟)太长，用户感知为"程序卡死"。120s足以覆盖
+        # 正常的模型推理时间（即使大上下文也很少超过2分钟无响应）。
+        _stream_stale_timeout_base = float(os.getenv("KUNMING_STREAM_STALE_TIMEOUT", 120.0))
+        if self.base_url and is_local_endpoint(self.base_url):
             _stream_stale_timeout = float("inf")
             logger.debug("Local provider detected (%s) - stale stream timeout disabled", self.base_url)
         else:
@@ -5229,16 +5232,22 @@ class AIAgent:
                         if anthropic_client is not None:
                             self._force_close_tcp_sockets(anthropic_client)
                     else:
+                        # FIX 2026-04-17: stale kill后只关闭request client，
+                        # 不再重建primary client。_replace_primary_openai_client
+                        # 会创建新client并可能发起新TCP连接，如果网络有问题
+                        # 又会阻塞。stale kill后内层线程会重试，重试时
+                        # 自然会创建新的request client。
                         rc = request_client_holder.get("client")
                         if rc is not None:
                             self._close_request_openai_client(rc, reason="stale_stream_kill")
-                        self._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                            request_client_holder["client"] = None
                 except Exception:
                     pass
                 last_chunk_time["t"] = time.time()
-                # SIMPLIFICATION 2026-04-17: 缩短join超时从30s到10s。
-                # 30s在GIL死锁下本身也卡住，10s是更合理的等待上限
-                t.join(timeout=10)
+                # FIX 2026-04-17: stale kill后join从10s降到3s。
+                # 已经强制关闭了底层socket，内层线程应该很快退出。
+                # 如果3s后仍存活，说明GIL死锁，直接放弃。
+                t.join(timeout=3)
                 if t.is_alive():
                     logger.error(
                         "Streaming thread stuck for %.0fs even after stale detection; abandoning.",

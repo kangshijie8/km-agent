@@ -659,6 +659,9 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
             self.assertIn("error", result)
             self.assertIn("Windows", result["error"])
 
+    # [Windows兼容] Windows上execute_code直接返回error（SANDBOX_AVAILABLE=False），
+    # "No code"检查仅在sandbox可用时有意义，Windows上应跳过
+    @unittest.skipIf(sys.platform == "win32", "execute_code not available on Windows")
     def test_whitespace_only_code(self):
         result = json.loads(execute_code("   \n\t  ", task_id="test"))
         self.assertIn("error", result)
@@ -766,6 +769,8 @@ class TestInterruptHandling(unittest.TestCase):
             t.join(timeout=3)
 
 
+# [Windows兼容] HeadTailTruncation测试依赖sandbox执行代码，Windows上不可用
+@unittest.skipIf(sys.platform == "win32", "execute_code not available on Windows")
 class TestHeadTailTruncation(unittest.TestCase):
     """Tests for head+tail truncation of large stdout in execute_code."""
 

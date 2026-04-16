@@ -77,7 +77,8 @@ class TestEphemeralMode:
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
 
         session = _get_session("task-1")
-        assert session["user_id"].startswith("KUNMING_")
+        # [大小写修正] 源码(browser_camofox.py)使用小写前缀"kunming_"，测试需匹配实际值
+        assert session["user_id"].startswith("kunming_")
         assert session["managed"] is False
 
     def test_different_tasks_get_different_user_ids(self, tmp_path, monkeypatch):

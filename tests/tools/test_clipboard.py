@@ -206,14 +206,18 @@ class TestIsWsl:
         import kunming_cli.clipboard as cb
         cb._wsl_detected = None
 
+    # [Windows兼容] _is_wsl()在Windows上直接返回False（因为platform.system()=="Windows"），
+    # 所以必须同时mock platform.system()为"Linux"才能让/proc/version的mock生效
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with patch("builtins.open", mock_open(read_data=content)), \
+             patch("platform.system", return_value="Linux"):
             assert _is_wsl() is True
 
     def test_wsl1_detected(self):
         content = "Linux version 4.4.0-microsoft-standard"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with patch("builtins.open", mock_open(read_data=content)), \
+             patch("platform.system", return_value="Linux"):
             assert _is_wsl() is True
 
     def test_regular_linux(self):
@@ -227,7 +231,8 @@ class TestIsWsl:
 
     def test_result_is_cached(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch("builtins.open", mock_open(read_data=content)) as m:
+        with patch("builtins.open", mock_open(read_data=content)) as m, \
+             patch("platform.system", return_value="Linux"):
             assert _is_wsl() is True
             assert _is_wsl() is True
             m.assert_called_once()  # only read once
