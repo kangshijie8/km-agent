@@ -216,9 +216,15 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         )
     from httpx import Timeout
 
+    # FIX 2026-04-16: Reduce default timeout from 900s to 300s.
+    # The previous 900s timeout caused 15-minute hangs on slow providers
+    # (e.g. MiniMax-M2.7 with large context). 300s (5 min) is generous
+    # enough for thinking models but prevents indefinite blocking.
+    # Can be overridden via KUNMING_ANTHROPIC_TIMEOUT env var.
+    _anthropic_timeout = float(os.getenv("KUNMING_ANTHROPIC_TIMEOUT", "300.0"))
     normalized_base_url = _normalize_base_url_text(base_url)
     kwargs = {
-        "timeout": Timeout(timeout=900.0, connect=10.0),
+        "timeout": Timeout(timeout=_anthropic_timeout, connect=10.0),
     }
     if normalized_base_url:
         kwargs["base_url"] = normalized_base_url
