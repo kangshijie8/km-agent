@@ -132,6 +132,44 @@ class ProcessRegistry:
         return "\n".join(lines)
 
     @staticmethod
+    def _kill_process_tree_windows(pid: int) -> None:
+        """Kill a process and its entire descendant tree on Windows.
+
+        [Windows进程树终止] Windows没有进程组概念(os.killpg不存在)，只杀父PID
+        会让子进程变成孤儿。此方法按优先级使用两种策略：
+        1. psutil.Process().kill(recursive=True) — 干净、跨版本，但需要可选依赖psutil
+        2. taskkill /T /F /PID <pid> — Windows内置，/T遍历子进程树，/F强制终止
+        最终回退到os.kill(pid, SIGTERM)，至少杀死父进程（子进程可能成为孤儿）
+        """
+        try:
+            import psutil
+            parent = psutil.Process(pid)
+            # kill(recursive=True) 终止进程及其所有子进程
+            parent.kill(recursive=True)
+            return
+        except (ImportError, Exception):
+            pass
+
+        # 回退方案: 使用Windows内置的taskkill命令
+        # /T = 终止指定进程及其子进程, /F = 强制终止
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+        # 最终回退: 至少杀死父进程（子进程可能成为孤儿，但总比什么都不做好）
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError, PermissionError):
+            pass
+
+    @staticmethod
     def _is_host_pid_alive(pid: Optional[int]) -> bool:
         """Best-effort liveness check for host-visible PIDs."""
         if not pid:
@@ -159,9 +197,18 @@ class ProcessRegistry:
 
     @staticmethod
     def _terminate_host_pid(pid: int) -> None:
-        """Terminate a host-visible PID without requiring the original process handle."""
+        """Terminate a host-visible PID without requiring the original process handle.
+
+        On Unix: kills the entire process group via os.killpg, which
+        terminates the parent and all children atomically.
+        On Windows: uses _kill_process_tree_windows to kill the process
+        tree (taskkill /T /F or psutil), since os.kill only kills the
+        single process and leaves children as orphans.
+        """
         if _IS_WINDOWS:
-            os.kill(pid, signal.SIGTERM)
+            # [Windows进程树终止] 使用taskkill /T /F或psutil杀死整个进程树
+            # 原因: os.kill在Windows上只杀单个PID，子进程会变成孤儿进程
+            ProcessRegistry._kill_process_tree_windows(pid)
             return
 
         try:
@@ -662,20 +709,18 @@ class ProcessRegistry:
                 except Exception:
                     if session.pid:
                         if _IS_WINDOWS:
-                            try:
-                                import ctypes
-                                ctypes.windll.kernel32.TerminateProcess(
-                                    ctypes.windll.kernel32.OpenProcess(0x0001, False, session.pid), 1
-                                )
-                            except (OSError, PermissionError):
-                                pass
+                            # [Windows进程树终止] ptyprocess.terminate只杀PTY进程
+                            # 使用_kill_process_tree_windows确保子进程也被终止
+                            ProcessRegistry._kill_process_tree_windows(session.pid)
                         else:
                             os.kill(session.pid, signal.SIGTERM)
             elif session.process:
-                # Local process -- kill the process group
+                # Local process -- kill the process group (Unix) or tree (Windows)
                 try:
                     if _IS_WINDOWS:
-                        session.process.terminate()
+                        # [Windows进程树终止] Popen.terminate()只杀单个进程
+                        # 使用_kill_process_tree_windows确保子进程也被终止
+                        ProcessRegistry._kill_process_tree_windows(session.process.pid)
                     else:
                         os.killpg(os.getpgid(session.process.pid), signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):

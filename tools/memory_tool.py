@@ -39,7 +39,6 @@ import logging
 import math
 import os
 import re
-import struct
 import sys  # Windows平台检测需要（原子写入安全策略）
 import tempfile
 import time
@@ -48,11 +47,6 @@ from pathlib import Path
 from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS, HYBRID_SEARCH_FTS_WEIGHT, HYBRID_SEARCH_VECTOR_WEIGHT, ebbinghaus_retention, _EBINGHAUS_HALF_LIFE_DAYS, _EBINGHAUS_RETENTION_THRESHOLD  # 整合: 使用统一搜索权重 [S1]
 from typing import Dict, Any, List, Optional, Tuple
 from utils import _extract_tokens, simhash, simhash_similarity, file_lock  # 整合: 导入 simhash_similarity 替代类内静态方法 [H5]
-
-try:
-    import fcntl
-except ImportError:
-    fcntl = None
 
 logger = logging.getLogger(__name__)
 
@@ -203,20 +197,34 @@ class MemoryStore:
             meta["access_count"] = meta.get("access_count", 0) + 1
             self._set_meta(target, content, meta)
 
-    def _save_meta(self) -> bool:
-        # 修复：添加file_lock保护，防止并发写入导致元数据损坏
-        # 原实现无文件锁，多个并发recall操作可能同时写入.meta.json导致数据丢失
+    def _save_meta(self, _skip_lock: bool = False) -> bool:
+        """持久化Ebbinghaus元数据到.meta.json。
+
+        _skip_lock=True时跳过文件锁获取，用于调用方已持有memory_lock的场景。
+        此时调用方负责确保元数据写入的原子性，避免嵌套锁死锁。
+        """
         try:
             get_memory_dir().mkdir(parents=True, exist_ok=True)
-            with file_lock(self._meta_path) as acquired:
-                if not acquired:
-                    logger.warning("Memory metadata save failed: could not acquire file lock")
-                    return False
+            if _skip_lock:
+                # [TOCTOU修复] 调用方已持有memory_lock(数据文件锁)，直接写入meta，
+                # 不再获取meta锁。原因：外层锁已保证读取-修改-写入的原子性，
+                # 再获取meta锁增加锁持有时间和死锁风险，且meta写入是原子替换，
+                # 在同一锁作用域内不会出现并发写入问题
                 tmp_path = self._meta_path.with_suffix(".tmp")
                 with open(tmp_path, "w", encoding="utf-8") as f:
                     json.dump(self._meta, f, ensure_ascii=False, indent=2)
                     f.flush()
                 tmp_path.replace(self._meta_path)
+            else:
+                with file_lock(self._meta_path) as acquired:
+                    if not acquired:
+                        logger.warning("Memory metadata save failed: could not acquire file lock")
+                        return False
+                    tmp_path = self._meta_path.with_suffix(".tmp")
+                    with open(tmp_path, "w", encoding="utf-8") as f:
+                        json.dump(self._meta, f, ensure_ascii=False, indent=2)
+                        f.flush()
+                    tmp_path.replace(self._meta_path)
             return True
         except Exception as e:
             logger.warning(f"Memory metadata save failed: {e}")
@@ -259,12 +267,16 @@ class MemoryStore:
         # 修复：设置最小保留值为5%，确保重要记忆不会完全消失
         return max(0.05, min(1.0, retention))
 
-    def decay_memories(self, target: str) -> int:
+    def decay_memories(self, target: str, _skip_lock: bool = False) -> int:
         """Remove entries below Ebbinghaus retention threshold.
 
         Protected entries (importance >= 0.8 or containing keywords like
         'preference', 'always', 'never', 'must') are never decayed.
         Returns count of removed entries.
+
+        _skip_lock=True时，save_to_disk不再获取文件锁，由外层memory_lock保护。
+        用于memory_distillation.py中_run_ebbinghaus_decay()的场景：
+        外层已通过memory_lock持有锁，内层save_to_disk跳过锁获取避免嵌套死锁。
         """
         # 使用共享常量，避免与 memory_distillation.py 中定义不同步
         _PROTECTED_KEYWORDS = _MEMORY_PROTECTED_KEYWORDS
@@ -295,7 +307,8 @@ class MemoryStore:
 
         if removed > 0:
             self._entries[target] = to_keep
-            self.save_to_disk(target)
+            # _skip_lock透传给save_to_disk：外层已持有锁时跳过内层锁获取
+            self.save_to_disk(target, _skip_lock=_skip_lock)
 
         return removed
 
@@ -358,46 +371,66 @@ class MemoryStore:
         # 独立锁文件不受数据文件原子替换的影响。
         return Path(str(MemoryStore._path_for(target)) + ".lock")
 
+    @contextmanager
+    def memory_lock(self, target: str, timeout: float = 10.0):
+        """获取指定target的文件锁上下文管理器，保护read-modify-write原子性。
+
+        [TOCTOU修复] 将"读取-修改-写入"整个序列放在同一锁作用域内，
+        消除原两层锁设计中的竞态窗口：
+          原设计: [锁1:读取-修改] → 释放锁1 → [锁2:写入] → 释放锁2
+          竞态: 进程A释放锁1后、获取锁2前，进程B可能读取旧数据并写入，覆盖A的修改
+          修复后: [锁:读取-修改-写入(_skip_lock=True)] → 释放锁
+
+        使用方式:
+            with store.memory_lock("facts") as acquired:
+                if not acquired: return error
+                store._reload_target("facts")           # READ
+                # ... modify entries ...                 # MODIFY
+                store.save_to_disk("facts", _skip_lock=True)  # WRITE
+        """
+        with file_lock(self._lock_path_for(target), timeout=timeout) as acquired:
+            yield acquired
+
     def _reload_target(self, target: str):
         """Re-read entries from disk into in-memory state."""
         fresh = self._read_file(self._path_for(target))
         fresh = list(dict.fromkeys(fresh))
         self._set_entries(target, fresh)
 
-    def save_to_disk(self, target: str):
+    def save_to_disk(self, target: str, _skip_lock: bool = False):
         """Persist entries to the appropriate file. Called after every mutation.
 
-        修复：添加file_lock保护写入阶段，防止并发写入竞态。
-        两层锁分工：add/replace/remove中的file_lock保护"读取-修改"阶段，
-        save_to_disk中的file_lock保护"写入"阶段。两层锁不嵌套避免死锁。
+        [TOCTOU修复] _skip_lock=True时跳过文件锁获取，用于调用方已通过memory_lock
+        持有锁的场景。这确保了add/replace/remove中"读取-修改-写入"序列的原子性：
+        外层memory_lock保护整个read-modify-write，内层save_to_disk跳过锁获取
+        避免嵌套死锁。
+
+        原两层锁设计的TOCTOU问题：
+          进程A: [锁1:读取-修改] → 释放锁1 → [锁2:写入] → 释放锁2
+          进程B:              → [锁1:读取(旧数据)-修改] → 释放锁1 → [锁2:写入(覆盖A)]
+        修复后的单锁设计：
+          进程A: [锁:读取-修改-写入] → 释放锁
+          进程B:                      → [锁:读取-修改-写入] → 释放锁（基于A写入后的最新数据）
         """
         get_memory_dir().mkdir(parents=True, exist_ok=True)
-        # [R2-M1-fix] 使用独立锁文件，避免Windows上锁定数据文件后os.replace()失败
-        with file_lock(self._lock_path_for(target)) as acquired:
-            if not acquired:
-                logger.warning("Memory save failed: could not acquire file lock for write")
-                return
+
+        if _skip_lock:
+            # [TOCTOU修复] 调用方已持有memory_lock，直接写入，不获取数据文件锁
+            # 原因：避免嵌套锁死锁，且外层锁已保证读取-修改-写入的原子性
             self._write_file(self._path_for(target), self._entries_for(target))
-        # Persist Ebbinghaus metadata atomically
-        try:
-            meta_content = json.dumps(self._meta, ensure_ascii=False)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(self._meta_path.parent), suffix=".tmp", prefix=".meta_"
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(meta_content)
-                    f.flush()
-                    os.fsync(f.fileno())
-                os.replace(tmp_path, str(self._meta_path))
-            except BaseException:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
-        except Exception:
-            pass  # Meta persistence is best-effort
+        else:
+            # 独立调用（如decay_memories未通过memory_lock调用时），自行获取锁
+            with file_lock(self._lock_path_for(target)) as acquired:
+                if not acquired:
+                    logger.warning("Memory save failed: could not acquire file lock for write")
+                    return
+                self._write_file(self._path_for(target), self._entries_for(target))
+
+        # [元数据写入统一] 使用_save_meta统一写入路径，确保与recall中的元数据写入
+        # 使用相同的锁策略。原实现直接内联写入.meta.json，绕过了_save_meta的锁保护，
+        # 并发时可能导致元数据损坏。_skip_lock透传：外层已持有memory_lock时，
+        # meta写入也跳过锁获取
+        self._save_meta(_skip_lock=_skip_lock)
 
     def _entries_for(self, target: str) -> List[str]:
         resolved = self._resolve_target(target)
@@ -434,8 +467,11 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         try:
-                # [R2-M1-fix] 独立锁文件，避免Windows上锁定数据文件后os.replace()失败
-            with file_lock(self._lock_path_for(target)) as acquired:
+            # [TOCTOU修复] 使用memory_lock保护"读取-修改-写入"完整序列
+            # 原实现：锁内读取修改 → 释放锁 → save_to_disk获取另一个锁写入
+            # 竞态窗口：释放锁后、save_to_disk获取锁前，另一进程可能修改文件
+            # 修复：在同一锁作用域内完成reload→modify→save_to_disk，消除竞态窗口
+            with self.memory_lock(target) as acquired:
                 if not acquired:
                     return {"success": False, "error": "Failed to acquire file lock."}
                 self._reload_target(target)
@@ -465,8 +501,8 @@ class MemoryStore:
                 entries.append(content)
                 self._set_entries(target, entries)
                 self._init_meta(target, content)
-            # 修复：释放读锁后由save_to_disk自身的写入锁保护持久化
-            self.save_to_disk(target)
+                # _skip_lock=True：外层memory_lock已持有文件锁，save_to_disk跳过内层锁获取
+                self.save_to_disk(target, _skip_lock=True)
         except Exception as e:
             # 修复：添加异常处理，确保文件锁异常被捕获
             logger.error(f"Memory add failed: {e}")
@@ -496,8 +532,8 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         try:
-                # [R2-M1-fix] 独立锁文件，避免Windows上锁定数据文件后os.replace()失败
-            with file_lock(self._lock_path_for(target)) as acquired:
+            # [TOCTOU修复] 同add，使用memory_lock保护完整read-modify-write序列
+            with self.memory_lock(target) as acquired:
                 if not acquired:
                     return {"success": False, "error": "Failed to acquire file lock."}
                 self._reload_target(target)
@@ -544,8 +580,8 @@ class MemoryStore:
                     self._set_meta(target, new_content, old_meta)
                     old_key = self._entry_key(old_entry)
                     self._meta.get(target, {}).pop(old_key, None)
-            # 修复：释放读锁后由save_to_disk自身的写入锁保护持久化
-            self.save_to_disk(target)
+                # _skip_lock=True：外层memory_lock已持有文件锁
+                self.save_to_disk(target, _skip_lock=True)
         except Exception as e:
             # 修复：添加异常处理，确保文件锁异常被捕获
             logger.error(f"Memory replace failed: {e}")
@@ -567,8 +603,8 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
 
         try:
-                # [R2-M1-fix] 独立锁文件，避免Windows上锁定数据文件后os.replace()失败
-            with file_lock(self._lock_path_for(target)) as acquired:
+            # [TOCTOU修复] 同add，使用memory_lock保护完整read-modify-write序列
+            with self.memory_lock(target) as acquired:
                 if not acquired:
                     return {"success": False, "error": "Failed to acquire file lock."}
                 self._reload_target(target)
@@ -595,8 +631,8 @@ class MemoryStore:
                 self._meta.get(target, {}).pop(old_key, None)
                 entries.pop(idx)
                 self._set_entries(target, entries)
-            # 修复：释放读锁后由save_to_disk自身的写入锁保护持久化
-            self.save_to_disk(target)
+                # _skip_lock=True：外层memory_lock已持有文件锁
+                self.save_to_disk(target, _skip_lock=True)
         except Exception as e:
             # 修复：添加异常处理，确保文件锁异常被捕获
             logger.error(f"Memory remove failed: {e}")

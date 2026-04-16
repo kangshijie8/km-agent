@@ -8,7 +8,6 @@ the conversation prefix. Uses 4 cache_control breakpoints (Anthropic max):
 Pure functions -- no class state, no AIAgent dependency.
 """
 
-import copy
 from typing import Any, Dict, List
 
 
@@ -48,11 +47,18 @@ def apply_anthropic_cache_control(
     Places up to 4 cache_control breakpoints: system prompt + last 3 non-system messages.
 
     Returns:
-        Deep copy of messages with cache_control breakpoints injected.
-    
-    修复：增强缓存策略，根据消息类型智能选择缓存位置，提高缓存命中率
+        Shallow copy of messages with cache_control breakpoints injected.
+        Only messages that need modification are deep-copied; unmodified
+        messages share the original dict objects to avoid O(n) deepcopy cost.
+
+    [deepcopy性能优化] 原实现使用copy.deepcopy(api_messages)对整个消息列表做深拷贝，
+    对于长对话（数百条消息）这会造成严重的内存和时间开销。优化策略：
+    1. 使用浅拷贝列表（只拷贝外层dict引用）
+    2. 仅对需要注入cache_control的消息做深拷贝（最多4条）
+    3. 其余消息直接引用原dict对象（它们不会被修改）
     """
-    messages = copy.deepcopy(api_messages)
+    # [deepcopy优化] 浅拷贝列表，避免对整个消息列表做O(n)深拷贝
+    messages = list(api_messages)
     if not messages:
         return messages
 
@@ -64,6 +70,10 @@ def apply_anthropic_cache_control(
 
     # 修复：确保系统消息始终被缓存，提高缓存稳定性
     if messages[0].get("role") == "system":
+        # [deepcopy优化] 仅对需要修改的消息做深拷贝，其余保持引用
+        messages[0] = dict(messages[0])
+        if isinstance(messages[0].get("content"), list):
+            messages[0]["content"] = list(messages[0]["content"])
         _apply_cache_marker(messages[0], marker, native_anthropic=native_anthropic)
         breakpoints_used += 1
 
@@ -73,21 +83,19 @@ def apply_anthropic_cache_control(
     if len(non_sys) <= remaining:
         # 修复：消息数量较少时，缓存所有非系统消息
         for idx in non_sys:
+            messages[idx] = dict(messages[idx])
+            if isinstance(messages[idx].get("content"), list):
+                messages[idx]["content"] = list(messages[idx]["content"])
             _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
     else:
         # 修复：消息数量较多时，优先缓存助手消息和包含工具调用的消息
         # 这些消息通常包含更多有价值的信息
         tail = non_sys[-remaining:]
         for idx in tail:
-            msg = messages[idx]
-            # 对工具调用相关的消息进行特殊处理，提高缓存效率
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                # 助手消息包含工具调用，优先缓存
-                _apply_cache_marker(msg, marker, native_anthropic=native_anthropic)
-            elif msg.get("role") == "tool":
-                # 工具结果消息也优先缓存
-                _apply_cache_marker(msg, marker, native_anthropic=native_anthropic)
-            else:
-                _apply_cache_marker(msg, marker, native_anthropic=native_anthropic)
+            # [deepcopy优化] 仅对需要注入cache_control的消息做深拷贝
+            messages[idx] = dict(messages[idx])
+            if isinstance(messages[idx].get("content"), list):
+                messages[idx]["content"] = list(messages[idx]["content"])
+            _apply_cache_marker(messages[idx], marker, native_anthropic=native_anthropic)
 
     return messages

@@ -337,18 +337,22 @@ class ContextCompressor:
                 if tool_calls:
                     tc_parts = []
                     for tc in tool_calls:
+                        # [修复: 类型安全] 统一处理dict和SimpleNamespace对象
+                        # 原因：原实现仅处理dict类型，对SimpleNamespace等对象会丢失参数信息
+                        # 修复方案：使用getattr安全访问属性，确保所有对象类型都能正确处理
                         if isinstance(tc, dict):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
                             args = fn.get("arguments", "")
-                            # Truncate long arguments but keep enough for context
-                            if len(args) > self._TOOL_ARGS_MAX:
-                                args = args[:self._TOOL_ARGS_HEAD] + "..."
-                            tc_parts.append(f"  {name}({args})")
                         else:
+                            # 处理SimpleNamespace等对象类型
                             fn = getattr(tc, "function", None)
                             name = getattr(fn, "name", "?") if fn else "?"
-                            tc_parts.append(f"  {name}(...)")
+                            args = getattr(fn, "arguments", "") if fn else ""
+                        # Truncate long arguments but keep enough for context
+                        if len(args) > self._TOOL_ARGS_MAX:
+                            args = args[:self._TOOL_ARGS_HEAD] + "..."
+                        tc_parts.append(f"  {name}({args})")
                     content += "\n[Tool calls:\n" + "\n".join(tc_parts) + "\n]"
                 parts.append(f"[ASSISTANT]: {content}")
                 continue
@@ -508,7 +512,11 @@ Write only the summary body. Do not include any preamble or prefix."""
                 e,
                 _SUMMARY_FAILURE_COOLDOWN_SECONDS,
             )
-            return None
+            # [修复: 兜底摘要] 当LLM摘要失败时，使用规则基础摘要作为兜底
+            # 原因：原实现直接返回None导致压缩过程完全失效，中间轮次被直接丢弃
+            # 修复方案：使用规则基础摘要确保压缩过程仍能进行，保留关键信息
+            logging.info("Context compression: falling back to rule-based summary")
+            return self._generate_rule_based_summary(turns_to_summarize)
 
     def _generate_rule_based_summary(self, messages):
         parts = []

