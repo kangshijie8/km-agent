@@ -1254,8 +1254,8 @@ class BasePlatformAdapter(ABC):
           KUNMING_HUMAN_DELAY_MIN_MS: minimum delay in ms (default 800, custom mode)
           KUNMING_HUMAN_DELAY_MAX_MS: maximum delay in ms (default 2500, custom mode)
         """
-        import random
-
+        # [修复: 函数内重复导入] random已在模块顶部导入，无需重复导入
+        # 原因：第11行已导入random，此处重复导入会造成代码冗余
         mode = os.getenv("KUNMING_HUMAN_DELAY_MODE", "off").lower()
         if mode == "off":
             return 0.0

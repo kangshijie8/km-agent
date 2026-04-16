@@ -629,7 +629,8 @@ class MatrixAdapter(BasePlatformAdapter):
                         ct = resp.content_type or "image/png"
                         fname = image_url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
             except ImportError:
-                import httpx
+                # [修复: 函数内重复导入] httpx已在模块顶部导入
+                # 原因：第632行在ImportError处理中导入httpx，但模块顶部已导入
                 async with httpx.AsyncClient() as http:
                     resp = await http.get(image_url, follow_redirects=True, timeout=30)
                     resp.raise_for_status()

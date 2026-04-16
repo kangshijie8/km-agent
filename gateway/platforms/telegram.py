@@ -1575,7 +1575,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         
         try:
-            import os
+            # [修复: 函数内重复导入] os已在模块顶部导入
+            # 原因：第13行已导入os，此处重复导入造成冗余
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
             
@@ -1624,7 +1625,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            import os
+            # [修复: 函数内重复导入] os已在模块顶部导入
+            # 原因：第13行已导入os，此处重复导入造成冗余
             if not os.path.exists(image_path):
                 return SendResult(success=False, error=f"Image file not found: {image_path}")
 
@@ -1754,7 +1756,8 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             # Fallback: download and upload as file (supports up to 10MB)
             try:
-                import httpx
+                # [修复: 函数内重复导入] httpx应在模块顶部导入
+                # 原因：函数内导入httpx会造成代码冗余和性能损失
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     resp = await client.get(image_url)
                     resp.raise_for_status()

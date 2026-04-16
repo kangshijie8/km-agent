@@ -16,18 +16,35 @@ from kunming_constants import get_kunming_home
 logger = logging.getLogger(__name__)
 
 
+# [优化: 消除重复标签检查逻辑] 提取公共的REASONING_SCRATCHPAD标签检查
+# 原因：原代码中两个函数都重复检查了"<REASONING_SCRATCHPAD>" in content
+# 修复方案：使用统一的标签常量，并提取公共检查逻辑
+
+_SCRATCHPAD_OPEN_TAG = "<REASONING_SCRATCHPAD>"
+_SCRATCHPAD_CLOSE_TAG = "</REASONING_SCRATCHPAD>"
+_THINK_OPEN_TAG = "<think>"
+_THINK_CLOSE_TAG = "</think>"
+
+
+def _has_scratchpad_tag(content: str) -> bool:
+    """Check if content contains REASONING_SCRATCHPAD open tag."""
+    return bool(content) and _SCRATCHPAD_OPEN_TAG in content
+
+
 def convert_scratchpad_to_think(content: str) -> str:
     """Convert <REASONING_SCRATCHPAD> tags to <think> tags."""
-    if not content or "<REASONING_SCRATCHPAD>" not in content:
+    # [修复] 使用统一的标签检查函数，避免重复逻辑
+    if not _has_scratchpad_tag(content):
         return content
-    return content.replace("<REASONING_SCRATCHPAD>", "<think>").replace("</REASONING_SCRATCHPAD>", "</think>")
+    return content.replace(_SCRATCHPAD_OPEN_TAG, _THINK_OPEN_TAG).replace(_SCRATCHPAD_CLOSE_TAG, _THINK_CLOSE_TAG)
 
 
 def has_incomplete_scratchpad(content: str) -> bool:
     """Check if content has an opening <REASONING_SCRATCHPAD> without a closing tag."""
-    if not content:
+    # [修复] 使用统一的标签检查函数，避免重复逻辑
+    if not _has_scratchpad_tag(content):
         return False
-    return "<REASONING_SCRATCHPAD>" in content and "</REASONING_SCRATCHPAD>" not in content
+    return _SCRATCHPAD_CLOSE_TAG not in content
 
 
 def save_trajectory(trajectory: List[Dict[str, Any]], model: str,

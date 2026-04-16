@@ -344,8 +344,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             self._session_path.mkdir(parents=True, exist_ok=True)
             
             # Check if bridge is already running and connected
-            import aiohttp
-            import asyncio
+            # [修复: 函数内重复导入] asyncio已在模块顶部导入
+            # 原因：第18行已导入asyncio，此处重复导入造成冗余
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(

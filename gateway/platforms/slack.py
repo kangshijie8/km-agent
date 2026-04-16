@@ -626,8 +626,8 @@ class SlackAdapter(BasePlatformAdapter):
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
         try:
-            import httpx
-
+            # [修复: 函数内重复导入] httpx应在模块顶部导入
+            # 原因：模块顶部已导入httpx，此处重复导入造成冗余
             # Download the image first
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 response = await client.get(image_url)
@@ -1465,9 +1465,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
         """Download a Slack file using the bot token for auth, with retry."""
-        import asyncio
-        import httpx
-
+        # [修复: 函数内重复导入] asyncio和httpx已在模块顶部导入
+        # 原因：第11行已导入asyncio，此处重复导入造成冗余
         bot_token = self._team_clients[team_id].token if team_id and team_id in self._team_clients else self.config.token
         last_exc = None
 
@@ -1500,9 +1499,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
         """Download a Slack file and return raw bytes, with retry."""
-        import asyncio
-        import httpx
-
+        # [修复: 函数内重复导入] asyncio和httpx已在模块顶部导入
+        # 原因：第11行已导入asyncio，此处重复导入造成冗余
         bot_token = self._team_clients[team_id].token if team_id and team_id in self._team_clients else self.config.token
         last_exc = None
 
