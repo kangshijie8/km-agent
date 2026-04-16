@@ -1358,6 +1358,9 @@ def build_anthropic_kwargs(
                 kwargs["temperature"] = 1
                 kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
+    _stream_timeout = float(os.getenv("KUNMING_STREAM_TIMEOUT", "1800.0"))
+    kwargs["timeout"] = _stream_timeout
+
     return kwargs
 
 

@@ -29,6 +29,10 @@ from typing import Any, Callable, Dict, List, Optional
 _MAX_SUMMARY_CHARS = 10000
 _MAX_TOOL_TRACE_ENTRIES = 50
 
+# Subagent execution timeout (seconds) - prevents indefinite blocking on slow models
+# MiniMax-M2.7 can take 23+ minutes for large contexts; cap at 10 minutes per subagent
+DEFAULT_SUBAGENT_TIMEOUT = float(os.getenv("KUNMING_SUBAGENT_TIMEOUT", "600.0"))
+
 
 # 子代理禁止使用的工具列表
 # 修复：移除"memory"——子代理应能通过recall读取记忆进行跨任务推理，
@@ -675,7 +679,20 @@ def delegate_task(
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run_single_child, 0, _t["goal"], child, parent_agent)
+            try:
+                result = future.result(timeout=DEFAULT_SUBAGENT_TIMEOUT)
+            except concurrent.futures.TimeoutError:
+                result = {
+                    "task_index": 0,
+                    "status": "error",
+                    "summary": None,
+                    "error": f"Subagent timed out after {DEFAULT_SUBAGENT_TIMEOUT}s",
+                    "api_calls": 0,
+                    "duration_seconds": DEFAULT_SUBAGENT_TIMEOUT,
+                }
+                future.cancel()
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -695,10 +712,20 @@ def delegate_task(
                 futures[future] = i
 
             for future in as_completed(futures):
+                idx = futures[future]
                 try:
-                    entry = future.result()
+                    entry = future.result(timeout=DEFAULT_SUBAGENT_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    entry = {
+                        "task_index": idx,
+                        "status": "error",
+                        "summary": None,
+                        "error": f"Subagent timed out after {DEFAULT_SUBAGENT_TIMEOUT}s",
+                        "api_calls": 0,
+                        "duration_seconds": DEFAULT_SUBAGENT_TIMEOUT,
+                    }
+                    future.cancel()
                 except Exception as exc:
-                    idx = futures[future]
                     entry = {
                         "task_index": idx,
                         "status": "error",

@@ -2729,10 +2729,8 @@ class AIAgent:
         try:
             anthropic_client = getattr(self, "_anthropic_client", None)
             if anthropic_client is not None:
-                # Close the Anthropic client's underlying HTTP transport
+                self._force_close_tcp_sockets(anthropic_client)
                 anthropic_client.close()
-                # Rebuild the client so subsequent calls don't fail with
-                # "Cannot use a closed client" errors.
                 if self.api_mode == "anthropic_messages":
                     from agent.anthropic_adapter import build_anthropic_client
                     self._anthropic_client = build_anthropic_client(
@@ -3857,6 +3855,8 @@ class AIAgent:
         pool and issues ``socket.shutdown(SHUT_RDWR)`` + ``socket.close()`` to
         force an immediate TCP RST, freeing the file descriptors.
 
+        Works with both OpenAI and Anthropic SDK clients.
+
         Returns the number of sockets force-closed.
         """
         import socket as _socket
@@ -3872,8 +3872,6 @@ class AIAgent:
             pool = getattr(transport, "_pool", None)
             if pool is None:
                 return 0
-            # httpx uses httpcore connection pools; connections live in
-            # _connections (list) or _pool (list) depending on version.
             connections = (
                 getattr(pool, "_connections", None)
                 or getattr(pool, "_pool", None)
@@ -4528,18 +4526,11 @@ class AIAgent:
         while t.is_alive():
             t.join(timeout=0.3)
             if self._interrupt_requested:
-                # On Windows, the agent thread may be blocked inside a C extension
-                # (httpx reading the SSE stream) that holds the GIL. In that case
-                # t.join() never returns regardless of timeout, because the main
-                # thread cannot acquire the GIL. The only reliable escape hatch is
-                # to close the underlying HTTP socket from the OUTSIDE, which causes
-                # the blocked read() to raise and release the GIL immediately.
-                # This is handled by interrupt() via _current_request_client.
-                # The code below is kept as a historical fallback.
                 try:
                     if self.api_mode == "anthropic_messages":
                         from agent.anthropic_adapter import build_anthropic_client
 
+                        self._force_close_tcp_sockets(self._anthropic_client)
                         self._anthropic_client.close()
                         self._anthropic_client = build_anthropic_client(
                             self._anthropic_api_key,
@@ -4551,6 +4542,15 @@ class AIAgent:
                             self._close_request_openai_client(request_client, reason="interrupt_abort")
                 except Exception:
                     pass
+
+                _interrupt_start = time.monotonic()
+                _interrupt_timeout = 5.0
+                while t.is_alive() and time.monotonic() - _interrupt_start < _interrupt_timeout:
+                    t.join(timeout=0.1)
+
+                if t.is_alive():
+                    logger.warning("Thread still alive after interrupt, forcing continuation")
+
                 raise InterruptedError("Agent interrupted during API call")
             if time.monotonic() - _api_call_start > _api_hard_timeout:
                 try:
@@ -4881,23 +4881,19 @@ class AIAgent:
             has_tool_use = False
             self._reasoning_deltas_fired = False
 
-            # Reset stale-stream timer for this attempt
             last_chunk_time["t"] = time.time()
             with self._openai_client_lock():
                 self._current_request_client = self._anthropic_client
 
-            # ------------------------------------------------------------------
-            # FIX 2026-04-16: Restore baseline-v1 simple stream iteration.
-            # The SDK's stream iterator blocks in httpx waiting for SSE events.
-            # We rely on the outer stale detector (while t.is_alive() loop) to
-            # kill stale connections after _stream_stale_timeout seconds.
-            # Interrupt is handled via break (not close+raise) to avoid GIL
-            # issues on Windows.
-            # ------------------------------------------------------------------
             with self._anthropic_client.messages.stream(**api_kwargs) as stream:
                 for event in stream:
                     if self._interrupt_requested:
-                        break
+                        try:
+                            self._force_close_tcp_sockets(self._anthropic_client)
+                            self._anthropic_client.close()
+                        except Exception:
+                            pass
+                        raise InterruptedError("Agent interrupted during anthropic stream")
 
                     event_type = getattr(event, "type", None)
 
@@ -4909,6 +4905,7 @@ class AIAgent:
                             if tool_name:
                                 _fire_first_delta()
                                 self._fire_tool_gen_started(tool_name)
+                                last_chunk_time["t"] = time.time()
 
                     elif event_type == "content_block_delta":
                         delta = getattr(event, "delta", None)
@@ -4919,13 +4916,14 @@ class AIAgent:
                                 if text and not has_tool_use:
                                     _fire_first_delta()
                                     self._fire_stream_delta(text)
+                                    last_chunk_time["t"] = time.time()
                             elif delta_type == "thinking_delta":
                                 thinking_text = getattr(delta, "thinking", "")
                                 if thinking_text:
                                     _fire_first_delta()
                                     self._fire_reasoning_delta(thinking_text)
+                                    last_chunk_time["t"] = time.time()
 
-                # Return the native Anthropic Message for downstream processing
                 return stream.get_final_message()
 
         def _call():
@@ -5073,24 +5071,16 @@ class AIAgent:
                 with self._openai_client_lock():
                     self._current_request_client = None
 
-        _stream_stale_timeout_base = float(os.getenv("KUNMING_STREAM_STALE_TIMEOUT", 180.0))
-        # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
-        # for prefill on large contexts.  Disable the stale detector unless
-        # the user explicitly set KUNMING_STREAM_STALE_TIMEOUT.
-        if _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url):
+        _stream_stale_timeout_base = float(os.getenv("KUNMING_STREAM_STALE_TIMEOUT", 600.0))
+        if _stream_stale_timeout_base == 600.0 and self.base_url and is_local_endpoint(self.base_url):
             _stream_stale_timeout = float("inf")
-            logger.debug("Local provider detected (%s) ?stale stream timeout disabled", self.base_url)
+            logger.debug("Local provider detected (%s) - stale stream timeout disabled", self.base_url)
         else:
-            # Scale the stale timeout for large contexts: slow models (like Opus)
-            # can legitimately think for minutes before producing the first token
-            # when the context is large.  Without this, the stale detector kills
-            # healthy connections during the model's thinking phase, producing
-            # spurious RemoteProtocolError ("peer closed connection").
             _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
             if _est_tokens > 100_000:
-                _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
+                _stream_stale_timeout = max(_stream_stale_timeout_base, 1800.0)
             elif _est_tokens > 50_000:
-                _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
+                _stream_stale_timeout = max(_stream_stale_timeout_base, 1200.0)
             else:
                 _stream_stale_timeout = _stream_stale_timeout_base
 
