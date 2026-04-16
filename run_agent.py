@@ -107,6 +107,15 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+
+# FIX 2026-04-17: 异步架构迁移 - 导入 async_bridge 用于可中断的 API 调用
+# 参考 openakita 设计，使用 asyncio.Event 竞速模式替代 threading.Thread
+try:
+    from agent.async_bridge import run_async, cancellable_coroutine
+    _ASYNC_BRIDGE_AVAILABLE = True
+except ImportError:
+    _ASYNC_BRIDGE_AVAILABLE = False
+
 # 修复: cognitive模块依赖numpy，缺少时优雅降级不阻塞核心功能
 try:
     from agent.cognitive.neural.reasoning_bank import ReasoningBank
@@ -2680,6 +2689,23 @@ class AIAgent:
         self._interrupt_requested = True
         self._interrupt_message = message
         _set_interrupt(True)
+
+        # FIX 2026-04-17: 异步架构 - 设置 cancel_event 触发协程取消
+        # 这是新架构实现即时中断的关键。当 cancel_event 被 set() 时，
+        # async_bridge.cancellable_coroutine 中的竞速会立即返回，
+        # 抛出 CancelledError，无需强制关闭 socket。
+        cancel_event = getattr(self, "_current_cancel_event", None)
+        if cancel_event is not None:
+            try:
+                # 使用 run_async 在 async_bridge 的 loop 中设置事件
+                async def _set_cancel():
+                    cancel_event.set()
+
+                from agent.async_bridge import run_async
+                run_async(_set_cancel())
+            except Exception as e:
+                logger.debug("Failed to set cancel_event: %s", e)
+
         # SIMPLIFICATION 2026-04-17: 移除interrupt()中的暴力socket关闭和客户端重建。
         # 之前的8轮修复在interrupt()中调用_force_close_tcp_sockets、client.close()、
         # 重建Anthropic客户端，但这些操作本身可能阻塞（反射路径脆弱、close()在
@@ -4611,9 +4637,67 @@ class AIAgent:
         参考 openakita 的 _cancellable_llm_call() 实现。
         """
         # 使用环境变量控制是否使用新架构（便于回滚）
-        if os.getenv("KUNMING_USE_SYNC_API_CALL", "").lower() in ("1", "true", "yes"):
+        # 如果 async_bridge 不可用，也回退到同步实现
+        if os.getenv("KUNMING_USE_SYNC_API_CALL", "").lower() in ("1", "true", "yes") or not _ASYNC_BRIDGE_AVAILABLE:
             return self._interruptible_api_call_sync_legacy(api_kwargs)
         return self._interruptible_api_call_async(api_kwargs)
+
+    def _interruptible_api_call_async(self, api_kwargs: dict):
+        """
+        异步实现的可中断 API 调用。
+
+        FIX 2026-04-17: 使用 asyncio.Event 竞速模式实现即时中断。
+        这是新架构的核心，完全避免 threading.Thread 的 GIL 阻塞问题。
+        """
+        import asyncio
+
+        # 创建取消事件（必须在 async_bridge 的 loop 中创建）
+        # 使用 run_async 来创建事件，确保它在正确的 loop 中
+        async def _create_cancel_event():
+            return asyncio.Event()
+
+        cancel_event = run_async(_create_cancel_event())
+        self._current_cancel_event = cancel_event
+
+        async def _api_call_coro():
+            """实际的 API 调用协程。"""
+            request_client = None
+            try:
+                if self.api_mode == "codex_responses":
+                    request_client = self._create_request_openai_client(reason="codex_stream_request")
+                    self._current_request_client = request_client
+                    return self._run_codex_stream(
+                        api_kwargs,
+                        client=request_client,
+                        on_first_delta=getattr(self, "_codex_on_first_delta", None),
+                    )
+                elif self.api_mode == "anthropic_messages":
+                    return self._anthropic_messages_create(api_kwargs)
+                else:
+                    request_client = self._create_request_openai_client(reason="chat_completion_request")
+                    self._current_request_client = request_client
+                    return request_client.chat.completions.create(**api_kwargs)
+            finally:
+                if request_client is not None:
+                    self._close_request_openai_client(request_client, reason="request_complete")
+                self._current_request_client = None
+
+        try:
+            # 使用 cancellable_coroutine 包装 API 调用
+            # 这样当 cancel_event 被 set() 时，会立即抛出 CancelledError
+            async def _wrapped_call():
+                return await cancellable_coroutine(_api_call_coro(), cancel_event)
+
+            result = run_async(_wrapped_call(), timeout=float(os.getenv("KUNMING_API_TIMEOUT", 1800.0)))
+            return result
+
+        except asyncio.CancelledError:
+            # 用户中断导致的取消
+            raise InterruptedError("Agent interrupted during API call")
+        except Exception:
+            raise
+        finally:
+            self._current_cancel_event = None
 
     def _interruptible_api_call_sync_legacy(self, api_kwargs: dict):
         """
