@@ -191,15 +191,18 @@ def load_cli_config() -> Dict[str, Any]:
     
     REFACTORED: Now uses unified DEFAULT_CONFIG from kunming_cli.config
     with enhanced _deep_merge for automatic model string->dict conversion.
+    
+    [配置系统统一] 此函数现在使用kunming_cli.config中的统一配置桥接函数
+    原因：原实现中cli.py和gateway/run.py各自实现配置加载和桥接逻辑，导致重复代码
+    修复方案：使用kunming_cli.config.load_config()作为统一入口，bridge_config_to_env()作为统一桥接
     """
-    # Import unified defaults from kunming_cli.config
-    from kunming_cli.config import DEFAULT_CONFIG, _deep_merge, _expand_env_vars
+    # [配置系统统一] 使用统一的配置加载函数替代本地实现
+    # 原因：消除cli.py和kunming_cli/config.py之间的重复配置加载逻辑
+    from kunming_cli.config import load_config as _load_unified_config
     
-    # Start with a deep copy of unified defaults
-    import copy
-    config = copy.deepcopy(DEFAULT_CONFIG)
+    config = _load_unified_config()
     
-    # Determine config file path
+    # Determine config file path (for legacy handling)
     user_config_path = _kunming_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
     config_path = user_config_path if user_config_path.exists() else project_config_path
@@ -207,41 +210,14 @@ def load_cli_config() -> Dict[str, Any]:
     # Track whether the config file explicitly set terminal config
     _file_has_terminal_config = False
     
-    # Load and merge user config if exists
+    # Load raw file config to check for terminal section
     if config_path.exists():
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 file_config = yaml.safe_load(f) or {}
-            
             _file_has_terminal_config = "terminal" in file_config
-            
-            # Use enhanced _deep_merge which handles model string->dict conversion
-            config = _deep_merge(config, file_config)
-            
-            # Handle legacy root-level provider/base_url (fallback only)
-            # These are only used when model.provider/model.base_url is not set
-            model_cfg = config.get("model", {})
-            if isinstance(model_cfg, dict):
-                if not model_cfg.get("provider"):
-                    root_provider = file_config.get("provider")
-                    if root_provider:
-                        model_cfg["provider"] = root_provider
-                if not model_cfg.get("base_url"):
-                    root_base_url = file_config.get("base_url")
-                    if root_base_url:
-                        model_cfg["base_url"] = root_base_url
-            
-            # Handle legacy root-level max_turns -> agent.max_turns
-            if "max_turns" in file_config:
-                agent_cfg = config.get("agent", {})
-                if isinstance(agent_cfg, dict) and not agent_cfg.get("max_turns"):
-                    agent_cfg["max_turns"] = file_config["max_turns"]
-                    
-        except Exception as e:
-            logger.warning("Failed to load config from %s: %s", config_path, e)
-    
-    # Expand ${ENV_VAR} references
-    config = _expand_env_vars(config)
+        except Exception:
+            pass
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = config.get("terminal", {})
@@ -266,49 +242,17 @@ def load_cli_config() -> Dict[str, Any]:
             # Remove so TERMINAL_CWD stays unset █tool picks backend default
             terminal_config.pop("cwd", None)
     
-    env_mappings = {
-        "env_type": "TERMINAL_ENV",
-        "cwd": "TERMINAL_CWD",
-        "timeout": "TERMINAL_TIMEOUT",
-        "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-        "docker_image": "TERMINAL_DOCKER_IMAGE",
-        "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-        "modal_image": "TERMINAL_MODAL_IMAGE",
-        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        # SSH config
-        "ssh_host": "TERMINAL_SSH_HOST",
-        "ssh_user": "TERMINAL_SSH_USER",
-        "ssh_port": "TERMINAL_SSH_PORT",
-        "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (docker, singularity, modal, daytona -- ignored for local/ssh)
-        "container_cpu": "TERMINAL_CONTAINER_CPU",
-        "container_memory": "TERMINAL_CONTAINER_MEMORY",
-        "container_disk": "TERMINAL_CONTAINER_DISK",
-        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-        "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
-        "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        # Persistent shell (non-local backends)
-        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-        # Sudo support (works with all backends)
-        "sudo_password": "SUDO_PASSWORD",
-    }
+    # [配置系统统一] 使用统一的配置桥接函数替代本地重复实现
+    # 原因：原实现中cli.py和gateway/run.py各自实现桥接逻辑，导致重复代码和维护困难
+    # 修复方案：调用kunming_cli.config.bridge_config_to_env()完成统一的配置桥接
+    # 注意：terminal和auxiliary(vision/web_extract)配置由统一函数处理
+    from kunming_cli.config import bridge_config_to_env
+    bridge_config_to_env(config)
     
-    # Apply config values to env vars so terminal_tool picks them up.
-    # If the config file explicitly has a [terminal] section, those values are
-    # authoritative and override any .env settings.  When using defaults only
-    # (no config file or no terminal section), don't overwrite env vars that
-    # were already set by .env -- the user's .env is the fallback source.
-    for config_key, env_var in env_mappings.items():
-        if config_key in terminal_config:
-            if _file_has_terminal_config or env_var not in os.environ:
-                val = terminal_config[config_key]
-                if isinstance(val, list):
-                    import json
-                    os.environ[env_var] = json.dumps(val)
-                else:
-                    os.environ[env_var] = str(val)
+    # 保留CLI特有的配置处理：sudo_password（不在统一桥接函数中）
+    if "sudo_password" in terminal_config:
+        if _file_has_terminal_config or "SUDO_PASSWORD" not in os.environ:
+            os.environ["SUDO_PASSWORD"] = str(terminal_config["sudo_password"])
     
     # Apply browser config to environment variables
     browser_config = config.get("browser", {})
@@ -320,51 +264,24 @@ def load_cli_config() -> Dict[str, Any]:
         if config_key in browser_config:
             os.environ[env_var] = str(browser_config[config_key])
     
-    # Apply auxiliary model/direct-endpoint overrides to environment variables.
-    # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
-    # Compression config is read directly from config.yaml by run_agent.py and
-    # auxiliary_client.py █no env var bridging needed.
-    # Only set env vars for non-empty / non-default values so auto-detection
-    # still works.
+    # [配置系统统一] auxiliary配置桥接说明
+    # vision和web_extract已由统一函数bridge_config_to_env()处理
+    # 只需处理CLI特有的approval配置
     auxiliary_config = config.get("auxiliary", {})
-    auxiliary_task_env = {
-        # config key █env var mapping
-        "vision": {
-            "provider": "AUXILIARY_VISION_PROVIDER",
-            "model": "AUXILIARY_VISION_MODEL",
-            "base_url": "AUXILIARY_VISION_BASE_URL",
-            "api_key": "AUXILIARY_VISION_API_KEY",
-        },
-        "web_extract": {
-            "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-            "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-            "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-            "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
-        },
-        "approval": {
-            "provider": "AUXILIARY_APPROVAL_PROVIDER",
-            "model": "AUXILIARY_APPROVAL_MODEL",
-            "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-            "api_key": "AUXILIARY_APPROVAL_API_KEY",
-        },
-    }
-    
-    for task_key, env_map in auxiliary_task_env.items():
-        task_cfg = auxiliary_config.get(task_key, {})
-        if not isinstance(task_cfg, dict):
-            continue
-        prov = str(task_cfg.get("provider", "")).strip()
-        model = str(task_cfg.get("model", "")).strip()
-        base_url = str(task_cfg.get("base_url", "")).strip()
-        api_key = str(task_cfg.get("api_key", "")).strip()
+    approval_cfg = auxiliary_config.get("approval", {})
+    if isinstance(approval_cfg, dict):
+        prov = str(approval_cfg.get("provider", "")).strip()
+        model = str(approval_cfg.get("model", "")).strip()
+        base_url = str(approval_cfg.get("base_url", "")).strip()
+        api_key = str(approval_cfg.get("api_key", "")).strip()
         if prov and prov != "auto":
-            os.environ[env_map["provider"]] = prov
+            os.environ["AUXILIARY_APPROVAL_PROVIDER"] = prov
         if model:
-            os.environ[env_map["model"]] = model
+            os.environ["AUXILIARY_APPROVAL_MODEL"] = model
         if base_url:
-            os.environ[env_map["base_url"]] = base_url
+            os.environ["AUXILIARY_APPROVAL_BASE_URL"] = base_url
         if api_key:
-            os.environ[env_map["api_key"]] = api_key
+            os.environ["AUXILIARY_APPROVAL_API_KEY"] = api_key
     
     # Security settings
     security_config = config.get("security", {})

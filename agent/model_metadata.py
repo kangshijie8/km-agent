@@ -708,27 +708,12 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
 
     try:
         with httpx.Client(timeout=3.0) as client:
-            # Ollama: /api/show returns model details with context info
+            # [Ollama查询去重] Ollama分支复用query_ollama_num_ctx，避免重复实现
+            # 原实现: _query_local_context_length和query_ollama_num_ctx各自独立查询/api/show，
+            # 解析model_info和parameters，逻辑完全重复。整合后_query_local_context_length
+            # 的Ollama分支直接调用query_ollama_num_ctx，保持单一来源。
             if server_type == "ollama":
-                resp = client.post(f"{server_url}/api/show", json={"name": model})
-                if resp.status_code == 200:
-                    data = resp.json()
-                    # Check model_info for context length
-                    model_info = data.get("model_info", {})
-                    for key, value in model_info.items():
-                        if "context_length" in key and isinstance(value, (int, float)):
-                            return int(value)
-                    # Check parameters string for num_ctx
-                    params = data.get("parameters", "")
-                    if "num_ctx" in params:
-                        for line in params.split("\n"):
-                            if "num_ctx" in line:
-                                parts = line.strip().split()
-                                if len(parts) >= 2:
-                                    try:
-                                        return int(parts[-1])
-                                    except ValueError:
-                                        pass
+                return query_ollama_num_ctx(model, base_url)
 
             # LM Studio native API: /api/v1/models returns max_context_length.
             # This is more reliable than the OpenAI-compat /v1/models which

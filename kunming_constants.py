@@ -246,3 +246,25 @@ PLATFORMS = {
     "mattermost": {"label": "[CHAT] Mattermost", "default_toolset": "kunming-mattermost"},
     "webhook":  {"label": "🔗 Webhook", "default_toolset": "kunming-webhook"},
 }
+
+# 配置键常量 — 集中定义，避免字符串拼写错误导致静默失败
+# 仅提取在 3+ 处使用的配置键叶子名，1-2 处使用的不过度工程化
+# 格式: CFG_<SECTION>_<KEY> = "<key>"，注释标注完整路径和默认值
+
+# agent 节
+CFG_AGENT_MAX_TURNS = "max_turns"               # 完整路径: agent.max_turns, 默认值: 90
+CFG_AGENT_GATEWAY_TIMEOUT = "gateway_timeout"   # 完整路径: agent.gateway_timeout, 默认值: 1800
+
+# display 节
+CFG_DISPLAY_TOOL_PROGRESS = "tool_progress"     # 完整路径: display.tool_progress, 默认值: True
+CFG_DISPLAY_SHOW_REASONING = "show_reasoning"   # 完整路径: display.show_reasoning, 默认值: False
+CFG_DISPLAY_TOOL_PREVIEW_LENGTH = "tool_preview_length"  # 完整路径: display.tool_preview_length, 默认值: 0
+
+# memory 节
+CFG_MEMORY_ENABLED = "memory_enabled"            # 完整路径: memory.memory_enabled, 默认值: True
+
+# security 节
+CFG_SECURITY_REDACT_SECRETS = "redact_secrets"   # 完整路径: security.redact_secrets, 默认值: True
+
+# 根级键
+CFG_PREFILL_MESSAGES_FILE = "prefill_messages_file"  # 根级键, 默认值: ""

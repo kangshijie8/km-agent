@@ -89,118 +89,18 @@ _env_path = _kunming_home / '.env'
 load_kunming_dotenv(kunming_home=_kunming_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
-# config.yaml is authoritative for terminal settings -overrides .env.
-_config_path = _kunming_home / 'config.yaml'
-if _config_path.exists():
-    try:
-        import yaml as _yaml
-        with open(_config_path, encoding="utf-8") as _f:
-            _cfg = _yaml.safe_load(_f) or {}
-        # Expand ${ENV_VAR} references before bridging to env vars.
-        from kunming_cli.config import _expand_env_vars
-        _cfg = _expand_env_vars(_cfg)
-        # Top-level simple values (fallback only -don't override .env)
-        for _key, _val in _cfg.items():
-            if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
-                os.environ[_key] = str(_val)
-        # Terminal config is nested -bridge to TERMINAL_* env vars.
-        # config.yaml overrides .env for these since it's the documented config path.
-        _terminal_cfg = _cfg.get("terminal", {})
-        if _terminal_cfg and isinstance(_terminal_cfg, dict):
-            _terminal_env_map = {
-                "backend": "TERMINAL_ENV",
-                "cwd": "TERMINAL_CWD",
-                "timeout": "TERMINAL_TIMEOUT",
-                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "docker_image": "TERMINAL_DOCKER_IMAGE",
-                "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-                "modal_image": "TERMINAL_MODAL_IMAGE",
-                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "ssh_host": "TERMINAL_SSH_HOST",
-                "ssh_user": "TERMINAL_SSH_USER",
-                "ssh_port": "TERMINAL_SSH_PORT",
-                "ssh_key": "TERMINAL_SSH_KEY",
-                "container_cpu": "TERMINAL_CONTAINER_CPU",
-                "container_memory": "TERMINAL_CONTAINER_MEMORY",
-                "container_disk": "TERMINAL_CONTAINER_DISK",
-                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-                "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-                "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-            }
-            for _cfg_key, _env_var in _terminal_env_map.items():
-                if _cfg_key in _terminal_cfg:
-                    _val = _terminal_cfg[_cfg_key]
-                    if isinstance(_val, list):
-                        os.environ[_env_var] = json.dumps(_val)
-                    else:
-                        os.environ[_env_var] = str(_val)
-        # Compression config is read directly from config.yaml by run_agent.py
-        # and auxiliary_client.py -no env var bridging needed.
-        # Auxiliary model/direct-endpoint overrides (vision, web_extract).
-        # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
-        _auxiliary_cfg = _cfg.get("auxiliary", {})
-        if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-            _aux_task_env = {
-                "vision": {
-                    "provider": "AUXILIARY_VISION_PROVIDER",
-                    "model": "AUXILIARY_VISION_MODEL",
-                    "base_url": "AUXILIARY_VISION_BASE_URL",
-                    "api_key": "AUXILIARY_VISION_API_KEY",
-                },
-                "web_extract": {
-                    "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-                    "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-                    "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-                    "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
-                },
-                "approval": {
-                    "provider": "AUXILIARY_APPROVAL_PROVIDER",
-                    "model": "AUXILIARY_APPROVAL_MODEL",
-                    "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-                    "api_key": "AUXILIARY_APPROVAL_API_KEY",
-                },
-            }
-            for _task_key, _env_map in _aux_task_env.items():
-                _task_cfg = _auxiliary_cfg.get(_task_key, {})
-                if not isinstance(_task_cfg, dict):
-                    continue
-                _prov = str(_task_cfg.get("provider", "")).strip()
-                _model = str(_task_cfg.get("model", "")).strip()
-                _base_url = str(_task_cfg.get("base_url", "")).strip()
-                _api_key = str(_task_cfg.get("api_key", "")).strip()
-                if _prov and _prov != "auto":
-                    os.environ[_env_map["provider"]] = _prov
-                if _model:
-                    os.environ[_env_map["model"]] = _model
-                if _base_url:
-                    os.environ[_env_map["base_url"]] = _base_url
-                if _api_key:
-                    os.environ[_env_map["api_key"]] = _api_key
-        _agent_cfg = _cfg.get("agent", {})
-        if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
-                os.environ["KUNMING_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
-            # Bridge agent.gateway_timeout ->KUNMING_AGENT_TIMEOUT env var.
-            # Env var from .env takes precedence (already in os.environ).
-            if "gateway_timeout" in _agent_cfg and "KUNMING_AGENT_TIMEOUT" not in os.environ:
-                os.environ["KUNMING_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
-            if "gateway_timeout_warning" in _agent_cfg and "KUNMING_AGENT_TIMEOUT_WARNING" not in os.environ:
-                os.environ["KUNMING_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
-        # Timezone: bridge config.yaml ->KUNMING_TIMEZONE env var.
-        # KUNMING_TIMEZONE from .env takes precedence (already in os.environ).
-        _tz_cfg = _cfg.get("timezone", "")
-        if _tz_cfg and isinstance(_tz_cfg, str) and "KUNMING_TIMEZONE" not in os.environ:
-            os.environ["KUNMING_TIMEZONE"] = _tz_cfg.strip()
-        # Security settings
-        _security_cfg = _cfg.get("security", {})
-        if isinstance(_security_cfg, dict):
-            _redact = _security_cfg.get("redact_secrets")
-            if _redact is not None:
-                os.environ["KUNMING_REDACT_SECRETS"] = str(_redact).lower()
-    except Exception:
-        pass  # Non-fatal; gateway can still run with .env values
+# config.yaml is authoritative for terminal settings - overrides .env.
+#
+# [配置系统统一] 使用统一的 bridge_config_to_env() 函数替代本地重复实现
+# 原因：原实现中cli.py和gateway/run.py各自实现桥接逻辑，导致约115行重复代码
+# 修复方案：kunming_cli.config.bridge_config_to_env() 提供统一的配置桥接功能，
+# 支持terminal、auxiliary、agent、timezone、security等所有配置项
+# 注意：此函数使用load_config()加载配置，会自动应用_expand_env_vars等规范化处理
+from kunming_cli.config import bridge_config_to_env
+try:
+    bridge_config_to_env()
+except Exception:
+    pass  # Non-fatal; gateway can still run with .env values
 
 # Validate config structure early -log warnings so gateway operators see problems
 try:
@@ -867,15 +767,8 @@ class GatewayRunner:
         import json as _json
         file_path = os.getenv("KUNMING_PREFILL_MESSAGES_FILE", "")
         if not file_path:
-            try:
-                import yaml as _y
-                cfg_path = _kunming_home / "config.yaml"
-                if cfg_path.exists():
-                    with open(cfg_path, encoding="utf-8") as _f:
-                        cfg = _y.safe_load(_f) or {}
-                    file_path = cfg.get("prefill_messages_file", "")
-            except Exception:
-                pass
+            # [配置一致性] 使用 _load_gateway_config() 确保默认值和迁移被应用
+            file_path = _load_gateway_config().get("prefill_messages_file", "")
         if not file_path:
             return []
         path = Path(file_path).expanduser()
@@ -905,16 +798,8 @@ class GatewayRunner:
         prompt = os.getenv("KUNMING_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
             return prompt
-        try:
-            import yaml as _y
-            cfg_path = _kunming_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
-        except Exception:
-            pass
-        return ""
+        # [配置一致性] 使用 _load_gateway_config() 确保默认值和迁移被应用
+        return (_load_gateway_config().get("agent", {}).get("system_prompt", "") or "").strip()
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
@@ -925,16 +810,8 @@ class GatewayRunner:
         default (medium).
         """
         from kunming_constants import parse_reasoning_effort
-        effort = ""
-        try:
-            import yaml as _y
-            cfg_path = _kunming_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
-        except Exception:
-            pass
+        # [配置一致性] 使用 _load_gateway_config() 确保默认值和迁移被应用
+        effort = str(_load_gateway_config().get("agent", {}).get("reasoning_effort", "") or "").strip()
         result = parse_reasoning_effort(effort)
         if effort and effort.strip() and result is None:
             logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
@@ -943,16 +820,8 @@ class GatewayRunner:
     @staticmethod
     def _load_show_reasoning() -> bool:
         """Load show_reasoning toggle from config.yaml display section."""
-        try:
-            import yaml as _y
-            cfg_path = _kunming_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return bool(cfg.get("display", {}).get("show_reasoning", False))
-        except Exception:
-            pass
-        return False
+        # [配置一致性] 使用 _load_gateway_config() 确保默认值和迁移被应用
+        return bool(_load_gateway_config().get("display", {}).get("show_reasoning", False))
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
@@ -966,19 +835,12 @@ class GatewayRunner:
         """
         mode = os.getenv("KUNMING_BACKGROUND_NOTIFICATIONS", "")
         if not mode:
-            try:
-                import yaml as _y
-                cfg_path = _kunming_home / "config.yaml"
-                if cfg_path.exists():
-                    with open(cfg_path, encoding="utf-8") as _f:
-                        cfg = _y.safe_load(_f) or {}
-                    raw = cfg.get("display", {}).get("background_process_notifications")
-                    if raw is False:
-                        mode = "off"
-                    elif raw not in (None, ""):
-                        mode = str(raw)
-            except Exception:
-                pass
+            # [配置一致性] 使用 _load_gateway_config() 确保默认值和迁移被应用
+            raw = _load_gateway_config().get("display", {}).get("background_process_notifications")
+            if raw is False:
+                mode = "off"
+            elif raw not in (None, ""):
+                mode = str(raw)
         mode = (mode or "all").strip().lower()
         valid = {"all", "result", "error", "off"}
         if mode not in valid:
@@ -992,16 +854,8 @@ class GatewayRunner:
     @staticmethod
     def _load_provider_routing() -> dict:
         """Load OpenRouter provider routing preferences from config.yaml."""
-        try:
-            import yaml as _y
-            cfg_path = _kunming_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return cfg.get("provider_routing", {}) or {}
-        except Exception:
-            pass
-        return {}
+        # [配置一致性] 使用 _load_gateway_config() 确保默认值和迁移被应用
+        return _load_gateway_config().get("provider_routing", {}) or {}
 
     @staticmethod
     def _load_fallback_model() -> list | dict | None:
@@ -1011,32 +865,16 @@ class GatewayRunner:
         dict (legacy ``fallback_model``), or None if not configured.
         AIAgent.__init__ normalizes both formats into a chain.
         """
-        try:
-            import yaml as _y
-            cfg_path = _kunming_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
-                if fb:
-                    return fb
-        except Exception:
-            pass
-        return None
+        # [配置一致性] 使用 _load_gateway_config() 确保默认值和迁移被应用
+        _cfg = _load_gateway_config()
+        fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        return fb if fb else None
 
     @staticmethod
     def _load_smart_model_routing() -> dict:
         """Load optional smart cheap-vs-strong model routing config."""
-        try:
-            import yaml as _y
-            cfg_path = _kunming_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return cfg.get("smart_model_routing", {}) or {}
-        except Exception:
-            pass
-        return {}
+        # [配置一致性] 使用 _load_gateway_config() 确保默认值和迁移被应用
+        return _load_gateway_config().get("smart_model_routing", {}) or {}
 
     async def start(self) -> bool:
         """
