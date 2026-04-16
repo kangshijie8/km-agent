@@ -4596,12 +4596,28 @@ class AIAgent:
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """
-        Run the API call in a background thread so the main conversation loop
-        can detect interrupts without waiting for the full HTTP round-trip.
+        Run the API call with async bridge for cancellable interrupt support.
 
-        Each worker thread gets its own OpenAI client instance. Interrupts only
-        close that worker-local client, so retries and other requests never
-        inherit a closed transport.
+        FIX 2026-04-17: 完全重写为异步架构。之前使用 threading.Thread 的同步
+        模型在 Windows 上存在 GIL + C 扩展阻塞问题，导致 interrupt 后线程卡死
+        在 socket.recv() 中无法退出（AGENT_THREAD_STUCK）。
+
+        新架构使用 asyncio.Event 竞速模式：
+        1. API 调用在后台 asyncio 事件循环中作为协程运行
+        2. cancel_event.wait() 与 API 调用竞速
+        3. 用户 interrupt 时设置 cancel_event，协程立即响应并抛出 CancelledError
+        4. 无需强制关闭 socket，协程自然退出
+
+        参考 openakita 的 _cancellable_llm_call() 实现。
+        """
+        # 使用环境变量控制是否使用新架构（便于回滚）
+        if os.getenv("KUNMING_USE_SYNC_API_CALL", "").lower() in ("1", "true", "yes"):
+            return self._interruptible_api_call_sync_legacy(api_kwargs)
+        return self._interruptible_api_call_async(api_kwargs)
+
+    def _interruptible_api_call_sync_legacy(self, api_kwargs: dict):
+        """
+        旧的同步实现（保留用于回滚）。
         """
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
@@ -4610,8 +4626,6 @@ class AIAgent:
             try:
                 if self.api_mode == "codex_responses":
                     request_client_holder["client"] = self._create_request_openai_client(reason="codex_stream_request")
-                    # Track the in-flight client so interrupt() can forcibly close
-                    # its socket. See interrupt() for the Windows GIL deadlock story.
                     with self._openai_client_lock():
                         self._current_request_client = request_client_holder["client"]
                     result["response"] = self._run_codex_stream(
