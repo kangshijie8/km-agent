@@ -4887,81 +4887,43 @@ class AIAgent:
                 self._current_request_client = self._anthropic_client
 
             # ------------------------------------------------------------------
-            # CRITICAL FIX 2026-04-16: Anthropic stream interrupt handling.
-            #
-            # The Anthropic SDK's stream iterator blocks in httpx's C extension
-            # when waiting for the next SSE event. On Windows, this holds the GIL
-            # and prevents Python-level interrupt checks from running.
-            #
-            # We use the SDK's .stream() context manager with a sentinel-based
-            # approach: if interrupt() closes the _anthropic_client, the blocked
-            # read() will raise an exception and break the loop. We also check
-            # _interrupt_requested after each event to exit gracefully.
+            # FIX 2026-04-16: Restore baseline-v1 simple stream iteration.
+            # The SDK's stream iterator blocks in httpx waiting for SSE events.
+            # We rely on the outer stale detector (while t.is_alive() loop) to
+            # kill stale connections after _stream_stale_timeout seconds.
+            # Interrupt is handled via break (not close+raise) to avoid GIL
+            # issues on Windows.
             # ------------------------------------------------------------------
-            _stream_start_time = time.monotonic()
-            _stream_hard_timeout = float(os.getenv("KUNMING_STREAM_TIMEOUT", 600.0))  # 10 min default
-
-            # Use the Anthropic SDK's streaming context manager
             with self._anthropic_client.messages.stream(**api_kwargs) as stream:
-                try:
-                    # FIX: Removed ThreadPoolExecutor + polling loop that blocked
-                    # the main thread. Iterate stream directly and check
-                    # _interrupt_requested + hard timeout on each event.
-                    for event in stream:
-                        if self._interrupt_requested:
-                            try:
-                                self._anthropic_client.close()
-                            except Exception:
-                                pass
-                            raise InterruptedError("Agent interrupted during Anthropic stream")
-
-                        if time.monotonic() - _stream_start_time > _stream_hard_timeout:
-                            try:
-                                self._anthropic_client.close()
-                            except Exception:
-                                pass
-                            logger.warning("Anthropic stream exceeded hard timeout of %ss", _stream_hard_timeout)
-                            raise TimeoutError(f"Stream exceeded {_stream_hard_timeout}s timeout")
-
-                        event_type = getattr(event, "type", None)
-
-                        if event_type == "content_block_start":
-                            block = getattr(event, "content_block", None)
-                            if block and getattr(block, "type", None) == "tool_use":
-                                has_tool_use = True
-                                tool_name = getattr(block, "name", None)
-                                if tool_name:
-                                    _fire_first_delta()
-                                    self._fire_tool_gen_started(tool_name)
-
-                        elif event_type == "content_block_delta":
-                            delta = getattr(event, "delta", None)
-                            if delta:
-                                delta_type = getattr(delta, "type", None)
-                                if delta_type == "text_delta":
-                                    text = getattr(delta, "text", "")
-                                    if text and not has_tool_use:
-                                        _fire_first_delta()
-                                        self._fire_stream_delta(text)
-                                elif delta_type == "thinking_delta":
-                                    thinking_text = getattr(delta, "thinking", "")
-                                    if thinking_text:
-                                        _fire_first_delta()
-                                        self._fire_reasoning_delta(thinking_text)
-
-                except InterruptedError:
-                    # Re-raise interrupt errors
-                    raise
-                except Exception as stream_exc:
-                    # Handle interrupt-induced client closure gracefully
+                for event in stream:
                     if self._interrupt_requested:
-                        logger.debug("Anthropic stream interrupted (client closed): %s", stream_exc)
-                        # Return partial message if available, otherwise re-raise
-                        try:
-                            return stream.get_final_message()
-                        except Exception:
-                            raise InterruptedError("Agent interrupted during Anthropic stream")
-                    raise
+                        break
+
+                    event_type = getattr(event, "type", None)
+
+                    if event_type == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if block and getattr(block, "type", None) == "tool_use":
+                            has_tool_use = True
+                            tool_name = getattr(block, "name", None)
+                            if tool_name:
+                                _fire_first_delta()
+                                self._fire_tool_gen_started(tool_name)
+
+                    elif event_type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta:
+                            delta_type = getattr(delta, "type", None)
+                            if delta_type == "text_delta":
+                                text = getattr(delta, "text", "")
+                                if text and not has_tool_use:
+                                    _fire_first_delta()
+                                    self._fire_stream_delta(text)
+                            elif delta_type == "thinking_delta":
+                                thinking_text = getattr(delta, "thinking", "")
+                                if thinking_text:
+                                    _fire_first_delta()
+                                    self._fire_reasoning_delta(thinking_text)
 
                 # Return the native Anthropic Message for downstream processing
                 return stream.get_final_message()
@@ -5168,7 +5130,7 @@ class AIAgent:
             if _stale_elapsed > _stream_stale_timeout:
                 _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
                 logger.warning(
-                    "Stream stale for %.0fs (threshold %.0fs) ?no chunks received. "
+                    "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
                     "model=%s context=~%s tokens. Killing connection.",
                     _stale_elapsed, _stream_stale_timeout,
                     api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
@@ -5179,16 +5141,23 @@ class AIAgent:
                     f"context: ~{_est_ctx:,} tokens). "
                     f"Reconnecting..."
                 )
+                # FIX 2026-04-16: Kill the correct client based on api_mode.
+                # When api_mode == "anthropic_messages", the stream uses
+                # _anthropic_client, NOT request_client_holder["client"].
+                # Closing the wrong client leaves the stream blocked forever.
                 try:
-                    rc = request_client_holder.get("client")
-                    if rc is not None:
-                        self._close_request_openai_client(rc, reason="stale_stream_kill")
-                except Exception:
-                    pass
-                # Rebuild the primary client too ?its connection pool
-                # may hold dead sockets from the same provider outage.
-                try:
-                    self._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                    if self.api_mode == "anthropic_messages":
+                        from agent.anthropic_adapter import build_anthropic_client
+                        self._anthropic_client.close()
+                        self._anthropic_client = build_anthropic_client(
+                            self._anthropic_api_key,
+                            getattr(self, "_anthropic_base_url", None),
+                        )
+                    else:
+                        rc = request_client_holder.get("client")
+                        if rc is not None:
+                            self._close_request_openai_client(rc, reason="stale_stream_kill")
+                        self._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
                 except Exception:
                     pass
                 # Reset the timer so we don't kill repeatedly while
