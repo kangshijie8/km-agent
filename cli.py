@@ -6540,6 +6540,24 @@ class KunmingCLI:
             # 因为Python等待所有非daemon线程结束。daemon线程在主线程退出时
             # 会被自动终止。agent_thread.join(timeout=3)仍然可以等待结果，
             # 但如果3s后线程仍存活，进程可以正常退出。
+            # FIX 2026-04-17: 在agent_thread启动前排空_interrupt_queue中的残留消息。
+            # 根因：_agent_running=True在chat()调用前就被设置（process_loop L8352），
+            # 而_init_agent()是同步阻塞的（可能数秒）。在此期间，用户的任何Enter输入
+            # 都会被handle_enter()放入_interrupt_queue（因为_agent_running=True）。
+            # 如果不排空，agent_thread刚启动就会被"自中断"——agent还没干活就被中断了。
+            # 排空的消息重新放回_pending_input，让process_loop在下一轮处理。
+            if hasattr(self, '_interrupt_queue'):
+                _drained_interrupts = []
+                while not self._interrupt_queue.empty():
+                    try:
+                        _stale = self._interrupt_queue.get_nowait()
+                        if _stale:
+                            _drained_interrupts.append(_stale)
+                    except queue.Empty:
+                        break
+                for _stale_msg in _drained_interrupts:
+                    self._pending_input.put(_stale_msg)
+
             agent_thread = threading.Thread(target=run_agent, daemon=True)
             agent_thread.start()
 
@@ -6603,6 +6621,14 @@ class KunmingCLI:
                     with open(_dbg, "a") as _f:
                         import time as _t
                         _f.write(f"{_t.strftime('%H:%M:%S')} AGENT_THREAD_STUCK after interrupt, left behind\n")
+                except Exception:
+                    pass
+                # FIX 2026-04-17: nuke前清除全局中断状态，防止影响新agent实例。
+                # 旧线程可能设置了_interrupt_event（全局threading.Event），
+                # 如果不清除，新agent实例会立即看到中断标志。
+                try:
+                    from tools.interrupt import set_interrupt as _set_interrupt
+                    _set_interrupt(False)
                 except Exception:
                     pass
                 # Nuke the current agent instance so the next turn starts fresh
@@ -6769,17 +6795,19 @@ class KunmingCLI:
             # Re-queue the interrupt message (and any that arrived while we were
             # processing the first) as the next prompt for process_loop.
             # Only reached when busy_input_mode == "interrupt" (the default).
-            # In "queue" mode Enter routes directly to _pending_input so this
-            # block is never hit.
-            if pending_message and hasattr(self, '_pending_input'):
-                all_parts = [pending_message]
-                while not self._interrupt_queue.empty():
-                    try:
-                        extra = self._interrupt_queue.get_nowait()
-                        if extra:
-                            all_parts.append(extra)
-                    except queue.Empty:
-                        break
+            # FIX 2026-04-17: 无条件排空_interrupt_queue，防止消息泄漏。
+            # 之前只在pending_message非空时才排空，导致中断从未被处理时
+            # （agent线程太快结束或还没启动），队列中的消息永久丢失。
+            _drained_after = []
+            while hasattr(self, '_interrupt_queue') and not self._interrupt_queue.empty():
+                try:
+                    extra = self._interrupt_queue.get_nowait()
+                    if extra:
+                        _drained_after.append(extra)
+                except queue.Empty:
+                    break
+            if pending_message:
+                all_parts = [pending_message] + _drained_after
                 combined = "\n".join(all_parts)
                 n = len(all_parts)
                 preview = combined[:50] + ("..." if len(combined) > 50 else "")
@@ -6787,6 +6815,9 @@ class KunmingCLI:
                     print(f"\n█Sending {n} messages after interrupt: '{preview}'")
                 else:
                     print(f"\n█Sending after interrupt: '{preview}'")
+                self._pending_input.put(combined)
+            elif _drained_after:
+                combined = "\n".join(_drained_after)
                 self._pending_input.put(combined)
             
             return response
@@ -8407,43 +8438,15 @@ class KunmingCLI:
         process_thread = threading.Thread(target=process_loop, daemon=True)
         process_thread.start()
 
-        # Start cron ticker thread so scheduled jobs fire automatically
-        # in CLI mode (same pattern as gateway's _start_cron_ticker).
-        # Only start if no gateway is already running (avoid double-tick).
-        self._cron_stop = threading.Event()
-        _gateway_running = False
-        try:
-            from kunming_cli.gateway import find_gateway_pids
-            _gateway_running = bool(find_gateway_pids())
-        except Exception:
-            pass
-        if not _gateway_running:
-            def _cli_cron_ticker(stop_event, interval=180):  # 3 minutes
-                from cron.scheduler import tick as cron_tick
-                _tick_count = 0
-                while not stop_event.is_set():
-                    try:
-                        cron_tick(verbose=False)
-                    except Exception:
-                        pass
-                    _tick_count += 1
-                    # Memory distillation every 20 ticks (60 minutes / 3 min interval)
-                    if _tick_count % 20 == 0:
-                        try:
-                            from agent.memory_distillation import run_distillation, _DISTILL_DEFAULT_CONFIG
-                            _dcfg = _DISTILL_DEFAULT_CONFIG.copy()
-                            _dcfg["enabled"] = True
-                            run_distillation(config=_dcfg, verbose=False)
-                        except Exception:
-                            pass
-                    stop_event.wait(timeout=interval)
-            _cron_thread = threading.Thread(
-                target=_cli_cron_ticker,
-                args=(self._cron_stop,),
-                daemon=True,
-                name="cli-cron-ticker",
-            )
-            _cron_thread.start()
+        # ARCHITECTURE 2026-04-17: 移除CLI的cron ticker。
+        # 原因：系统架构上，cron ticker应由网关(gateway)统一管理。
+        # 网关的_start_cron_ticker功能更完整（传递adapters/loop、
+        # 频道目录刷新、缓存清理等），CLI的_cli_cron_ticker只是
+        # 不完整的替代方案。没有网关运行时，系统架构本身就不完整，
+        # 不应该由CLI来补这个缺口。用户应通过 `km gateway start`
+        # 启动网关来获得完整的系统服务（cron调度、记忆蒸馏等）。
+        # 架构原则：网关是系统的"心脏"，CLI只是客户端。
+        self._cron_stop = None
         
         # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
@@ -8489,9 +8492,8 @@ class KunmingCLI:
             pass
         finally:
             self._should_exit = True
-            # Stop cron ticker thread
-            if hasattr(self, '_cron_stop'):
-                self._cron_stop.set()
+            # ARCHITECTURE 2026-04-17: cron ticker已移除，无需停止。
+            # 网关的cron ticker是独立进程，不受CLI退出影响。
             # FIX 2026-04-17: flush_memories在子线程中执行+5s超时。
             # flush_memories可能涉及LLM调用（记忆蒸馏），网络请求可能阻塞。
             # Windows上KeyboardInterrupt不能中断C扩展阻塞调用。

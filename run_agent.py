@@ -3797,85 +3797,172 @@ class AIAgent:
 
     @staticmethod
     def _force_close_tcp_sockets(client: Any) -> int:
-        """Force-close underlying TCP sockets to prevent CLOSE-WAIT accumulation.
+        """Force-close underlying TCP sockets to unblock stuck recv() calls.
 
-        When a provider drops a connection mid-stream, httpx's ``client.close()``
-        performs a graceful shutdown which leaves sockets in CLOSE-WAIT until the
-        OS times them out (often minutes).  This method walks the httpx transport
-        pool and issues ``socket.shutdown(SHUT_RDWR)`` + ``socket.close()`` to
-        force an immediate TCP RST, freeing the file descriptors.
+        FIX 2026-04-17 (v2): 完全重写反射路径。之前的版本几乎完全无效，
+        因为httpcore的连接池结构是:
 
-        Works with both OpenAI and Anthropic SDK clients.
+          ConnectionPool._connections → list[HTTPConnection]  (包装器)
+            HTTPConnection._connection → HTTP11Connection     (实际连接)
+              HTTP11Connection._network_stream → SyncStream/TLSinTLSStream
+                SyncStream._sock → socket.socket              (底层socket)
+
+        旧代码直接对HTTPConnection取 _network_stream，但该属性只在
+        HTTP11Connection上存在，对HTTPConnection返回None，导致所有连接
+        被跳过——这就是每次interrupt后AGENT_THREAD_STUCK的根因：
+        socket没被关闭，线程卡在C扩展的recv()中无法退出。
+
+        新增处理:
+        1. HTTPConnection._connection 解引用到 HTTP11Connection/HTTP2Connection
+        2. PoolRequest.connection 解引用（而非错误的 _stream）
+        3. 多transport支持（httpx可能用 _mounts dict 存多个transport）
+        4. SSL/TLS socket的raw_socket()提取
 
         Returns the number of sockets force-closed.
         """
         import socket as _socket
 
         closed = 0
-        try:
-            http_client = getattr(client, "_client", None)
-            if http_client is None:
-                return 0
-            transport = getattr(http_client, "_transport", None)
-            if transport is None:
-                return 0
-            pool = getattr(transport, "_pool", None)
+
+        def _close_one_socket(sock) -> bool:
+            nonlocal closed
+            if sock is None:
+                return False
+            try:
+                sock.shutdown(_socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+            closed += 1
+            return True
+
+        def _extract_sock_from_stream(stream) -> Any:
+            if stream is None:
+                return None
+            sock = getattr(stream, "_sock", None)
+            if sock is not None:
+                return sock
+            raw = getattr(stream, "raw_socket", None)
+            if callable(raw):
+                try:
+                    return raw()
+                except Exception:
+                    pass
+            inner = getattr(stream, "stream", None)
+            if inner is not None:
+                sock = getattr(inner, "_sock", None)
+                if sock is not None:
+                    return sock
+                raw = getattr(inner, "raw_socket", None)
+                if callable(raw):
+                    try:
+                        return raw()
+                    except Exception:
+                        pass
+            return None
+
+        def _extract_sock_from_connection(conn) -> Any:
+            if conn is None:
+                return None
+            # 路径1: HTTP11Connection/HTTP2Connection 直接有 _network_stream
+            stream = getattr(conn, "_network_stream", None)
+            if stream is not None:
+                return _extract_sock_from_stream(stream)
+            # 路径2: HTTPConnection 包装器，需要先解引用 _connection
+            inner = getattr(conn, "_connection", None)
+            if inner is not None:
+                stream = getattr(inner, "_network_stream", None)
+                if stream is not None:
+                    return _extract_sock_from_stream(stream)
+            # 路径3: 某些版本直接暴露 _stream
+            stream = getattr(conn, "_stream", None)
+            if stream is not None:
+                return _extract_sock_from_stream(stream)
+            return None
+
+        def _drain_pool(pool) -> None:
             if pool is None:
-                return 0
+                return
+            # 关闭 _connections 列表中的连接（空闲+活跃）
             connections = (
                 getattr(pool, "_connections", None)
                 or getattr(pool, "_pool", None)
                 or []
             )
             for conn in list(connections):
-                stream = (
-                    getattr(conn, "_network_stream", None)
-                    or getattr(conn, "_stream", None)
-                )
-                if stream is None:
-                    continue
-                sock = getattr(stream, "_sock", None)
-                if sock is None:
-                    sock = getattr(stream, "stream", None)
-                    if sock is not None:
-                        sock = getattr(sock, "_sock", None)
-                if sock is None:
-                    continue
-                try:
-                    sock.shutdown(_socket.SHUT_RDWR)
-                except OSError:
-                    pass
-                try:
-                    sock.close()
-                except OSError:
-                    pass
-                closed += 1
-
-            # FIX 2026-04-17: Also try to close any pending connections in the pool's
-            # _requests set (connections being established but not yet in _connections)
+                sock = _extract_sock_from_connection(conn)
+                _close_one_socket(sock)
+            # 关闭 _requests 中的待处理请求
+            # FIX: PoolRequest没有_stream属性，必须通过.connection解引用
             pending_requests = getattr(pool, "_requests", None)
             if pending_requests:
                 for req in list(pending_requests):
                     try:
-                        req_stream = getattr(req, "_stream", None)
-                        if req_stream is None:
-                            req_stream = getattr(req, "stream", None)
-                        if req_stream:
-                            req_sock = getattr(req_stream, "_sock", None)
-                            if req_sock:
-                                try:
-                                    req_sock.shutdown(_socket.SHUT_RDWR)
-                                except OSError:
-                                    pass
-                                try:
-                                    req_sock.close()
-                                except OSError:
-                                    pass
-                                closed += 1
+                        req_conn = getattr(req, "connection", None)
+                        if req_conn is not None:
+                            sock = _extract_sock_from_connection(req_conn)
+                            _close_one_socket(sock)
+                        else:
+                            req_stream = getattr(req, "_stream", None)
+                            if req_stream is None:
+                                req_stream = getattr(req, "stream", None)
+                            if req_stream:
+                                sock = _extract_sock_from_stream(req_stream)
+                                _close_one_socket(sock)
                     except Exception:
                         pass
+
+        try:
+            http_client = getattr(client, "_client", None)
+            if http_client is None:
+                return 0
+
+            # 主transport路径
+            transport = getattr(http_client, "_transport", None)
+            if transport is not None:
+                pool = getattr(transport, "_pool", None)
+                if pool is not None:
+                    _drain_pool(pool)
+
+            # 多mount路径: httpx.Client._mounts 是 dict[str, HTTPTransport]
+            # 不同URL前缀可能使用不同的transport（如HTTP/2 vs HTTP/1.1）
+            mounts = getattr(http_client, "_mounts", None)
+            if mounts and isinstance(mounts, dict):
+                for _mount_transport in mounts.values():
+                    if _mount_transport is None:
+                        continue
+                    pool = getattr(_mount_transport, "_pool", None)
+                    if pool is not None:
+                        _drain_pool(pool)
+
+            # 备用: httpx.AsyncClient 或其他变体可能有 _transports
+            transports = getattr(http_client, "_transports", None)
+            if transports and isinstance(transports, dict):
+                for _t in transports.values():
+                    if _t is None:
+                        continue
+                    pool = getattr(_t, "_pool", None)
+                    if pool is not None:
+                        _drain_pool(pool)
+
         except Exception as exc:
             logger.debug("Force-close TCP sockets sweep error: %s", exc)
+        # FIX 2026-04-17: 添加info级别日志，方便验证socket是否被成功关闭。
+        # 之前closed始终为0（反射路径错误），现在应该能看到>0的值。
+        if closed > 0:
+            logger.info(
+                "Force-closed %d TCP socket(s) for client %s",
+                closed, type(client).__name__,
+            )
+        else:
+            logger.debug(
+                "Force-close TCP sockets: no sockets found for client %s "
+                "(may be expected if no active connections)",
+                type(client).__name__,
+            )
         return closed
 
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
@@ -4555,11 +4642,15 @@ class AIAgent:
         while t.is_alive():
             t.join(timeout=0.3)
             if self._interrupt_requested:
-                # SIMPLIFICATION 2026-04-17: 移除暴力socket关闭和客户端重建。
-                # 只关闭request_client（OpenAI兼容模式），不碰Anthropic客户端。
-                # Anthropic模式依赖httpx read_timeout自然超时退出
+                # FIX 2026-04-17: 中断时必须强制关闭底层socket。
+                # 之前排除了Anthropic模式，但Anthropic的socket.recv()同样
+                # 会阻塞，不关闭socket线程无法退出。
                 try:
-                    if self.api_mode != "anthropic_messages":
+                    if self.api_mode == "anthropic_messages":
+                        _ac = getattr(self, "_anthropic_client", None)
+                        if _ac is not None:
+                            self._force_close_tcp_sockets(_ac)
+                    else:
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
                             self._close_request_openai_client(request_client, reason="interrupt_abort")
@@ -4938,10 +5029,15 @@ class AIAgent:
                 try:
                     for event in s:
                         if self._interrupt_requested:
-                            # SIMPLIFICATION 2026-04-17: 移除循环内的_force_close_tcp_sockets
-                            # 和client.close()。这些操作在with stream上下文中执行时，
-                            # __exit__可能二次阻塞。现在只break，让上下文管理器自然关闭
-                            break
+                            # FIX 2026-04-17: raise而非break。
+                            # break后代码会经过with stream as s的__exit__，
+                            # __exit__在Windows上可能graceful shutdown阻塞30s+。
+                            # raise InterruptedError也会触发__exit__，但异常路径
+                            # 通常比正常路径更快（不尝试读取剩余数据）。
+                            # 更重要的是，外层_interruptible_streaming_api_call
+                            # 已经在interrupt检测时_force_close_tcp_sockets了，
+                            # 所以socket已经被关闭，__exit__不会阻塞。
+                            raise InterruptedError("Agent interrupted during anthropic stream iteration")
 
                         event_type = getattr(event, "type", None)
 
@@ -5259,12 +5355,25 @@ class AIAgent:
                     break
 
             if self._interrupt_requested:
-                # SIMPLIFICATION 2026-04-17: 简化interrupt处理。
-                # 移除_force_close_tcp_sockets和客户端重建，只设置error并break。
-                # 内层线程是daemon线程，会在进程退出时自动终止。
-                # 依赖httpx read_timeout确保线程最终退出
+                # FIX 2026-04-17: 中断时必须强制关闭底层socket，否则内层线程
+                # 卡在httpx socket.recv()中无法退出。之前"简化"移除了
+                # _force_close_tcp_sockets，但这导致Windows上中断后线程卡死
+                # （C扩展socket recv不响应Python标志检查）。
+                # _force_close_tcp_sockets只做socket.shutdown+close，
+                # 不调用client.close()，不会触发graceful shutdown阻塞。
+                try:
+                    if self.api_mode == "anthropic_messages":
+                        _ac = getattr(self, "_anthropic_client", None)
+                        if _ac is not None:
+                            self._force_close_tcp_sockets(_ac)
+                    else:
+                        _rc = request_client_holder.get("client")
+                        if _rc is not None:
+                            self._force_close_tcp_sockets(_rc)
+                except Exception:
+                    pass
                 logger.warning(
-                    "Interrupt requested during streaming; abandoning streaming thread"
+                    "Interrupt requested during streaming; force-closed sockets to unblock recv"
                 )
                 result["error"] = InterruptedError("Agent interrupted during streaming API call")
                 break

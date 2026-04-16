@@ -1641,6 +1641,9 @@ def auxiliary_max_tokens_param(value: int) -> dict:
 # Client cache: (provider, async_mode, base_url, api_key) -> (client, default_model)
 _client_cache: Dict[tuple, tuple] = {}
 _client_cache_lock = threading.Lock()
+# [H3修复] 缓存条目上限，防止gateway长期运行导致内存泄漏
+# 每个条目持有httpx连接池，超过上限时淘汰最久未使用的条目
+_MAX_CLIENT_CACHE_SIZE = 32
 
 
 def neuter_async_httpx_del() -> None:
@@ -1799,6 +1802,18 @@ def _get_cached_client(
         # can detect stale entries later.
         bound_loop = current_loop
         with _client_cache_lock:
+            # [H3修复] 超过缓存上限时淘汰最旧的条目（FIFO近似LRU）
+            # Python 3.7+ dict保持插入顺序，第一个key就是最旧的
+            while len(_client_cache) >= _MAX_CLIENT_CACHE_SIZE:
+                oldest_key = next(iter(_client_cache))
+                old_entry = _client_cache.pop(oldest_key, None)
+                if old_entry is not None:
+                    old_client, _, old_loop = old_entry
+                    try:
+                        if old_loop is not None and old_loop.is_closed():
+                            _force_close_async_httpx(old_client)
+                    except Exception:
+                        pass
             if cache_key not in _client_cache:
                 _client_cache[cache_key] = (client, default_model, bound_loop)
             else:

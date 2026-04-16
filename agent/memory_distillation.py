@@ -42,7 +42,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
-from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS, utc_now_iso, _EBINGHAUS_HALF_LIFE_DAYS  # 整合: 使用统一时间戳函数 [T1]; 统一Ebbinghaus半衰期常量 [R2-M2]
+from kunming_constants import get_kunming_home, _MEMORY_PROTECTED_KEYWORDS, utc_now_iso, _EBINGHAUS_HALF_LIFE_DAYS, ebbinghaus_retention  # [C1修复] 补充ebbinghaus_retention导入，原缺失导致_score_candidates()在Deep阶段NameError，蒸馏完全失效
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils import file_lock, _extract_tokens, atomic_json_write, extract_keywords_cjk, jaccard_similarity  # [R2-K1] 导入统一关键词提取函数; [R2-J1] 导入统一Jaccard相似度函数
@@ -590,11 +590,15 @@ def _llm_extract_patterns(candidates: List[Dict], themes: List[Dict]) -> List[Di
     )
 
     try:
-        # 修复: call_llm参数名错误，prompt应传给messages参数而非task参数，导致LLM辅助REM从未成功 [H1]
+        # [H1修复] call_llm返回OpenAI SDK response对象，不是字符串
+        # 原代码对response对象调.strip()会AttributeError，被外层except捕获后静默失败
+        # 使用extract_content_or_reasoning正确提取文本内容
+        from agent.auxiliary_client import extract_content_or_reasoning
         response = call_llm(messages=[{"role": "user", "content": prompt}], max_tokens=200, temperature=0.3)
-        if not response or not response.strip():
+        content = extract_content_or_reasoning(response)
+        if not content or not content.strip():
             return []
-        rules = [r.strip() for r in response.strip().split("\n") if r.strip() and len(r.strip()) > 10]
+        rules = [r.strip() for r in content.strip().split("\n") if r.strip() and len(r.strip()) > 10]
         return [{"rule": r, "source": "llm_rem"} for r in rules[:3]]
     except Exception as e:
         logger.debug("LLM-assisted REM failed: %s", e)

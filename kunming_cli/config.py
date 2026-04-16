@@ -2003,7 +2003,15 @@ def _deep_merge(base: dict, override: dict) -> dict:
     the default is a dict (e.g., model: "provider/model"), converts the
     string to the appropriate dict structure.
     """
-    result = base.copy()
+    # [H-gw3修复] 使用深拷贝替代浅拷贝，防止修改返回值时污染DEFAULT_CONFIG
+    # 原因：base.copy()是浅拷贝，嵌套dict（如model, agent, terminal）的引用被共享
+    # 修改返回值中的嵌套字段（如config["agent"]["max_turns"]=100）会同时修改DEFAULT_CONFIG
+    result = {}
+    for key, base_val in base.items():
+        if isinstance(base_val, dict):
+            result[key] = base_val.copy()
+        else:
+            result[key] = base_val
     for key, value in override.items():
         if key in result and isinstance(result[key], dict):
             if isinstance(value, dict):
@@ -2188,9 +2196,16 @@ def bridge_config_to_env(config: Optional[Dict[str, Any]] = None) -> None:
     if not config:
         return
     
-    # Bridge top-level simple values (fallback only - don't override .env)
-    for key, val in config.items():
-        if isinstance(val, (str, int, float, bool)) and key not in os.environ:
+    # [H-gw7修复] 改用白名单桥接顶层配置值，而非遍历所有键
+    # 原因：遍历所有键会将config.yaml中的敏感信息（如api_key）泄露到os.environ，
+    # 子进程（Docker容器、SSH会话）可能意外继承这些环境变量
+    _SAFE_TOPLEVEL_KEYS = frozenset({
+        "model", "provider", "platform", "quiet_mode", "verbose_logging",
+        "save_trajectories", "max_iterations", "language", "timezone",
+    })
+    for key in _SAFE_TOPLEVEL_KEYS:
+        val = config.get(key)
+        if val is not None and isinstance(val, (str, int, float, bool)) and key not in os.environ:
             os.environ[key] = str(val)
     
     # Bridge terminal configuration

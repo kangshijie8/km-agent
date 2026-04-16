@@ -415,7 +415,14 @@ class GatewayRunner:
         # and costing ~10x more on providers with prompt caching (Anthropic).
         # Key: session_key, Value: (AIAgent, config_signature_str)
         self._agent_cache: Dict[str, tuple] = {}
-        self._agent_cache_lock = asyncio.Lock()  # Use asyncio.Lock for async context
+        # [C-gw1修复] 改用threading.Lock替代asyncio.Lock
+        # 原因：所有使用点（L3478, L3586, L6070, L6490）都在run_sync()的线程池中执行，
+        # 使用同步with语句。asyncio.Lock不支持同步with，Python 3.10+会抛RuntimeError，
+        # 导致锁完全失效，_agent_cache并发读写存在数据竞争
+        self._agent_cache_lock = threading.Lock()
+        # [C-gw2修复] agent缓存条目上限，防止长期运行gateway内存泄漏
+        # 每个AIAgent实例含系统提示+工具schema+对话历史，占用数MB内存
+        _MAX_AGENT_CACHE_SIZE = 50
 
         # Track active fallback model/provider when primary is rate-limited.
         # Set after an agent run where fallback was activated; cleared when
@@ -488,7 +495,22 @@ class GatewayRunner:
 
     # -- Voice mode persistence ------------------------------------------
 
-    _VOICE_MODE_PATH = _kunming_home / "gateway_voice_mode.json"
+    # [C-gw3修复] 改为动态属性，每次访问时调用get_kunming_home()
+    # 原因：类属性在导入时求值，绑定到_kunming_home（也是导入时求值），
+    # 当使用km -p <profile>启动时，_apply_profile_override()可能在导入后才设置KUNMING_HOME，
+    # 导致voice mode文件写入默认profile路径而非指定profile路径
+    # 同时提供setter以兼容测试中直接赋值runner._VOICE_MODE_PATH的用法
+    _voice_mode_path_override: Optional[Path] = None
+
+    @property
+    def _VOICE_MODE_PATH(self):
+        if self._voice_mode_path_override is not None:
+            return self._voice_mode_path_override
+        return get_kunming_home() / "gateway_voice_mode.json"
+
+    @_VOICE_MODE_PATH.setter
+    def _VOICE_MODE_PATH(self, value):
+        self._voice_mode_path_override = value
 
     def _load_voice_modes(self) -> Dict[str, str]:
         try:
@@ -6519,6 +6541,11 @@ class GatewayRunner:
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
+                        # [C-gw2修复] 超过缓存上限时淘汰最旧的条目
+                        # Python 3.7+ dict保持插入顺序，第一个key就是最旧的
+                        while len(_cache) >= self._MAX_AGENT_CACHE_SIZE:
+                            oldest_key = next(iter(_cache))
+                            _cache.pop(oldest_key, None)
                         _cache[session_key] = (agent, _sig)
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 

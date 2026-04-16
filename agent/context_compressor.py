@@ -386,7 +386,11 @@ class ContextCompressor:
                 # [兜底摘要] 冷却期内也返回规则基础摘要而非None
                 # 原实现：冷却期内直接返回None，导致中间轮次被完全丢弃
                 # 修复：返回规则基础摘要保留关键信息，与LLM失败时的行为一致
-                return self._generate_rule_based_summary(turns_to_summarize)
+                # [C2修复] 冷却期返回的rule-based摘要也必须更新_previous_summary
+                # 原因：如果不更新，后续压缩无法与本次摘要合并，导致信息累积丢失
+                rb_summary = self._generate_rule_based_summary(turns_to_summarize)
+                self._previous_summary = rb_summary
+                return rb_summary
             logger.warning("Context usage at %.0f%%, forcing compression despite cooldown", usage_ratio * 100)
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
@@ -696,7 +700,10 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            content = msg.get("content") or ""
+            # [H2修复] content可能是list[dict]格式（如OpenAI多模态消息），
+            # 直接对list调estimate_tokens_cjk_aware会str(list)产生无意义字符串，估算严重偏高
+            # 使用_extract_text_content正确提取纯文本后再估算
+            content = _extract_text_content(msg.get("content") or "")
             msg_tokens = estimate_tokens_cjk_aware(content) + 10  # +10 for role/metadata
             # Include tool call arguments in estimate
             for tc in msg.get("tool_calls") or []:
