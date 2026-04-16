@@ -22,8 +22,16 @@ from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
 from enum import Enum
 
 import sys
-from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+# [修复: 重复导入] 使用已导入的Path，避免重复导入
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+# [修复: 函数内重复导入] 将httpx移到模块顶部统一导入
+try:
+    import httpx
+    _HTTPX_AVAILABLE = True
+except ImportError:
+    _HTTPX_AVAILABLE = False
+    httpx = None  # type: ignore
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
@@ -132,10 +140,14 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
 
-    import asyncio
-    import httpx
+    # [修复: 函数内重复导入] 使用模块顶部已导入的asyncio和httpx
+    # import asyncio  # 已移到模块顶部
+    # import httpx    # 已移到模块顶部
     import logging as _logging
     _log = _logging.getLogger(__name__)
+
+    if not _HTTPX_AVAILABLE or httpx is None:
+        raise RuntimeError("httpx is required for cache_image_from_url")
 
     last_exc = None
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
@@ -247,10 +259,14 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
 
-    import asyncio
-    import httpx
+    # [修复: 函数内重复导入] 使用模块顶部已导入的asyncio和httpx
+    # import asyncio  # 已移到模块顶部
+    # import httpx    # 已移到模块顶部
     import logging as _logging
     _log = _logging.getLogger(__name__)
+
+    if not _HTTPX_AVAILABLE or httpx is None:
+        raise RuntimeError("httpx is required for cache_audio_from_url")
 
     last_exc = None
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
