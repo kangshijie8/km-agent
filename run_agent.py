@@ -5134,8 +5134,32 @@ class AIAgent:
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
+        # CRITICAL FIX 2026-04-16: Add periodic progress feedback during API wait.
+        # Without this, users see nothing updating for 23+ minutes while waiting
+        # for slow providers (like MiniMax-M2.7 with large context).
+        _wait_start = time.time()
+        _last_progress_report = _wait_start
+        _progress_interval = 15.0  # report every 15 seconds
+
         while t.is_alive():
             t.join(timeout=0.3)
+
+            # FIX: Periodic progress update during long API waits
+            _now = time.time()
+            if _now - _last_progress_report >= _progress_interval:
+                _wait_secs = int(_now - _wait_start)
+                _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+                _model_name = api_kwargs.get("model", "unknown")
+                self._touch_activity(
+                    f"waiting for {_model_name} ({_wait_secs}s elapsed, ~{_est_ctx:,} tokens context)"
+                )
+                # Only emit visible status for waits > 30s to avoid spam
+                if _wait_secs > 30 and _wait_secs % 30 < 15:
+                    self._emit_status(
+                        f"⏳ Waiting for provider... {_wait_secs}s "
+                        f"(model: {_model_name}, context: ~{_est_ctx:,} tokens)"
+                    )
+                _last_progress_report = _now
 
             # Detect stale streams: connections kept alive by SSE pings
             # but delivering no real chunks.  Kill the client so the
@@ -5184,11 +5208,21 @@ class AIAgent:
                     break
 
             if self._interrupt_requested:
+                # CRITICAL FIX 2026-04-16: Improved interrupt handling on Windows.
+                # On Windows, httpx's underlying socket read() is a blocking C call
+                # that holds the GIL. Calling close() may not immediately unblock
+                # the thread, so we need to wait and then gracefully abandon if
+                # the thread doesn't respond.
                 try:
                     if self.api_mode == "anthropic_messages":
                         from agent.anthropic_adapter import build_anthropic_client
 
-                        self._anthropic_client.close()
+                        # Close the current client to break the blocking read()
+                        try:
+                            self._anthropic_client.close()
+                        except Exception:
+                            pass
+                        # Rebuild with a fresh client for the next request
                         self._anthropic_client = build_anthropic_client(
                             self._anthropic_api_key,
                             getattr(self, "_anthropic_base_url", None),
@@ -5199,6 +5233,17 @@ class AIAgent:
                             self._close_request_openai_client(request_client, reason="stream_interrupt_abort")
                 except Exception:
                     pass
+
+                # Wait briefly for the thread to notice the closure
+                t.join(timeout=5.0)
+                if t.is_alive():
+                    # Thread still blocked in C extension — log and abandon gracefully
+                    logger.warning(
+                        "Streaming thread did not terminate within 5s after interrupt; "
+                        "abandoning (daemon thread will die with process)"
+                    )
+                    result["error"] = InterruptedError("Agent interrupted during streaming API call")
+                    break
                 raise InterruptedError("Agent interrupted during streaming API call")
         if result["error"] is not None:
             if deltas_were_sent["yes"]:
