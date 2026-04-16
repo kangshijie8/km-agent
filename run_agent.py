@@ -4471,7 +4471,13 @@ class AIAgent:
             self._consecutive_429_count += 1
             backoff = min(5 * (2 ** (self._consecutive_429_count - 1)), 300)
             logger.info(f"429 rate limit - backing off {backoff}s (attempt {self._consecutive_429_count})")
-            time.sleep(backoff)
+            # Sleep in small increments so we stay responsive to interrupts
+            _slept = 0.0
+            while _slept < backoff:
+                if self._interrupt_requested:
+                    break
+                time.sleep(min(0.2, backoff - _slept))
+                _slept += 0.2
             if not has_retried_429:
                 return False, True
             next_entry = pool.mark_exhausted_and_rotate(status_code=429, error_context=error_context)
