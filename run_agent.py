@@ -4071,7 +4071,8 @@ class AIAgent:
                                 raise InterruptedError("Stream interrupted by user request")
                             yield event
 
-                    with _futures.ThreadPoolExecutor(max_workers=1) as _executor:
+                    _executor = _futures.ThreadPoolExecutor(max_workers=1)
+                    try:
                         _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
                         while not _future.done():
                             if self._interrupt_requested:
@@ -4083,6 +4084,8 @@ class AIAgent:
                                 raise InterruptedError("Agent interrupted during Codex stream")
                             time.sleep(0.1)
                         _all_events = _future.result(timeout=1.0)
+                    finally:
+                        _executor.shutdown(wait=False)
 
                     for event in _all_events:
                         event_type = getattr(event, "type", "")
@@ -4214,7 +4217,8 @@ class AIAgent:
                         raise InterruptedError("Stream interrupted by user request")
                     yield event
 
-            with _futures.ThreadPoolExecutor(max_workers=1) as _executor:
+            _executor = _futures.ThreadPoolExecutor(max_workers=1)
+            try:
                 _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
                 while not _future.done():
                     if self._interrupt_requested:
@@ -4227,6 +4231,8 @@ class AIAgent:
                         raise InterruptedError("Agent interrupted during Codex fallback stream")
                     time.sleep(0.1)
                 _all_events = _future.result(timeout=1.0)
+            finally:
+                _executor.shutdown(wait=False)
 
             for event in _all_events:
                 event_type = getattr(event, "type", None)
@@ -4729,7 +4735,8 @@ class AIAgent:
                         raise InterruptedError("Stream interrupted by user request")
                     yield chunk
 
-            with _futures.ThreadPoolExecutor(max_workers=1) as _executor:
+            _executor = _futures.ThreadPoolExecutor(max_workers=1)
+            try:
                 _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
                 while not _future.done():
                     if self._interrupt_requested:
@@ -4741,6 +4748,8 @@ class AIAgent:
                         raise InterruptedError("Agent interrupted during chat.completions stream")
                     time.sleep(0.1)
                 _all_chunks = _future.result(timeout=1.0)
+            finally:
+                _executor.shutdown(wait=False)
 
             _first_chunk_seen = False
             for chunk in _all_chunks:
@@ -4952,7 +4961,8 @@ class AIAgent:
                             yield evt
 
                     # Use ThreadPoolExecutor to make iteration interruptible
-                    with _futures.ThreadPoolExecutor(max_workers=1) as _executor:
+                    _executor = _futures.ThreadPoolExecutor(max_workers=1)
+                    try:
                         _future = _executor.submit(lambda: list(_iter_stream_with_interrupt()))
 
                         # Poll for completion with interrupt checks
@@ -4983,6 +4993,8 @@ class AIAgent:
 
                         # Get all events
                         _all_events = _future.result(timeout=1.0)
+                    finally:
+                        _executor.shutdown(wait=False)
 
                     # Process all collected events
                     for event in _all_events:
