@@ -2694,6 +2694,10 @@ class AIAgent:
         # 这是新架构实现即时中断的关键。当 cancel_event 被 set() 时，
         # async_bridge.cancellable_coroutine 中的竞速会立即返回，
         # 抛出 CancelledError，无需强制关闭 socket。
+        # FIX 2026-04-17.2: 添加超时防止 run_async 卡住。如果 async_bridge 的
+        # 后台线程卡住，run_async 默认会无限等待。添加 1 秒超时确保 interrupt
+        # 不会阻塞，即使 cancel_event 设置失败，_interrupt_requested 标志仍然
+        # 会被设置，工具层通过 is_interrupted() 检查也能响应中断。
         cancel_event = getattr(self, "_current_cancel_event", None)
         if cancel_event is not None:
             try:
@@ -2702,7 +2706,7 @@ class AIAgent:
                     cancel_event.set()
 
                 from agent.async_bridge import run_async
-                run_async(_set_cancel())
+                run_async(_set_cancel(), timeout=1.0)
             except Exception as e:
                 logger.debug("Failed to set cancel_event: %s", e)
 
